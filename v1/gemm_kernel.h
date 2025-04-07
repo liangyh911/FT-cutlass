@@ -402,49 +402,43 @@ struct Gemm {
     // Signature and Find (Matrix SM) (Column Checksum Only)
     //
 
-    // printf("sm id: %d\n", smid);
-
+    // block view
     if(thread_idx == 0){
       if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
         // Signature for Matrxi SM
-        *(Signature_Array + smid) = (uint8_t)smid;
-        *(Tile_Offset_m + smid) = (uint8_t)threadblock_tile_offset.m();
-        *(Tile_Offset_n + smid) = (uint8_t)threadblock_tile_offset.n();
+        *(Signature_Array + block_idx) = (uint8_t)smid;
+        *(Tile_Offset_m + block_idx) = (uint8_t)threadblock_tile_offset.m();
+        // *(Tile_Offset_n + block_idx) = (uint8_t)threadblock_tile_offset.n();
       
         // Find Finished (Naive: get next)
-        unsigned int next_matrix_smid = smid;
+        unsigned int next_matrix_smid, next_chk_smid;
+        uint8_t next_matrix_block_idx = block_idx;
+        uint8_t next_chk_block_idx = next_matrix_block_idx + (params.grid_tiled_shape.m() - 1 - threadblock_tile_offset.m());
         // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
         // __syncthreads();
         bool need_lock = true;
         while (need_lock) {
-          next_matrix_smid = (next_matrix_smid + 1) % nsm;
+          next_matrix_block_idx = (next_matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+          // next_chk_block_idx = next_matrix_block_idx + (params.grid_tiled_shape.m() - 1 - (*(Tile_Offset_m + next_matrix_block_idx)));
+        
           // Try to acquire the lock
-          if (atomicCAS((Lock_Signature + next_matrix_smid), 0, 1) == 0) {
-              // Check signature
-              if (*(Signature_Array + next_matrix_smid) != 255) {
-                *(Signature_Array + next_matrix_smid) = 255;
-                need_lock = false;
-              }
-              // Release the lock
-              atomicExch((Lock_Signature + next_matrix_smid), 0);
-              // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
-          }
-        }
+          if (atomicCAS((Lock_Signature + next_matrix_block_idx), 0, 1) == 0) {
+            // Check signature
+            next_chk_block_idx = next_matrix_block_idx + (params.grid_tiled_shape.m() - 1 - (*(Tile_Offset_m + next_matrix_block_idx)));
+            if (*(Tile_Offset_m + next_matrix_block_idx) != 255 &&
+                *(Signature_Array + next_matrix_block_idx) != 255 && 
+                *(Signature_Array + next_chk_block_idx) != 255) {
+              
+              next_matrix_smid = *(Signature_Array + next_matrix_block_idx);
+              next_chk_smid = *(Signature_Array + next_chk_block_idx);
 
-        // Find the corresponding checksum SM
-        unsigned int next_chk_smid = 255;
-        // uint8_t chk_offset_m = (params.grid_tiled_shape.m() - 1);
-        uint8_t chk_offset_n = *(Tile_Offset_n + next_matrix_smid);
-
-        uint8_t idx = 0;
-        while(true){
-          if(*(Tile_Offset_n + nsm + idx) == chk_offset_n){
-            next_chk_smid = *(Signature_Array + nsm + idx);
-            // printf("current SM: %d, Matrix SM: %d, Chk SM: %d, offset: %d\n", 
-            //         smid, next_matrix_smid, next_chk_smid, *(Tile_Offset_n + nsm + idx));
-            break;
+              *(Signature_Array + next_matrix_block_idx) = 255;
+              need_lock = false;
+            }
+            // Release the lock
+            atomicExch((Lock_Signature + next_matrix_block_idx), 0);
+            // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
           }
-          idx = (idx + 1) % nsm;
         }
 
         // Check chksum smid == matrix smid
@@ -458,21 +452,91 @@ struct Gemm {
         // SM ids are not the same
         else{
           // printf("Check. current SM: %d, next matrix SM: %d, next chk SM: %d\n", smid, next_matrix_smid, next_chk_smid);
-          printf("block_idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: %d, next chk SM: %d, chk_offset_n: %d\n", 
-                  block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, next_chk_smid, chk_offset_n);
+          printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: %d, next chk SM: %d\n", 
+                  block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, next_chk_smid);
         }
       }
       else{
         // Signature for Checksum (encoded) SM
-        *(Signature_Array + (nsm + smid)) = (uint8_t)smid;
-        *(Tile_Offset_m + (nsm + smid)) = (uint8_t)threadblock_tile_offset.m();
-        *(Tile_Offset_n + (nsm + smid)) = (uint8_t)threadblock_tile_offset.n();
+        *(Signature_Array + block_idx) = (uint8_t)smid;
+        // *(Tile_Offset_m + (nsm + smid)) = (uint8_t)threadblock_tile_offset.m();
+        // *(Tile_Offset_n + (nsm + smid)) = (uint8_t)threadblock_tile_offset.n();
 
         printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
-                block_idx, *(Tile_Offset_m + (nsm + smid)),  *(Tile_Offset_n + (nsm + smid)), *(Signature_Array + (nsm + smid)));
+                block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
 
       }
     }
+
+    // SM view
+    // if(thread_idx == 0){
+    //   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+    //     // Signature for Matrxi SM
+    //     *(Signature_Array + smid) = (uint8_t)smid;
+    //     *(Tile_Offset_m + smid) = (uint8_t)threadblock_tile_offset.m();
+    //     *(Tile_Offset_n + smid) = (uint8_t)threadblock_tile_offset.n();
+      
+    //     // Find Finished (Naive: get next)
+    //     unsigned int next_matrix_smid = smid;
+    //     // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
+    //     // __syncthreads();
+    //     bool need_lock = true;
+    //     while (need_lock) {
+    //       next_matrix_smid = (next_matrix_smid + 1) % nsm;
+    //       // Try to acquire the lock
+    //       if (atomicCAS((Lock_Signature + next_matrix_smid), 0, 1) == 0) {
+    //           // Check signature
+    //           if (*(Signature_Array + next_matrix_smid) != 255) {
+    //             *(Signature_Array + next_matrix_smid) = 255;
+    //             need_lock = false;
+    //           }
+    //           // Release the lock
+    //           atomicExch((Lock_Signature + next_matrix_smid), 0);
+    //           // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
+    //       }
+    //     }
+
+    //     // Find the corresponding checksum SM
+    //     unsigned int next_chk_smid = 0;
+    //     uint8_t chk_offset_m = (params.grid_tiled_shape.m() - 1);
+    //     uint8_t chk_offset_n = *(Tile_Offset_n + next_matrix_smid);
+    //     // uint8_t idx = 0;
+    //     while(true){
+    //       if(*(Tile_Offset_n + nsm + next_chk_smid) == chk_offset_n){
+    //         // next_chk_smid = *(Signature_Array + nsm + idx);
+    //         // printf("current SM: %d, Matrix SM: %d, Chk SM: %d, offset: %d\n", 
+    //         //         smid, next_matrix_smid, next_chk_smid, *(Tile_Offset_n + nsm + idx));
+    //         break;
+    //       }
+    //       next_chk_smid = (next_chk_smid + 1) % nsm;
+    //     }
+
+    //     // Check chksum smid == matrix smid
+    //     if(next_chk_smid == next_matrix_smid){
+    //       printf("Recompute chksum using current SM\n");
+    //     }
+    //     // Check chksum smid == current smid
+    //     else if (smid == next_chk_smid){
+    //       printf("Current SM is the same as chksum SM\n");
+    //     }
+    //     // SM ids are not the same
+    //     else{
+    //       // printf("Check. current SM: %d, next matrix SM: %d, next chk SM: %d\n", smid, next_matrix_smid, next_chk_smid);
+    //       printf("block_idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: %d, next chk SM: %d, chk_offset_n: %d\n", 
+    //               block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, next_chk_smid, chk_offset_n);
+    //     }
+    //   }
+    //   else{
+    //     // Signature for Checksum (encoded) SM
+    //     *(Signature_Array + (nsm + smid)) = (uint8_t)smid;
+    //     *(Tile_Offset_m + (nsm + smid)) = (uint8_t)threadblock_tile_offset.m();
+    //     *(Tile_Offset_n + (nsm + smid)) = (uint8_t)threadblock_tile_offset.n();
+
+    //     printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
+    //             block_idx, *(Tile_Offset_m + (nsm + smid)),  *(Tile_Offset_n + (nsm + smid)), *(Signature_Array + (nsm + smid)));
+
+    //   }
+    // }
     
     //
     // Release the semaphore

@@ -483,10 +483,11 @@ public:
 
     // allocate matrix and checksum signature
 
-    size_t size = 132 * sizeof(uint8_t) * 2;
+    // size_t size = 132 * sizeof(uint8_t) * 2;
+    int block_num = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+    size_t size = block_num * sizeof(uint8_t);
     cudaMalloc((void**)&Signature_Array, size);
     cudaMemset(Signature_Array, 255, size);
-    // printf("%d, %d", *Matrix_Signature, *Matrix_Signature+100);
 
     cudaMalloc((void**)&Tile_Offset_m, size);
     cudaMemset(Tile_Offset_m, 255, size);
@@ -494,14 +495,16 @@ public:
     cudaMalloc((void**)&Tile_Offset_n, size);
     cudaMemset(Tile_Offset_n, 255, size);
 
-    size = 132 * sizeof(int) * 2;
+    // size = 132 * sizeof(int) * 2;
+    size = block_num * sizeof(int);
     cudaMalloc((void**)&Lock_Signature, size);
     cudaMemset(Lock_Signature, 0, size);
+
+    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
     // cudaMemset(ChkSum_Signature_A_Col, 255, size);
-
 
     ThreadblockSwizzle threadblock_swizzle;
 
