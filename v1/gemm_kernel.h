@@ -419,25 +419,28 @@ struct Gemm {
         bool need_lock = true;
         while (need_lock) {
           next_matrix_block_idx = (next_matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-          // Try to acquire the lock
+          // lock for matrix SM selection
           if (atomicCAS((Lock_Signature + next_matrix_block_idx), 0, 1) == 0) {
-            // Check signature
+            // get the corresponding chksum SM blk index
             int n = (next_matrix_block_idx + 1) / params.grid_tiled_shape.m();
             next_chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-            
-            if ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
-                *(Signature_Array + next_matrix_block_idx) != 255 && 
-                *(Signature_Array + next_chk_block_idx) != 255) {
-              
-              next_matrix_smid = *(Signature_Array + next_matrix_block_idx);
-              next_chk_smid = *(Signature_Array + next_chk_block_idx);
+            // lock for the chksum SM
+            if (atomicCAS((Lock_Signature + next_chk_block_idx), 0, 1) == 0) {
+              if ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
+                  *(Signature_Array + next_matrix_block_idx) != 255 && 
+                  *(Signature_Array + next_chk_block_idx) != 255) {
+                
+                next_matrix_smid = *(Signature_Array + next_matrix_block_idx);
+                next_chk_smid = *(Signature_Array + next_chk_block_idx);
 
-              *(Signature_Array + next_matrix_block_idx) = 255;
-              need_lock = false;
+                *(Signature_Array + next_matrix_block_idx) = 255;
+                need_lock = false;
+              }
+              // Release the lock
+              atomicExch((Lock_Signature + next_chk_block_idx), 0);
+              // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
             }
-            // Release the lock
             atomicExch((Lock_Signature + next_matrix_block_idx), 0);
-            // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
           }
         }
 
