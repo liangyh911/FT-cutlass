@@ -526,6 +526,8 @@ public:
     }
 
     cutlass::arch::synclog_setup();
+    // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
+    // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     cutlass::Kernel<GemmKernel><<<grid, block, smem_size, stream>>>(params_, Signature_Array, 
                                                                     Tile_Offset_m, Tile_Offset_n,
                                                                     Lock_Signature);
