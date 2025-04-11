@@ -101,6 +101,8 @@ struct Options {
 
   bool reference_check;
   int iterations;
+
+  int partition;
   
   Options():
     help(false),
@@ -112,7 +114,8 @@ struct Options {
     // iterations(20),
     iterations(1),
     alpha(1),
-    beta() { }
+    beta(),
+    partition(2) { }
 
   bool valid() {
     return true;
@@ -135,6 +138,8 @@ struct Options {
     
     cmd.get_cmd_line_argument("iterations", iterations);
 
+    cmd.get_cmd_line_argument("partition", partition);
+
   }
 
   /// Prints the usage statement.
@@ -149,7 +154,8 @@ struct Options {
       << "  --k=<int>                   GEMM K dimension\n"
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
-      << "  --iterations=<int>          Number of profiling iterations to perform.\n\n";
+      << "  --iterations=<int>          Number of profiling iterations to perform.\n\n"
+      << "  --partition=<int>           Number of partition of the matrix.\n\n";
 
     out << "\n\nExamples:\n\n"
       << "$ ./examples/14_ampere_tf32_tensorop_gemm/14_ampere_tf32_tensorop_gemm --m=1024 --n=512 --k=1024 \\\n"
@@ -270,47 +276,50 @@ int run(Options &options) {
   //     ElementOutput(-4),
   //     0);  // <- Fill matrix C on host with uniform-distribution random data
     
-  int partition = 2;
+  // int m = 2;
+  int k = problem_size.m() - 2 * options.partition;
+  int n = problem_size.k();
   
-  for(int r = 0; r < (problem_size.m()-2); r++){
-    for(int c = 0; c < problem_size.k(); c++){
-      int idx = r * problem_size.k() + c;
+  for(int r = 0; r < k; r++){
+    for(int c = 0; c < n; c++){
+      int idx = r * n + c;
       *(tensor_a.host_data()+idx) = float(1);
     }
   }
+
   float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)*(problem_size.m()-2)*2);
-  for(int c = 0; c < (problem_size.m()-2); c++){
+  chk_vector = (float*)malloc(sizeof(float)* k * 2);
+  for(int c = 0; c < k; c++){
     chk_vector[c] = (float)1;
-    chk_vector[c+problem_size.m()-2] = (float)(c+1);
+    chk_vector[c + k] = (float)(c+1);
   }
   // encode chksum
-  for(int p; p < partition; p++){
+  for(int p = 0; p < options.partition; p++){
     for(int r = 0; r < 2; r++){
-      for(int c = 0; c < problem_size.k(); c++){
+      for(int c = 0; c < n; c++){
           float sum = 0.0;
-          for(int i = 0; i < (problem_size.m()-2); i++){
-              float a = chk_vector[r * (problem_size.m()-2) + i];
-              float b = *(tensor_a.host_data() + (c + i * problem_size.k()));
+          for(int i = 0; i < (k/options.partition); i++){
+              float a = chk_vector[r * k + i];
+              float b = *(tensor_a.host_data() + (c + i * n));
               sum += (a * b);
           }
           // printf("%f, ", sum);
-          int idx = ((problem_size.m()-2)*problem_size.k()) + (r * problem_size.k() + c);
+          int idx = (k * n) + (r * n + c) + p * (2 * n);
           *(tensor_a.host_data() + idx) = sum;
       }
       // printf("\n");
     }
   }
 
-  // printf("[ \n");
-  // for(int r = 0; r < problem_size.m(); r++){
-  //   for(int c = 0; c < problem_size.k(); c++){
-  //     printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
-  //     printf(", ");
-  //   }
-  //   printf("\n");
-  // }
-  // printf("]\n");
+  printf("[ \n");
+  for(int r = 0; r < problem_size.m(); r++){
+    for(int c = 0; c < problem_size.k(); c++){
+      printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
+      printf(", ");
+    }
+    printf("\n");
+  }
+  printf("]\n");
 
   // for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
   //   *(tensor_a.host_data()+idx) = (float)1;
