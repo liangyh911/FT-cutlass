@@ -115,7 +115,7 @@ struct Options {
     iterations(1),
     alpha(1),
     beta(),
-    partition(2) { }
+    partition() { }
 
   bool valid() {
     return true;
@@ -138,7 +138,8 @@ struct Options {
     
     cmd.get_cmd_line_argument("iterations", iterations);
 
-    cmd.get_cmd_line_argument("partition", partition);
+    // cmd.get_cmd_line_argument("partition", partition);
+    partition = problem_size.m() / 128;
 
   }
 

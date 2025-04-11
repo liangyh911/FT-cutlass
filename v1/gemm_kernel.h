@@ -42,7 +42,11 @@
 #include "cutlass/semaphore.h"
 #include "cutlass/arch/arch.h"
 
+#include <cooperative_groups.h>
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
+
+using namespace cooperative_groups;
 
 namespace cutlass {
 namespace gemm {
@@ -201,10 +205,25 @@ struct Gemm {
     return Status::kSuccess;
   }
 
+  __device__ int reduce_sum(thread_group g, int *temp, int val){
+    int lane = g.thread_rank();
+
+    // Each iteration halves the number of active threads
+    // Each thread adds its partial sum[i] to sum[lane+i]
+    for (int i = g.size() / 2; i > 0; i /= 2)
+    {
+        temp[lane] = val;
+        g.sync(); // wait for all threads to store
+        if(lane<i) val += temp[lane + i];
+        g.sync(); // wait for all threads to load
+    }
+    return val; // note: only thread 0 will return full sum
+  }
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                  uint8_t *Signature_Array, uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, int *Lock_Signature) {
+                  uint8_t *Signature_Array, uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, int *Lock_Signature, int *final_sum) {
 
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -404,7 +423,6 @@ struct Gemm {
     
     // printf("B: idx_0: %f, idx_1: %f, idx_2: %f, idx_3: %f \n", 
     //         *(params.ref_B.data()), *(params.ref_B.data()+1), *(params.ref_B.data()+2), *(params.ref_B.data()+3));
-
     
     // 
     // Signature and Find (Matrix SM) (Column Checksum Only)
@@ -437,10 +455,11 @@ struct Gemm {
             int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
             chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
             // lock for the chksum SM
-            if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
+            // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
               if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
                   *(Signature_Array + matrix_block_idx) != 255 && 
-                  *(Signature_Array + chk_block_idx) != 255) {
+                  *(Signature_Array + chk_block_idx) != 255 &&
+                  *(Signature_Array + chk_block_idx) != smid) {
                 
                 next_matrix_smid = *(Signature_Array + matrix_block_idx);
                 next_chk_smid = *(Signature_Array + chk_block_idx);
@@ -452,9 +471,9 @@ struct Gemm {
                 need_lock = false;
               }
               // Release the lock
-              atomicExch((Lock_Signature + chk_block_idx), 0);
+              // atomicExch((Lock_Signature + chk_block_idx), 0);
               // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
-            }
+            // }
             atomicExch((Lock_Signature + matrix_block_idx), 0);
           }
         }
@@ -462,13 +481,13 @@ struct Gemm {
         // Check chksum smid == matrix smid
         if(next_chk_smid == next_matrix_smid){
           tmp_flag = 0;
-          // printf("Recompute chksum using current SM\n");
+          printf("Recompute chksum using current SM\n");
         }
         // Check chksum smid == current smid
-        else if (smid == next_chk_smid){
-          tmp_flag = 1;
-          // printf("Current SM is the same as chksum SM\n");
-        }
+        // else if (smid == next_chk_smid){
+        //   tmp_flag = 1;
+        //   printf("Current SM is the same as chksum SM\n");
+        // }
         // SM ids are not the same
         else{
           tmp_flag = 2;
@@ -494,6 +513,7 @@ struct Gemm {
     __syncthreads();
 
     // begin chkeck
+    __shared__ int temp[128];
     if(flag == 2){
       int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
       int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
@@ -502,28 +522,40 @@ struct Gemm {
       int ChkColBlkOffset = ((next_chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
       int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
       int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-
-
       
-      float sum = 0;
-      uint8_t diff = 0;
+      float recompute_chksum = 0;
+      int diff = 0;
 
       for(int r = 0; r < 128; r++){
         int idx = matrix_start_idx + r * params.problem_size.n();
-        sum += *(params.ref_D.data() + idx);
+        recompute_chksum += *(params.ref_D.data() + idx);
       }
 
       // printf("%f\n", *(params.ref_D.data() + ((384+2)*384)));
 
-      if(sum != *(params.ref_D.data() + chk_start_idx)){
+      if(recompute_chksum != *(params.ref_D.data() + chk_start_idx)){
         diff = 1;
-        printf("Difference detected. Current sum: (%d, %f), next chk: (%d, %f)\n", 
-                  next_matrix_block_idx, sum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+        // printf("Difference detected. Current sum: (%d, %f), next chk: (%d, %f)\n", 
+        //           next_matrix_block_idx, recompute_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
       }
-      else{
-        printf("Not difference detected.\n");
-      }
+      // if(next_matrix_block_idx==0 && thread_idx == 1){
+      //   printf("(%d, %d, %d)\n", smid, thread_idx, next_matrix_block_idx);
+      //   diff = 1;
+      // }
+      // int final_sum = 0;
+      auto g = this_thread_block();
+      int block_sum = reduce_sum(g, temp, diff);
 
+      if(g.thread_rank() == 0){
+        atomicAdd(final_sum, block_sum);
+        if(*final_sum == 0){
+          printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *final_sum);
+        }
+        else{
+          printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *final_sum);
+        }
+      }
+      
       // if(thread_idx == 0){
       //   printf("current SM: %d, selected blk: %d, Offset: (%d, %d)\n", next_matrix_block_idx, RowOffset, ColOffset);
       //   //  printf("current id: (%d, %d), selected blk: (%d, %d)\n", smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);

@@ -500,6 +500,10 @@ public:
     cudaMalloc((void**)&Lock_Signature, size);
     cudaMemset(Lock_Signature, 0, size);
 
+    int *final_sum;
+    cudaMallocManaged(&final_sum, sizeof(int));
+    cudaMemset(final_sum, 0, sizeof(int));
+
     // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
@@ -530,7 +534,7 @@ public:
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     cutlass::Kernel<GemmKernel><<<grid, block, smem_size, stream>>>(params_, Signature_Array, 
                                                                     Tile_Offset_m, Tile_Offset_n,
-                                                                    Lock_Signature);
+                                                                    Lock_Signature, final_sum);
 
     result = cudaGetLastError();
 
