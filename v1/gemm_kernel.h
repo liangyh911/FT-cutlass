@@ -495,11 +495,16 @@ struct Gemm {
 
     // begin chkeck
     if(flag == 2){
-      int ColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
-      int RowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
+      int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
+      int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
+      int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-      int matrix_start_idx = (ColBlkOffset * 128) + (RowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-      int chk_start_idx = (ColBlkOffset * 2) + (RowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+      int ChkColBlkOffset = ((next_chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
+      int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
+      int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+
+
+      
       float sum = 0;
       uint8_t diff = 0;
 
@@ -508,12 +513,15 @@ struct Gemm {
         sum += *(params.ref_D.data() + idx);
       }
 
-      if(sum == *(params.ref_D.data() + chk_start_idx)){
+      // printf("%f\n", *(params.ref_D.data() + ((384+2)*384)));
+
+      if(sum != *(params.ref_D.data() + chk_start_idx)){
         diff = 1;
-        printf("Not Detect Error at current SM: %d\n", smid);
+        printf("Difference detected. Current sum: (%d, %f), next chk: (%d, %f)\n", 
+                  next_matrix_block_idx, sum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
       }
       else{
-        printf("current: %f, next: %f\n", sum, *(params.ref_D.data() + chk_start_idx));
+        printf("Not difference detected.\n");
       }
 
       // if(thread_idx == 0){

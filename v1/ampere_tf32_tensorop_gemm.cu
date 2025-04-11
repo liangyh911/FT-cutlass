@@ -311,15 +311,15 @@ int run(Options &options) {
     }
   }
 
-  printf("[ \n");
-  for(int r = 0; r < problem_size.m(); r++){
-    for(int c = 0; c < problem_size.k(); c++){
-      printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
-      printf(", ");
-    }
-    printf("\n");
-  }
-  printf("]\n");
+  // printf("[ \n");
+  // for(int r = 0; r < problem_size.m(); r++){
+  //   for(int c = 0; c < problem_size.k(); c++){
+  //     printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
+  //     printf(", ");
+  //   }
+  //   printf("\n");
+  // }
+  // printf("]\n");
 
   // for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
   //   *(tensor_a.host_data()+idx) = (float)1;
