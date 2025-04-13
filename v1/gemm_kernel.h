@@ -43,6 +43,7 @@
 #include "cutlass/arch/arch.h"
 
 #include <cooperative_groups.h>
+#include <cmath>
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -297,8 +298,8 @@ struct Gemm {
     unsigned int smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
     // get num of SM
-    unsigned int nsm;
-    asm volatile("mov.u32  %0, %nsmid;" : "=r"(nsm));
+    // unsigned int nsm;
+    // asm volatile("mov.u32  %0, %nsmid;" : "=r"(nsm));
     // printf("Num of SM: %d\n", nsm);
     
     // get thread id in each SM
@@ -309,8 +310,8 @@ struct Gemm {
     // int off_A = tb_offset_A.row() + tb_offset_A.column()*params.problem_size.m();
     // int off_B = tb_offset_B.row() + tb_offset_B.column()*params.problem_size.n();
 
-    int off_A = tb_offset_A.column() + tb_offset_A.row()*params.problem_size.k();
-    int off_B = tb_offset_B.column() + tb_offset_B.row()*params.problem_size.n();
+    // int off_A = tb_offset_A.column() + tb_offset_A.row()*params.problem_size.k();
+    // int off_B = tb_offset_B.column() + tb_offset_B.row()*params.problem_size.n();
     
     // printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
 
@@ -402,21 +403,21 @@ struct Gemm {
     // Execute the epilogue operator to update the destination tensor.
     epilogue(output_op, iterator_D, accumulators, iterator_C); 
 
+    // Simulate compute matrix error
+    // if(block_idx == 0){
+    //   if(thread_idx == 0){
+    //     *(params.ref_D.data()+0) = 0;
+    //   }
+    //   __syncthreads();
+    // }
+
     // int off_C = threadblock_offset.row() + threadblock_offset.column() * params.problem_size.m();
-    int off_C = threadblock_offset.column() + threadblock_offset.row() * params.problem_size.n();
+    // int off_C = threadblock_offset.column() + threadblock_offset.row() * params.problem_size.n();
 
     // printf("SM id: %d, Block idx: %d, A_data: %f, A_row_offset: %d, A_col_offset: %d, B_data: %f, B_row_offset: %d, B_col_offset: %d, D_data: %f, D_row_offset: %d, D_col_offset: %d\n", 
     //           smid, block_idx, *(params.ref_A.data()+off_A), tb_offset_A.row(), tb_offset_A.column(), 
     //                           *(params.ref_B.data()+off_B), tb_offset_B.row(), tb_offset_B.column(),
     //                           *(params.ref_D.data()+off_C), threadblock_offset.row(), threadblock_offset.column());
-
-    // if (smid == 0 && thread_idx==0){
-    //   for(int r=0; r<problem_size.m(); r++){
-    //     for(int c=0; c<problem_size.n(); c++){
-    //       int idx = 
-    //     }
-    //   }
-    // }
 
     // printf("A: idx_0: %f, idx_1: %f, idx_2: %f, idx_3: %f \n", 
     //         *(params.ref_A.data()), *(params.ref_A.data()+1), *(params.ref_A.data()+2), *(params.ref_A.data()+3));
@@ -430,7 +431,6 @@ struct Gemm {
 
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
     __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
-
     int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
     // block view
     if(thread_idx == 0){
@@ -490,10 +490,10 @@ struct Gemm {
         // }
         // SM ids are not the same
         else{
-          tmp_flag = 2;
+          tmp_flag = 1;
           // printf("Check\n");
-          printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
-                  block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+          // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+          //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
         }
       }
       else{
@@ -505,7 +505,6 @@ struct Gemm {
         // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
         //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
       }
-
       next_matrix_block_idx = tmp_matrix_blk;
       next_chk_block_idx = tmp_chk_blk;
       flag = tmp_flag;
@@ -513,8 +512,7 @@ struct Gemm {
     __syncthreads();
 
     // begin chkeck
-    __shared__ int temp[128];
-    if(flag == 2){
+    if(flag == 1){
       int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
       int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
       int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
@@ -523,37 +521,41 @@ struct Gemm {
       int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
       int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
       
-      float recompute_chksum = 0;
+      float recomputed_chksum = 0;
       int diff = 0;
 
       for(int r = 0; r < 128; r++){
         int idx = matrix_start_idx + r * params.problem_size.n();
-        recompute_chksum += *(params.ref_D.data() + idx);
+        recomputed_chksum += *(params.ref_D.data() + idx);
       }
 
-      // printf("%f\n", *(params.ref_D.data() + ((384+2)*384)));
-
-      if(recompute_chksum != *(params.ref_D.data() + chk_start_idx)){
+      // if(recomputed_chksum != (*(params.ref_D.data() + chk_start_idx))){
+      if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
         diff = 1;
-        // printf("Difference detected. Current sum: (%d, %f), next chk: (%d, %f)\n", 
-        //           next_matrix_block_idx, recompute_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+        printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+                  smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
       }
-      // if(next_matrix_block_idx==0 && thread_idx == 1){
+
+      // Simulate current SM check error
+      // if(next_matrix_block_idx==1 && thread_idx == 1){
       //   printf("(%d, %d, %d)\n", smid, thread_idx, next_matrix_block_idx);
       //   diff = 1;
       // }
+
+      // Cooperative Groups Reduce
       // int final_sum = 0;
+      __shared__ int temp[128];
       auto g = this_thread_block();
       int block_sum = reduce_sum(g, temp, diff);
 
       if(g.thread_rank() == 0){
-        atomicAdd(final_sum, block_sum);
-        if(*final_sum == 0){
-          printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *final_sum);
+        atomicAdd((final_sum + block_idx), block_sum);
+        if(*(final_sum + block_idx) != 0){
+          printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
         }
-        else{
-          printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *final_sum);
-        }
+        // else{
+        //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+        // }
       }
       
       // if(thread_idx == 0){
@@ -561,10 +563,6 @@ struct Gemm {
       //   //  printf("current id: (%d, %d), selected blk: (%d, %d)\n", smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
       // }
     }
-    
-    // if(thread_idx == 1){
-    //   printf("SM: %d, next SM: %d, next chk SM: %d \n", smid, next_matrix_smid, next_chk_smid);
-    // }
 
     //
     // Release the semaphore

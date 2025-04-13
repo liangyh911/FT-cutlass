@@ -141,6 +141,9 @@ struct Options {
     // cmd.get_cmd_line_argument("partition", partition);
     partition = problem_size.m() / 128;
 
+    // add checksum size
+    problem_size.m() += partition * 2;
+
   }
 
   /// Prints the usage statement.
@@ -284,7 +287,8 @@ int run(Options &options) {
   for(int r = 0; r < k; r++){
     for(int c = 0; c < n; c++){
       int idx = r * n + c;
-      *(tensor_a.host_data()+idx) = float(1);
+      // *(tensor_a.host_data()+idx) = (float)rand()/RAND_MAX;
+      *(tensor_a.host_data()+idx) = (float)1;
     }
   }
 
@@ -301,7 +305,7 @@ int run(Options &options) {
           float sum = 0.0;
           for(int i = 0; i < (k/options.partition); i++){
               float a = chk_vector[r * k + i];
-              float b = *(tensor_a.host_data() + (c + i * n));
+              float b = *(tensor_a.host_data() + (c + (i+(k/options.partition)*p) * n));
               sum += (a * b);
           }
           // printf("%f, ", sum);

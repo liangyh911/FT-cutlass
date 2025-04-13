@@ -501,8 +501,8 @@ public:
     cudaMemset(Lock_Signature, 0, size);
 
     int *final_sum;
-    cudaMallocManaged(&final_sum, sizeof(int));
-    cudaMemset(final_sum, 0, sizeof(int));
+    cudaMallocManaged(&final_sum, block_num*sizeof(int));
+    cudaMemset(final_sum, 0, block_num*sizeof(int));
 
     // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
