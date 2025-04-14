@@ -446,9 +446,30 @@ struct Gemm {
         uint8_t chk_block_idx;
         // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
         // __syncthreads();
+
+        // 
+        // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+        // if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+        //   matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+        // }
+        // int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+        // chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+        // while(true){
+        //   if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
+        //     next_matrix_smid = *(Signature_Array + matrix_block_idx);
+        //     next_chk_smid = *(Signature_Array + chk_block_idx);
+
+        //     tmp_matrix_blk = matrix_block_idx;
+        //     tmp_chk_blk = chk_block_idx;
+        //     break;
+        //   }
+        // }
+
+        // 
         bool need_lock = true;
         while (need_lock) {
           matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+          //
           // lock for matrix SM selection
           if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
             // get the corresponding chksum SM blk index
@@ -483,11 +504,6 @@ struct Gemm {
           tmp_flag = 0;
           printf("Recompute chksum using current SM\n");
         }
-        // Check chksum smid == current smid
-        // else if (smid == next_chk_smid){
-        //   tmp_flag = 1;
-        //   printf("Current SM is the same as chksum SM\n");
-        // }
         // SM ids are not the same
         else{
           tmp_flag = 1;
@@ -510,7 +526,7 @@ struct Gemm {
       flag = tmp_flag;
     }
     __syncthreads();
-
+    
     // begin chkeck
     if(flag == 1){
       int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
