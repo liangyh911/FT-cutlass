@@ -221,6 +221,192 @@ struct Gemm {
     return val; // note: only thread 0 will return full sum
   }
 
+  __device__ void find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+      uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
+      unsigned int smid, int block_idx){
+    if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+      // Signature for Matrxi SM
+      *(Signature_Array + block_idx) = (uint8_t)smid;
+      
+      // Find Finished (Naive: get next)
+      unsigned int next_matrix_smid, next_chk_smid;
+      uint8_t matrix_block_idx = block_idx;
+      uint8_t chk_block_idx;
+      // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
+      // __syncthreads();
+
+      // 
+      matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+      if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+        matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+      }
+      int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+      chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+      while(true){
+        if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
+          next_matrix_smid = *(Signature_Array + matrix_block_idx);
+          next_chk_smid = *(Signature_Array + chk_block_idx);
+
+          tmp_matrix_blk = matrix_block_idx;
+          tmp_chk_blk = chk_block_idx;
+          break;
+        }
+      }
+
+      // 
+    //   bool need_lock = true;
+    //   while (need_lock) {
+    //     matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+    //     // lock for matrix SM selection
+    //     if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
+    //       // get the corresponding chksum SM blk index
+    //       int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+    //       chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    //       // lock for the chksum SM
+    //       // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
+    //         if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
+    //             *(Signature_Array + matrix_block_idx) != 255 && 
+    //             *(Signature_Array + chk_block_idx) != 255 &&
+    //             *(Signature_Array + chk_block_idx) != smid) {
+              
+    //           next_matrix_smid = *(Signature_Array + matrix_block_idx);
+    //           next_chk_smid = *(Signature_Array + chk_block_idx);
+
+    //           tmp_matrix_blk = matrix_block_idx;
+    //           tmp_chk_blk = chk_block_idx;
+
+    //           *(Signature_Array + matrix_block_idx) = 255;
+    //           need_lock = false;
+    //         }
+    //         // Release the lock
+    //         // atomicExch((Lock_Signature + chk_block_idx), 0);
+    //         // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
+    //       // }
+    //       atomicExch((Lock_Signature + matrix_block_idx), 0);
+    //     }
+    //   }
+
+    //   // Check chksum smid == matrix smid
+    //   if(next_chk_smid == next_matrix_smid){
+    //     tmp_flag = 0;
+    //     printf("Recompute chksum using current SM\n");
+    //   }
+    //   // SM ids are not the same
+    //   else{
+    //     tmp_flag = 1;
+    //     // printf("Check\n");
+    //     // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+    //     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+    //   }
+    // }
+    // else{
+    //   // Signature for Checksum (encoded) SM
+    //   *(Signature_Array + block_idx) = (uint8_t)smid;
+    //   // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
+    //   //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
+    // }
+  }
+
+  __device__ void group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+    uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
+    unsigned int smid, int block_idx){
+  if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+    // Signature for Matrxi SM
+    *(Signature_Array + block_idx) = (uint8_t)smid;
+    
+    // Find Finished (Naive: get next)
+    unsigned int next_matrix_smid, next_chk_smid;
+    uint8_t matrix_block_idx, chk_block_idx;
+    // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
+    // __syncthreads();
+
+    // 
+    int group_partition = 4;
+    int new_blk_idx = block_idx - threadblock_tile_offset.n();
+    int group_idx = new_blk_idx / group_partition;
+    int num_blk_per_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / group_partition;
+    int local_blk_idx = new_blk_idx % group_partition;
+    
+    // int next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
+    // int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
+    // matrix_block_idx = next_global_blk_idx + threadblock_tile_offset.n();
+    // // 
+    // // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+    // if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+    //   matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+    // }
+    // int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+    // chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    // while(true){
+    //   if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
+    //     next_matrix_smid = *(Signature_Array + matrix_block_idx);
+    //     next_chk_smid = *(Signature_Array + chk_block_idx);
+
+    //     tmp_matrix_blk = matrix_block_idx;
+    //     tmp_chk_blk = chk_block_idx;
+    //     break;
+    //   }
+    // }
+
+    // 
+    int next_local_blk_idx = local_blk_idx;
+    bool need_lock = true;
+    while (need_lock) {
+      // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+      next_local_blk_idx = (next_local_blk_idx + 1) % num_blk_per_group;
+      int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
+      matrix_block_idx = next_global_blk_idx + threadblock_tile_offset.n();
+      //
+      // lock for matrix SM selection
+      if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
+        // get the corresponding chksum SM blk index
+        int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+        chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+        // lock for the chksum SM
+        // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
+          if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
+              *(Signature_Array + matrix_block_idx) != 255 && 
+              *(Signature_Array + chk_block_idx) != 255 &&
+              *(Signature_Array + chk_block_idx) != smid) {
+            
+            next_matrix_smid = *(Signature_Array + matrix_block_idx);
+            next_chk_smid = *(Signature_Array + chk_block_idx);
+
+            tmp_matrix_blk = matrix_block_idx;
+            tmp_chk_blk = chk_block_idx;
+
+            *(Signature_Array + matrix_block_idx) = 255;
+            need_lock = false;
+          }
+          // Release the lock
+          // atomicExch((Lock_Signature + chk_block_idx), 0);
+          // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
+        // }
+        atomicExch((Lock_Signature + matrix_block_idx), 0);
+      }
+    }
+
+    // Check chksum smid == matrix smid
+    if(next_chk_smid == next_matrix_smid){
+      tmp_flag = 0;
+      printf("Recompute chksum using current SM\n");
+    }
+    // SM ids are not the same
+    else{
+      tmp_flag = 1;
+      // printf("Check\n");
+      // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+      //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+    }
+  }
+  else{
+    // Signature for Checksum (encoded) SM
+    *(Signature_Array + block_idx) = (uint8_t)smid;
+    // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
+    //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
+  }
+}
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
@@ -428,99 +614,15 @@ struct Gemm {
     // 
     // Signature and Find (Matrix SM) (Column Checksum Only)
     //
-
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
+
     __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
     int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
     // block view
     if(thread_idx == 0){
-      if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
-        // Signature for Matrxi SM
-        *(Signature_Array + block_idx) = (uint8_t)smid;
-        // *(Tile_Offset_m + block_idx) = (uint8_t)threadblock_tile_offset.m();
-        // *(Tile_Offset_n + block_idx) = (uint8_t)threadblock_tile_offset.n();
+      find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+      // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
       
-        // Find Finished (Naive: get next)
-        unsigned int next_matrix_smid, next_chk_smid;
-        uint8_t matrix_block_idx = block_idx;
-        uint8_t chk_block_idx;
-        // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
-        // __syncthreads();
-
-        // 
-        // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-        // if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
-        //   matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-        // }
-        // int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-        // chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-        // while(true){
-        //   if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
-        //     next_matrix_smid = *(Signature_Array + matrix_block_idx);
-        //     next_chk_smid = *(Signature_Array + chk_block_idx);
-
-        //     tmp_matrix_blk = matrix_block_idx;
-        //     tmp_chk_blk = chk_block_idx;
-        //     break;
-        //   }
-        // }
-
-        // 
-        bool need_lock = true;
-        while (need_lock) {
-          matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-          //
-          // lock for matrix SM selection
-          if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
-            // get the corresponding chksum SM blk index
-            int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-            chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-            // lock for the chksum SM
-            // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
-              if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
-                  *(Signature_Array + matrix_block_idx) != 255 && 
-                  *(Signature_Array + chk_block_idx) != 255 &&
-                  *(Signature_Array + chk_block_idx) != smid) {
-                
-                next_matrix_smid = *(Signature_Array + matrix_block_idx);
-                next_chk_smid = *(Signature_Array + chk_block_idx);
-
-                tmp_matrix_blk = matrix_block_idx;
-                tmp_chk_blk = chk_block_idx;
-
-                *(Signature_Array + matrix_block_idx) = 255;
-                need_lock = false;
-              }
-              // Release the lock
-              // atomicExch((Lock_Signature + chk_block_idx), 0);
-              // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
-            // }
-            atomicExch((Lock_Signature + matrix_block_idx), 0);
-          }
-        }
-
-        // Check chksum smid == matrix smid
-        if(next_chk_smid == next_matrix_smid){
-          tmp_flag = 0;
-          printf("Recompute chksum using current SM\n");
-        }
-        // SM ids are not the same
-        else{
-          tmp_flag = 1;
-          // printf("Check\n");
-          // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
-          //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
-        }
-      }
-      else{
-        // Signature for Checksum (encoded) SM
-        *(Signature_Array + block_idx) = (uint8_t)smid;
-        // *(Tile_Offset_m + (nsm + smid)) = (uint8_t)threadblock_tile_offset.m();
-        // *(Tile_Offset_n + (nsm + smid)) = (uint8_t)threadblock_tile_offset.n();
-
-        // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
-        //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
-      }
       next_matrix_block_idx = tmp_matrix_blk;
       next_chk_block_idx = tmp_chk_blk;
       flag = tmp_flag;
@@ -539,27 +641,18 @@ struct Gemm {
       
       float recomputed_chksum = 0;
       int diff = 0;
-
+      
+      #pragma unroll
       for(int r = 0; r < 128; r++){
         int idx = matrix_start_idx + r * params.problem_size.n();
         recomputed_chksum += *(params.ref_D.data() + idx);
       }
-
-      // if(recomputed_chksum != (*(params.ref_D.data() + chk_start_idx))){
       if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
         diff = 1;
         printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
                   smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
       }
-
-      // Simulate current SM check error
-      // if(next_matrix_block_idx==1 && thread_idx == 1){
-      //   printf("(%d, %d, %d)\n", smid, thread_idx, next_matrix_block_idx);
-      //   diff = 1;
-      // }
-
       // Cooperative Groups Reduce
-      // int final_sum = 0;
       __shared__ int temp[128];
       auto g = this_thread_block();
       int block_sum = reduce_sum(g, temp, diff);
@@ -573,12 +666,53 @@ struct Gemm {
         //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
         // }
       }
-      
-      // if(thread_idx == 0){
-      //   printf("current SM: %d, selected blk: %d, Offset: (%d, %d)\n", next_matrix_block_idx, RowOffset, ColOffset);
-      //   //  printf("current id: (%d, %d), selected blk: (%d, %d)\n", smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
-      // }
     }
+
+    // 
+    // check by self
+    // 
+    // if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){ 
+    //   int MatrixColBlkOffset = ((block_idx + 1) / params.grid_tiled_shape.m());
+    //   int MatrixRowBlkOffset = ((block_idx + 1) % params.grid_tiled_shape.m() - 1);
+    //   int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+    //   int n = (block_idx + 1) / params.grid_tiled_shape.m();
+    //   int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    //   int ChkColBlkOffset = ((chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
+    //   int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
+    //   int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+
+    //   float recomputed_chksum = 0;
+    //   int diff = 0;
+
+    //   #pragma unroll
+    //   for(int r = 0; r < 128; r++){
+    //     int idx = matrix_start_idx + r * params.problem_size.n();
+    //     recomputed_chksum += *(params.ref_D.data() + idx);
+    //   }
+
+    //   if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+    //     diff = 1;
+    //     printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+    //               smid, thread_idx, block_idx, recomputed_chksum, chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+    //   }
+
+    //   // Cooperative Groups Reduce
+    //   int final_sum = 0;
+    //   __shared__ int temp[128];
+    //   auto g = this_thread_block();
+    //   int block_sum = reduce_sum(g, temp, diff);
+
+    //   if(g.thread_rank() == 0){
+    //     atomicAdd((final_sum + block_idx), block_sum);
+    //     if(*(final_sum + block_idx) != 0){
+    //       printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+    //     }
+    //     // else{
+    //     //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+    //     // }
+    //   }
+    // }
 
     //
     // Release the semaphore

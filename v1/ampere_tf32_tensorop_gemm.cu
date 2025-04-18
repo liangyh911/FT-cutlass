@@ -332,6 +332,7 @@ int run(Options &options) {
 
   for(int idx = 0; idx < (problem_size.k()*problem_size.n()); idx++){
     *(tensor_b.host_data()+idx) = (float)1;
+    // *(tensor_b.host_data()+idx) = (float)rand()/RAND_MAX;
   }
   
   // int ele = 0;
