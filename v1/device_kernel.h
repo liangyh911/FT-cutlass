@@ -76,7 +76,7 @@ template <typename  T>                                                          
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
-            uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, int *Lock_Signature, int *final_sum) {
+            uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, int *Lock_Signature, int *final_sum, bool if_split_phase) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
@@ -85,7 +85,7 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
 
   Operator op;
 
-  op(params, *shared_storage, Signature_Array, Tile_Offset_m, Tile_Offset_n, Lock_Signature, final_sum);
+  op(params, *shared_storage, Signature_Array, Tile_Offset_m, Tile_Offset_n, Lock_Signature, final_sum, if_split_phase);
   cutlass::arch::synclog_print();
 }
 
