@@ -531,19 +531,44 @@ public:
       }
     }
 
-    bool if_split_phase = false;
+    bool if_split_phase = true;
+
+    bool deBug = true;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float t_compute, t_check;
 
     cutlass::arch::synclog_setup();
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
+    if(deBug){
+      cudaEventRecord(start, stream);
+    }
     cutlass::Kernel<GemmKernel><<<grid, block, smem_size, stream>>>(params_, Signature_Array, 
                                                                     Tile_Offset_m, Tile_Offset_n,
                                                                     Lock_Signature, final_sum, if_split_phase);
-
+    if(deBug){
+      cudaEventRecord(stop, stream);
+      cudaEventSynchronize(stop);
+      cudaEventElapsedTime(&t_compute, start, stop);
+    }
     result = cudaGetLastError();
 
     if(if_split_phase){
+      if(deBug){
+        cudaEventRecord(start, stream);
+      }
       cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, Lock_Signature, final_sum);
+      if(deBug){
+        cudaEventRecord(stop, stream);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&t_check, start, stop);
+      }
+    }
+
+    if(deBug){
+      printf("computer kernel time: %f, check kernel time: %f\n", t_compute, t_check);
     }
 
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;

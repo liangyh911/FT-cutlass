@@ -321,7 +321,7 @@ struct Gemm {
     // __syncthreads();
 
     // 
-    int num_blk_per_group = 4;
+    int num_blk_per_group = 5;
     int new_blk_idx = block_idx - threadblock_tile_offset.n();
     int group_idx = new_blk_idx / num_blk_per_group;
     // int group_partition = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
@@ -621,8 +621,8 @@ struct Gemm {
       int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
       // block view
       if(thread_idx == 0){
-        // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
