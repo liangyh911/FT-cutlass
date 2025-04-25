@@ -47,7 +47,7 @@
 
 #include "cutlass/layout/permute.h"
 
-// #include "gemm_check.cu"
+#include "cutlass/gemm_ring_queue.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -170,9 +170,8 @@ namespace device {
 */
 
 __device__ uint8_t *Signature_Array;
-__device__ uint8_t *Tile_Offset_m;
-__device__ uint8_t *Tile_Offset_n;
 __device__ int *Lock_Signature;
+__device__ RingQueue *d_queues;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
 template <
@@ -491,12 +490,6 @@ public:
     cudaMalloc((void**)&Signature_Array, size);
     cudaMemset(Signature_Array, 255, size);
 
-    cudaMalloc((void**)&Tile_Offset_m, size);
-    cudaMemset(Tile_Offset_m, 255, size);
-
-    cudaMalloc((void**)&Tile_Offset_n, size);
-    cudaMemset(Tile_Offset_n, 255, size);
-
     // size = 132 * sizeof(int) * 2;
     size = block_num * sizeof(int);
     cudaMalloc((void**)&Lock_Signature, size);
@@ -505,6 +498,25 @@ public:
     int *final_sum;
     cudaMallocManaged(&final_sum, block_num*sizeof(int));
     cudaMemset(final_sum, 0, block_num*sizeof(int));
+
+    // ring queues for each SM
+    int num_queues = 132;
+    int capacity = 8;
+    cudaMalloc((void**)&d_queues, sizeof(RingQueue) * num_queues);
+    int** h_buffers = (int**)malloc(sizeof(int*) * num_queues);
+    for (int i = 0; i < num_queues; i++) {
+      cudaMalloc((void**)&h_buffers[i], sizeof(int) * capacity);
+    }
+    int** d_buffers;
+    cudaMalloc(&d_buffers, sizeof(int*) * num_queues);
+    cudaMemcpy(d_buffers, h_buffers, sizeof(int*) * num_queues, cudaMemcpyHostToDevice);
+
+    initQueues<<<num_queues, 1>>>(d_queues, d_buffers, capacity);
+    
+    free(h_buffers);
+    cudaFree(d_buffers);
+
+    // cudaMalloc((void**)&d_queues, sizeof(RingQueue)*num_queues);
 
     // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
@@ -534,7 +546,7 @@ public:
     // printf("smem_size: %d\n", smem_size);
 
     // 0-no split; 1-split; 2-only abft
-    int if_split_phase = 1;
+    int if_split_phase = 0;
 
     bool deBug = true;
     int iterations = 10000;
@@ -552,8 +564,7 @@ public:
     }
     for(int i = 0; i < iterations; i++){
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                                      Tile_Offset_m, Tile_Offset_n,
-                                                                      Lock_Signature, final_sum, if_split_phase);
+                                                                      Lock_Signature, final_sum, if_split_phase, d_queues);
     }
     if(deBug){
       cudaEventRecord(stop, stream);
@@ -563,11 +574,12 @@ public:
     result = cudaGetLastError();
 
     if(if_split_phase == 1){
+      int num_blk_per_group = 2;
       // for(int i = 0; i < 2; i++){
         if(deBug){
           cudaEventRecord(start, stream);
         }
-        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, Lock_Signature, final_sum);
+        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, Lock_Signature, final_sum, num_blk_per_group);
         if(deBug){
           cudaEventRecord(stop, stream);
           cudaEventSynchronize(stop);
@@ -581,6 +593,10 @@ public:
         // cudaDeviceSynchronize();
       // }
     }
+
+    cudaFree(d_queues);
+    cudaFree(Signature_Array);
+    cudaFree(Lock_Signature);
 
     if(deBug){
       printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);

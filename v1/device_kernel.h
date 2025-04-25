@@ -38,6 +38,7 @@
 #include <cutlass/platform/platform.h> // uint64_t
 #include <cooperative_groups.h>
 #include <cmath>
+#include "cutlass/gemm_ring_queue.h"
 
 using namespace cooperative_groups;
 
@@ -72,11 +73,18 @@ template <typename  T>                                                          
 
 ////////////////////////////////////////////////////////////////////////////////
 
+__global__ void initQueues(RingQueue* queues, int** buffers, int cap) {
+  int idx = blockIdx.x;
+  if (idx < gridDim.x) {
+      queues[idx].initial(buffers[idx], cap);
+  }
+}
+
 /// Generic CUTLASS kernel template.
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
-            uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, int *Lock_Signature, int *final_sum, int if_split_phase) {
+            int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue *d_queues) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
@@ -85,7 +93,7 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
 
   Operator op;
 
-  op(params, *shared_storage, Signature_Array, Tile_Offset_m, Tile_Offset_n, Lock_Signature, final_sum, if_split_phase);
+  op(params, *shared_storage, Signature_Array, Lock_Signature, final_sum, if_split_phase, d_queues);
   cutlass::arch::synclog_print();
 }
 
@@ -107,7 +115,8 @@ __device__ int reduce_sum(thread_group g, int *temp, int val){
 // Check between SM
 template <typename Operator>
 CUTLASS_GLOBAL
-void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array, int *Lock_Signature, int *final_sum){
+void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array, 
+                        int *Lock_Signature, int *final_sum, int num_blk_per_group){
   int thread_idx = threadIdx.x;
   int block_idx = blockIdx.x + gridDim.x * blockIdx.y;
 
@@ -123,7 +132,7 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
       uint8_t matrix_block_idx = block_idx;
       uint8_t chk_block_idx;
 
-      int num_blk_per_group = 2;      
+      // int num_blk_per_group = 2;      
       int new_blk_idx = block_idx - blockIdx.y;
       int group_idx = new_blk_idx / num_blk_per_group;
       int local_blk_idx = new_blk_idx % num_blk_per_group;

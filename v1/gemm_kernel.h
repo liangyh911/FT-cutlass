@@ -44,6 +44,7 @@
 
 #include <cooperative_groups.h>
 #include <cmath>
+#include "cutlass/gemm_ring_queue.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -309,7 +310,7 @@ struct Gemm {
 
   __device__ void group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
     uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-    unsigned int smid, int block_idx){
+    unsigned int smid, int block_idx, int num_blk_per_group){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
     // Signature for Matrxi SM
     *(Signature_Array + block_idx) = (uint8_t)smid;
@@ -321,7 +322,7 @@ struct Gemm {
     // __syncthreads();
 
     // 
-    int num_blk_per_group = 2;
+    // int num_blk_per_group = 2;
     int new_blk_idx = block_idx - threadblock_tile_offset.n();
     int group_idx = new_blk_idx / num_blk_per_group;
     // int group_partition = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
@@ -407,11 +408,50 @@ struct Gemm {
   }
 }
 
+__device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+                                uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
+                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queue){
+  if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+    // Wait self-check finish
+    int n = (block_idx + 1) / params.grid_tiled_shape.m();
+    int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    while(true){
+      if(*(Signature_Array + chk_block_idx) != 255){
+        d_queue[smid]->enqueue(block_idx);
+        *(Signature_Array + block_idx) = (uint8_t)smid;
+        break;
+      }
+    }
+    // Select from next SM's queue
+    
+    // 
+
+    // Check chksum smid == matrix smid
+    if(next_chk_smid == next_matrix_smid){
+      tmp_flag = 0;
+      printf("Recompute chksum using current SM\n");
+    }
+    // SM ids are not the same
+    else{
+      tmp_flag = 1;
+      // printf("Check\n");
+      // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+      //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+    }
+  }
+  else{
+    // Signature for Checksum (encoded) SM
+    *(Signature_Array + block_idx) = (uint8_t)smid;
+    // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
+    //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
+  }
+}
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                  uint8_t *Signature_Array, uint8_t *Tile_Offset_m, uint8_t *Tile_Offset_n, 
-                  int *Lock_Signature, int *final_sum, int if_split_phase) {
+                  uint8_t *Signature_Array, int *Lock_Signature, 
+                  int *final_sum, int if_split_phase, RingQueue *d_queues) {
 
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -616,20 +656,32 @@ struct Gemm {
     // Signature and Find (Matrix SM) (Column Checksum Only)
     //
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
+    __syncthreads();
     if(if_split_phase == 0){
-      int &next_matrix_block_idx = (reinterpret_cast<int *>(&shared_storage))[0];
-      int &next_chk_block_idx = (reinterpret_cast<int *>(&shared_storage))[1];
-      int &flag = (reinterpret_cast<int *>(&shared_storage))[2];
+      int *int_smem = reinterpret_cast<int *>(&shared_storage);
+      int &next_matrix_block_idx = int_smem[0];
+      int &next_chk_block_idx = int_smem[1];
+      int &flag = int_smem[2];
 
       int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
       // block view
       if(thread_idx == 0){
+        // RingQueue *queue = &d_queues[smid];
+        // queue->enqueue(smid);
+
+        int group_partition = 2;
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
+        // queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
         flag = tmp_flag;
+
+        // int value; 
+        // if(queue->dequeue(&value)){
+        //   printf("SM %d dequeued value: %d\n", smid, value);
+        // }
       }
       __syncthreads();
 
