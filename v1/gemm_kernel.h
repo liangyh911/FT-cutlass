@@ -325,11 +325,23 @@ struct Gemm {
     // int num_blk_per_group = 2;
     int new_blk_idx = block_idx - threadblock_tile_offset.n();
     int group_idx = new_blk_idx / num_blk_per_group;
-    // int group_partition = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
+
+    int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
+    int remaining_blk = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
+    int previous_blk_size = num_blk_per_group;
+    // if(remaining_blk == 1){
+    //   if(group_idx == (num_group-1)){
+    //     num_blk_per_group++;
+    //   }
+    //   if(group_idx == num_group){
+    //     group_idx--;
+    //     num_blk_per_group++;
+    //   }
+    // }
+
     int local_blk_idx = new_blk_idx % num_blk_per_group;
-    
     int next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
-    int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
+    int next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
     matrix_block_idx = next_global_blk_idx + threadblock_tile_offset.n();
     // 
     // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
@@ -410,26 +422,75 @@ struct Gemm {
 
 __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
                                 uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queue){
+                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queues, uint8_t *SM_JOBS){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
-    // Wait self-check finish
-    int n = (block_idx + 1) / params.grid_tiled_shape.m();
+    // *(SM_JOBS + smid) = 1;
+    // *(Signature_Array + block_idx) = (uint8_t)smid;
+    
+    // Wait self-check finish and enqueue
+    int n = (block_idx) / params.grid_tiled_shape.m();
     int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    unsigned int next_chk_smid, next_matrix_smid;
+    
+    RingQueue *queue = &d_queues[smid];
     while(true){
       if(*(Signature_Array + chk_block_idx) != 255){
-        d_queue[smid]->enqueue(block_idx);
-        *(Signature_Array + block_idx) = (uint8_t)smid;
+        queue->enqueue(block_idx);
         break;
       }
     }
-    // Select from next SM's queue
-    
-    // 
 
+    // Select from next SM's queue
+    int count = 0;
+    next_matrix_smid = (smid + 1) % 132;
+    RingQueue *next_queue;
+    while(true){
+      // printf("%d\n", smid);
+      next_queue = &d_queues[next_matrix_smid];
+      if (next_queue->dequeue(&tmp_matrix_blk)){
+        int tmp = (tmp_matrix_blk) / params.grid_tiled_shape.m();
+        tmp_chk_blk = params.grid_tiled_shape.m() * (tmp + 1) - 1;
+        next_chk_smid = *(Signature_Array + tmp_chk_blk);
+        
+        if(tmp_matrix_blk == tmp_chk_blk){
+          next_matrix_smid = (next_matrix_smid + 1) % 132;
+          continue;
+        }
+        break;
+      }
+      count++;
+      // printf("cur SM:%d, next SM: %d, count: %d\n",smid, next_matrix_smid, count);
+      // printf("%d\n", next_queue->tail);
+    }
+
+    // next_matrix_smid = smid;
+    // while(true){
+    //   next_matrix_smid = (next_matrix_smid + 1) % 132;
+    //   if(*(SM_JOBS + next_matrix_smid) == 1){
+    //     RingQueue *next_queue = &d_queues[next_matrix_smid];
+    //     if(next_queue->dequeue(&tmp_matrix_blk)){
+    //       n = (tmp_matrix_blk) / params.grid_tiled_shape.m();
+    //       tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
+    //       next_chk_smid = *(Signature_Array + tmp_chk_blk);
+    //       if(tmp_matrix_blk == tmp_chk_blk){
+    //         continue;
+    //       }
+    //       break;
+    //     }
+    //   }
+    // }
+
+    // if(!F){
+    //   printf("------Empty queue. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+    //     block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+    // }
+    
     // Check chksum smid == matrix smid
     if(next_chk_smid == next_matrix_smid){
       tmp_flag = 0;
       printf("Recompute chksum using current SM\n");
+      // printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+      //   block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
     }
     // SM ids are not the same
     else{
@@ -441,7 +502,12 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   }
   else{
     // Signature for Checksum (encoded) SM
+    // *(SM_JOBS + smid) = 2;
     *(Signature_Array + block_idx) = (uint8_t)smid;
+
+    RingQueue *queue = &d_queues[smid];
+    queue->enqueue(block_idx);
+
     // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
   }
@@ -451,7 +517,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue *d_queues) {
+                  int *final_sum, int if_split_phase, RingQueue *d_queues, uint8_t *SM_JOBS) {
 
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -658,6 +724,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
     __syncthreads();
     if(if_split_phase == 0){
+      // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
       int *int_smem = reinterpret_cast<int *>(&shared_storage);
       int &next_matrix_block_idx = int_smem[0];
       int &next_chk_block_idx = int_smem[1];
@@ -671,8 +738,8 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
 
         int group_partition = 2;
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
-        // queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues);
+        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
+        queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
@@ -687,81 +754,45 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
 
       // begin chkeck
       if(flag == 1){
-        int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
-        int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
-        int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+        if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+          int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
+          int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
+          int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-        int ChkColBlkOffset = ((next_chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
-        int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
-        int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-        
-        float recomputed_chksum = 0;
-        int diff = 0;
-        
-        #pragma unroll
-        for(int r = 0; r < 128; r++){
-          int idx = matrix_start_idx + r * params.problem_size.n();
-          recomputed_chksum += *(params.ref_D.data() + idx);
-        }
-      
-        if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
-          diff = 1;
-          printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                    smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
-        }
-        // Cooperative Groups Reduce
-        __shared__ int temp[128];
-        auto g = this_thread_block();
-        int block_sum = reduce_sum(g, temp, diff);
-
-        if(g.thread_rank() == 0){
-          atomicAdd((final_sum + block_idx), block_sum);
-          if(*(final_sum + block_idx) != 0){
-            printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+          int ChkColBlkOffset = ((next_chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
+          int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
+          int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+          
+          float recomputed_chksum = 0;
+          int diff = 0;
+          
+          #pragma unroll
+          for(int r = 0; r < 128; r++){
+            int idx = matrix_start_idx + r * params.problem_size.n();
+            recomputed_chksum += *(params.ref_D.data() + idx);
           }
-          // else{
-          //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
-          // }
+        
+          if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+            diff = 1;
+            printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+                      smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+          }
+          // Cooperative Groups Reduce
+          __shared__ int temp[128];
+          auto g = this_thread_block();
+          int block_sum = reduce_sum(g, temp, diff);
+
+          if(g.thread_rank() == 0){
+            atomicAdd((final_sum + block_idx), block_sum);
+            if(*(final_sum + block_idx) != 0){
+              printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+            }
+            // else{
+            //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+            // }
+          }
         }
       }
-
-      // check by self
-      // if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){ 
-      //   int MatrixColBlkOffset = ((block_idx + 1) / params.grid_tiled_shape.m());
-      //   int MatrixRowBlkOffset = ((block_idx + 1) % params.grid_tiled_shape.m() - 1);
-      //   int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-
-      //   int n = (block_idx + 1) / params.grid_tiled_shape.m();
-      //   int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-      //   int ChkColBlkOffset = ((chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
-      //   int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
-      //   int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-
-      //   float recomputed_chksum = 0;
-      //   int diff = 0;
-
-      //   #pragma unroll
-      //   for(int r = 0; r < 128; r++){
-      //     int idx = matrix_start_idx + r * params.problem_size.n();
-      //     recomputed_chksum += *(params.ref_D.data() + idx);
-      //   }
-      //   if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
-      //     diff = 1;
-      //     printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-      //               smid, thread_idx, block_idx, recomputed_chksum, chk_block_idx, *(params.ref_D.data() + chk_start_idx));
-      //   }
-      //   // Cooperative Groups Reduce
-      //   __shared__ int temp[128];
-      //   auto g = this_thread_block();
-      //   int block_sum = reduce_sum(g, temp, diff);
-
-      //   if(g.thread_rank() == 0){
-      //     atomicAdd((final_sum + block_idx), block_sum);
-      //     if(*(final_sum + block_idx) != 0){
-      //       printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
-      //     }
-      //   }
-      // }
     }
     else if(if_split_phase == 1){
       // 

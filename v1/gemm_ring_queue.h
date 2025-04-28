@@ -6,8 +6,8 @@
 namespace cutlass{
     struct RingQueue{
         int* buffer;
-        int head = 0;
-        int tail = 0;
+        volatile int head = 0;
+        volatile int tail = 0;
         int QUEUE_SIZE;
 
         __device__ void initial(int *buf, int size){

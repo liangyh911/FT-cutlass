@@ -172,6 +172,7 @@ namespace device {
 __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
 __device__ RingQueue *d_queues;
+__device__ uint8_t *SM_JOBS;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
 template <
@@ -499,6 +500,10 @@ public:
     cudaMallocManaged(&final_sum, block_num*sizeof(int));
     cudaMemset(final_sum, 0, block_num*sizeof(int));
 
+    // 0 - no job, 1 - matrix, 2 - checksum
+    cudaMalloc((void**)&SM_JOBS, 132*sizeof(uint8_t));
+    cudaMemset(SM_JOBS, 0, size);
+
     // ring queues for each SM
     int num_queues = 132;
     int capacity = 8;
@@ -506,13 +511,12 @@ public:
     int** h_buffers = (int**)malloc(sizeof(int*) * num_queues);
     for (int i = 0; i < num_queues; i++) {
       cudaMalloc((void**)&h_buffers[i], sizeof(int) * capacity);
+      // cudaMemset(&h_buffers[i], 0, sizeof(int) * capacity);
     }
     int** d_buffers;
     cudaMalloc(&d_buffers, sizeof(int*) * num_queues);
     cudaMemcpy(d_buffers, h_buffers, sizeof(int*) * num_queues, cudaMemcpyHostToDevice);
-
     initQueues<<<num_queues, 1>>>(d_queues, d_buffers, capacity);
-    
     free(h_buffers);
     cudaFree(d_buffers);
 
@@ -549,7 +553,7 @@ public:
     int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 10000;
+    int iterations = 1;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -564,7 +568,8 @@ public:
     }
     for(int i = 0; i < iterations; i++){
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                                      Lock_Signature, final_sum, if_split_phase, d_queues);
+                                                                      Lock_Signature, final_sum, if_split_phase, 
+                                                                      d_queues, SM_JOBS);
     }
     if(deBug){
       cudaEventRecord(stop, stream);
