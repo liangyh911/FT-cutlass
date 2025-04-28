@@ -326,23 +326,29 @@ struct Gemm {
     int new_blk_idx = block_idx - threadblock_tile_offset.n();
     int group_idx = new_blk_idx / num_blk_per_group;
 
-    int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
+    int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
     int remaining_blk = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
     int previous_blk_size = num_blk_per_group;
-    // if(remaining_blk == 1){
-    //   if(group_idx == (num_group-1)){
-    //     num_blk_per_group++;
-    //   }
-    //   if(group_idx == num_group){
-    //     group_idx--;
-    //     num_blk_per_group++;
-    //   }
-    // }
+    if(remaining_blk == 1){
+      if(group_idx == (num_group-1)){
+        num_blk_per_group++;
+      }
+      if(group_idx == num_group){
+        group_idx--;
+        num_blk_per_group++;
+      }
+    }
+    else if(remaining_blk > 1){
+      if(group_idx == num_group){
+        num_blk_per_group = remaining_blk;
+      }
+    }
 
-    int local_blk_idx = new_blk_idx % num_blk_per_group;
+    int local_blk_idx = new_blk_idx % previous_blk_size;
     int next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
     int next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
-    matrix_block_idx = next_global_blk_idx + threadblock_tile_offset.n();
+    int new_offset_n = next_global_blk_idx / (params.grid_tiled_shape.m() - 1);
+    matrix_block_idx = next_global_blk_idx + new_offset_n;
     // 
     // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
     if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
@@ -403,6 +409,9 @@ struct Gemm {
     if(next_chk_smid == next_matrix_smid){
       tmp_flag = 0;
       printf("Recompute chksum using current SM\n");
+      // printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+      //   block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+
     }
     // SM ids are not the same
     else{
@@ -738,8 +747,8 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
 
         int group_partition = 2;
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
-        queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
+        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
+        // queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;

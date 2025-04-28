@@ -135,11 +135,30 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
       // int num_blk_per_group = 2;      
       int new_blk_idx = block_idx - blockIdx.y;
       int group_idx = new_blk_idx / num_blk_per_group;
-      int local_blk_idx = new_blk_idx % num_blk_per_group;
 
+      int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
+      int remaining_blk = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
+      int previous_blk_size = num_blk_per_group;
+      if(remaining_blk == 1){
+        if(group_idx == (num_group-1)){
+          num_blk_per_group++;
+        }
+        if(group_idx == num_group){
+          group_idx--;
+          num_blk_per_group++;
+        }
+      }
+      else if(remaining_blk > 1){
+        if(group_idx == num_group){
+          num_blk_per_group = remaining_blk;
+        }
+      }
+
+      int local_blk_idx = new_blk_idx % previous_blk_size;
       int next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
-      int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
-      matrix_block_idx = next_global_blk_idx + blockIdx.y;
+      int next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
+      int new_offset_n = next_global_blk_idx / (params.grid_tiled_shape.m() - 1);
+      matrix_block_idx = next_global_blk_idx + new_offset_n;
 
       if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
         matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
