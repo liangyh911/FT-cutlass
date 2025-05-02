@@ -104,6 +104,7 @@ struct Options {
   int iterations;
 
   int partition;
+  int abft;
   
   Options():
     help(false),
@@ -116,7 +117,8 @@ struct Options {
     iterations(1),
     alpha(1),
     beta(),
-    partition() { }
+    partition(),
+    abft(1) { }
 
   bool valid() {
     return true;
@@ -138,13 +140,15 @@ struct Options {
     cmd.get_cmd_line_argument("beta", beta);
     
     cmd.get_cmd_line_argument("iterations", iterations);
+    cmd.get_cmd_line_argument("ABFT", abft);
 
     // cmd.get_cmd_line_argument("partition", partition);
     partition = problem_size.m() / 128;
 
     // add checksum size
-    problem_size.m() += partition * 2;
-
+    if(abft){
+      problem_size.m() += partition * 2;
+    }
   }
 
   /// Prints the usage statement.
@@ -160,7 +164,8 @@ struct Options {
       << "  --alpha=<f32>               Epilogue scalar alpha\n"
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n"
-      << "  --partition=<int>           Number of partition of the matrix.\n\n";
+      << "  --partition=<int>           Number of partition of the matrix.\n\n"
+      << "  --ABFT=<int>                Do ABFT.\n\n";
 
     out << "\n\nExamples:\n\n"
       << "$ ./examples/14_ampere_tf32_tensorop_gemm/14_ampere_tf32_tensorop_gemm --m=1024 --n=512 --k=1024 \\\n"
@@ -280,54 +285,56 @@ int run(Options &options) {
   //     ElementOutput(4),
   //     ElementOutput(-4),
   //     0);  // <- Fill matrix C on host with uniform-distribution random data
-    
-  int m = 2;
-  int k = problem_size.m() - 2 * options.partition;
-  int n = problem_size.k();
-  for(int r = 0; r < k; r++){
-    for(int c = 0; c < n; c++){
-      int idx = r * n + c;
-      // *(tensor_a.host_data()+idx) = (float)rand()/RAND_MAX;
-      *(tensor_a.host_data()+idx) = (float)1;
-    }
-  }
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)* k * 2);
-  for(int c = 0; c < k; c++){
-    chk_vector[c] = (float)1;
-    chk_vector[c + k] = (float)(c+1);
-  }
-  // encode chksum
-  for(int p = 0; p < options.partition; p++){
-    for(int r = 0; r < 2; r++){
+  
+  if(options.abft){
+    int m = 2;
+    int k = problem_size.m() - 2 * options.partition;
+    int n = problem_size.k();
+    for(int r = 0; r < k; r++){
       for(int c = 0; c < n; c++){
-          float sum = 0.0;
-          for(int i = 0; i < (k/options.partition); i++){
-              float a = chk_vector[r * k + i];
-              float b = *(tensor_a.host_data() + (c + (i+(k/options.partition)*p) * n));
-              sum += (a * b);
-          }
-          // printf("%f, ", sum);
-          int idx = (k * n) + (r * n + c) + p * (2 * n);
-          *(tensor_a.host_data() + idx) = sum;
+        int idx = r * n + c;
+        // *(tensor_a.host_data()+idx) = (float)rand()/RAND_MAX;
+        *(tensor_a.host_data()+idx) = (float)1;
       }
-      // printf("\n");
     }
+    float *chk_vector;
+    chk_vector = (float*)malloc(sizeof(float)* k * 2);
+    for(int c = 0; c < k; c++){
+      chk_vector[c] = (float)1;
+      chk_vector[c + k] = (float)(c+1);
+    }
+    // encode chksum
+    for(int p = 0; p < options.partition; p++){
+      for(int r = 0; r < 2; r++){
+        for(int c = 0; c < n; c++){
+            float sum = 0.0;
+            for(int i = 0; i < (k/options.partition); i++){
+                float a = chk_vector[r * k + i];
+                float b = *(tensor_a.host_data() + (c + (i+(k/options.partition)*p) * n));
+                sum += (a * b);
+            }
+            // printf("%f, ", sum);
+            int idx = (k * n) + (r * n + c) + p * (2 * n);
+            *(tensor_a.host_data() + idx) = sum;
+        }
+        // printf("\n");
+      }
+    }
+    // printf("[ \n");
+    // for(int r = 0; r < problem_size.m(); r++){
+    //   for(int c = 0; c < problem_size.k(); c++){
+    //     printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
+    //     printf(", ");
+    //   }
+    //   printf("\n");
+    // }
+    // printf("]\n");
   }
-
-  // printf("[ \n");
-  // for(int r = 0; r < problem_size.m(); r++){
-  //   for(int c = 0; c < problem_size.k(); c++){
-  //     printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
-  //     printf(", ");
-  //   }
-  //   printf("\n");
-  // }
-  // printf("]\n");
-
-  // for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
-  //   *(tensor_a.host_data()+idx) = (float)idx;
-  // } 
+  else{
+    for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
+      *(tensor_a.host_data()+idx) = (float)1;
+    } 
+  }
 
   for(int idx = 0; idx < (problem_size.k()*problem_size.n()); idx++){
     *(tensor_b.host_data()+idx) = (float)1;
@@ -425,23 +432,50 @@ int run(Options &options) {
   // Run profiling loop
   //
 
+  int elapsed_matrix, elapsed_chksum = 0;
+  int cnt_matrix, cnt_chksum = 0;
+
   int *all_start, *compute, *finding, *checking, *h_SM_JOBS;
 
-  all_start = (int*)malloc(sizeof(int)*132);
-  compute = (int*)malloc(sizeof(int)*132);
-  finding = (int*)malloc(sizeof(int)*132);
-  checking = (int*)malloc(sizeof(int)*132);
-  h_SM_JOBS = (int*)malloc(sizeof(int)*132);
+  size_t size = sizeof(int)*132;
+
+  all_start = (int*)malloc(size);
+  compute = (int*)malloc(size);
+  finding = (int*)malloc(size);
+  checking = (int*)malloc(size);
+  h_SM_JOBS = (int*)malloc(size);
 
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
-    status = gemm_op(all_start, compute, finding, checking);
+    status = gemm_op(all_start, compute, finding, checking, h_SM_JOBS);
     CUTLASS_CHECK(status);
+    
+    for(int i=0; i<132; i++){
+      // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
+      if(h_SM_JOBS[i]==1){
+        elapsed_matrix += (checking[i]-all_start[i]);
+        cnt_matrix++;
+      }
+      else if(h_SM_JOBS[i]==2){
+        elapsed_chksum += (checking[i]-all_start[i]);
+        cnt_chksum++;
+      }
+      else{
+        elapsed_matrix += (checking[i]-all_start[i]);
+        cnt_matrix++;
+      }
+    }
+    memset(all_start, 0, size);
+    memset(compute, 0, size);
+    memset(finding, 0, size);
+    memset(checking, 0, size);
+    memset(h_SM_JOBS, 0, size);
   }
 
-  // for(int i=0; i<132; i++){
-  //   printf("%d: %d\n", i, *(all_start+i));
-  // }
+  float avg_elapsed_matrix = elapsed_matrix / cnt_matrix;
+  float avg_elapsed_chksum = cnt_chksum!=0 ? (elapsed_chksum / cnt_chksum) : 0;
+  float avg_overall = (elapsed_matrix+avg_elapsed_chksum)/(cnt_matrix+cnt_chksum);
+  printf("matrix: %f, chksum: %f, overall: %f\n", avg_elapsed_matrix, avg_elapsed_chksum, avg_overall);
 
   free(all_start);
   free(compute);

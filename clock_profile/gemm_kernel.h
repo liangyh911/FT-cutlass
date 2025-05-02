@@ -431,9 +431,9 @@ struct Gemm {
 
 __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
                                 uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queues, uint8_t *SM_JOBS){
+                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queues, int *SM_JOBS){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
-    // *(SM_JOBS + smid) = 1;
+    *(SM_JOBS + smid) = 1;
     // *(Signature_Array + block_idx) = (uint8_t)smid;
     
     // Wait self-check finish and enqueue
@@ -511,7 +511,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   }
   else{
     // Signature for Checksum (encoded) SM
-    // *(SM_JOBS + smid) = 2;
+    *(SM_JOBS + smid) = 2;
     *(Signature_Array + block_idx) = (uint8_t)smid;
 
     RingQueue *queue = &d_queues[smid];
@@ -526,7 +526,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue *d_queues, uint8_t *SM_JOBS,
+                  int *final_sum, int if_split_phase, RingQueue *d_queues, int *SM_JOBS,
                   int *all_start, int *compute, int *finding, int *checking) {
 
     // Compute threadblock location
@@ -619,7 +619,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     // printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
 
     __syncthreads();
-    *(all_start+smid) = clock();
+    if(thread_idx == 0){
+      *(all_start+smid) = clock();
+    }
 
     if (!kSplitKSerial || gemm_k_iterations > 0) {
       // Compute threadblock-scoped matrix multiply-add
@@ -734,7 +736,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     //
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
     __syncthreads();
-    *(compute+smid) = clock();
+    if(thread_idx == 0){
+      *(compute+smid) = clock();
+    }
     
     if(if_split_phase == 0){
       // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
@@ -764,7 +768,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // }
       }
       __syncthreads();
-      *(finding+smid) = clock();
+      if(thread_idx == 0){
+        *(finding+smid) = clock();
+      }
 
       // begin chkeck
       if(flag == 1){
@@ -817,7 +823,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
       
     }
     __syncthreads();
-    *(checking+smid) = clock();
+    if(thread_idx == 0){
+      *(checking+smid) = clock();
+    }
     
 
     //

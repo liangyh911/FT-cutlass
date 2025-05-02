@@ -172,9 +172,8 @@ namespace device {
 __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
 __device__ RingQueue *d_queues;
-__device__ uint8_t *SM_JOBS;
 
-__device__ int *d_all_start, *d_compute, *d_finding, *d_checking;
+__device__ int *d_all_start, *d_compute, *d_finding, *d_checking, *d_SM_JOBS;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
 template <
@@ -483,7 +482,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int *all_start, int *compute, int *finding, int *checking, cudaStream_t stream = nullptr) {
+  Status run(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, cudaStream_t stream = nullptr) {
 
     // allocate matrix and checksum signature
 
@@ -503,8 +502,8 @@ public:
     cudaMemset(final_sum, 0, block_num*sizeof(int));
 
     // 0 - no job, 1 - matrix, 2 - checksum
-    cudaMalloc((void**)&SM_JOBS, 132*sizeof(uint8_t));
-    cudaMemset(SM_JOBS, 0, size);
+    cudaMalloc((void**)&d_SM_JOBS, 132*sizeof(int));
+    cudaMemset(d_SM_JOBS, 0, 132*sizeof(int));
 
     // ring queues for each SM
     int num_queues = 132;
@@ -584,7 +583,7 @@ public:
     for(int i = 0; i < iterations; i++){
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
                                                                       Lock_Signature, final_sum, if_split_phase, 
-                                                                      d_queues, SM_JOBS,
+                                                                      d_queues, d_SM_JOBS,
                                                                       d_all_start, d_compute, d_finding, d_checking);
     }
     if(deBug){
@@ -615,30 +614,33 @@ public:
       // }
     }
 
-    cudaMemcpy(all_start, d_all_start, 132*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(compute, d_compute, 132*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(finding, d_finding, 132*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(checking, d_checking, 132*sizeof(int), cudaMemcpyDeviceToHost);
+    size = 132 * sizeof(int);
+    cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(SM_JOBS, d_SM_JOBS, size, cudaMemcpyDeviceToHost);
 
     cudaFree(d_all_start);
     cudaFree(d_checking);
     cudaFree(d_compute);
     cudaFree(d_finding);
+    cudaFree(d_SM_JOBS);
 
     cudaFree(d_queues);
     cudaFree(Signature_Array);
     cudaFree(Lock_Signature);
 
-    if(deBug){
-      printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);
-    }
+    // if(deBug){
+    //   printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);
+    // }
 
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int *all_start, int *compute, int *finding, int *checking, cudaStream_t stream = nullptr) {
-    return run(all_start, compute, finding, checking, stream);
+  Status operator()(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, cudaStream_t stream = nullptr) {
+    return run(all_start, compute, finding, checking, SM_JOBS, stream);
   }
 
   /// Runs the kernel using initialized state.
