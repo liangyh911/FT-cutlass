@@ -310,9 +310,10 @@ struct Gemm {
 
   __device__ void group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
     uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-    unsigned int smid, int block_idx, int num_blk_per_group){
+    unsigned int smid, int block_idx, int num_blk_per_group, int *SM_JOBS){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
     // Signature for Matrxi SM
+    *(SM_JOBS + smid) = 1;
     *(Signature_Array + block_idx) = (uint8_t)smid;
     
     // Find Finished (Naive: get next)
@@ -423,6 +424,7 @@ struct Gemm {
   }
   else{
     // Signature for Checksum (encoded) SM
+    *(SM_JOBS + smid) = 2;
     *(Signature_Array + block_idx) = (uint8_t)smid;
     // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
@@ -739,7 +741,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     if(thread_idx == 0){
       *(compute+smid) = clock();
     }
-    
+    __syncthreads();
     if(if_split_phase == 0){
       // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
       int *int_smem = reinterpret_cast<int *>(&shared_storage);
@@ -753,10 +755,11 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // RingQueue *queue = &d_queues[smid];
         // queue->enqueue(smid);
 
-        int group_partition = 2;
+        // int group_partition = 2;
+        int group_partition =  (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n();
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
-        queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
+        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
+        // queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
@@ -786,16 +789,18 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
           float recomputed_chksum = 0;
           int diff = 0;
           
-          #pragma unroll
+          // if use group, not unroll
+          // #pragma unroll
           for(int r = 0; r < 128; r++){
             int idx = matrix_start_idx + r * params.problem_size.n();
             recomputed_chksum += *(params.ref_D.data() + idx);
           }
+          // __syncthreads();
         
           if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
             diff = 1;
-            printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                      smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+            // printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+            //           smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
           }
           // Cooperative Groups Reduce
           // __shared__ int temp[128];
@@ -806,7 +811,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
           if(g.thread_rank() == 0){
             atomicAdd((final_sum + block_idx), block_sum);
             if(*(final_sum + block_idx) != 0){
-              printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+              // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
             }
             // else{
             //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
@@ -814,18 +819,22 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
           }
         }
       }
+      __syncthreads();
+      if(thread_idx == 0){
+        *(checking+smid) = clock();
+      }
     }
     else if(if_split_phase == 1){
       // 
       *(Signature_Array + block_idx) = (uint8_t)smid;
     }
     else{
-      
+      __syncthreads();
+      if(thread_idx == 0){
+        *(checking+smid) = clock();
+      }
     }
-    __syncthreads();
-    if(thread_idx == 0){
-      *(checking+smid) = clock();
-    }
+    
     
 
     //

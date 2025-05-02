@@ -173,7 +173,7 @@ __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
 __device__ RingQueue *d_queues;
 
-__device__ int *d_all_start, *d_compute, *d_finding, *d_checking, *d_SM_JOBS;
+__device__ int *d_all_start, *d_compute, *d_finding, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
 template <
@@ -482,7 +482,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, cudaStream_t stream = nullptr) {
+  Status run(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
 
     // allocate matrix and checksum signature
 
@@ -523,17 +523,25 @@ public:
 
     // cudaMalloc((void**)&d_queues, sizeof(RingQueue)*num_queues);
 
-    cudaMallocManaged(&d_all_start, num_queues*sizeof(int));
-    cudaMemset(d_all_start, 0, num_queues*sizeof(int));
+    size = num_queues*sizeof(int);
 
-    cudaMallocManaged(&d_compute, num_queues*sizeof(int));
-    cudaMemset(d_compute, 0, num_queues*sizeof(int));
+    cudaMalloc((void**)&d_all_start, size);
+    cudaMemset(d_all_start, 0, size);
 
-    cudaMallocManaged(&d_finding, num_queues*sizeof(int));
-    cudaMemset(d_finding, 0, num_queues*sizeof(int));
+    cudaMalloc((void**)&d_compute, size);
+    cudaMemset(d_compute, 0, size);
 
-    cudaMallocManaged(&d_checking, num_queues*sizeof(int));
-    cudaMemset(d_checking, 0, num_queues*sizeof(int));
+    cudaMalloc((void**)&d_finding, size);
+    cudaMemset(d_finding, 0, size);
+
+    cudaMalloc((void**)&d_checking, size);
+    cudaMemset(d_checking, 0, size);
+
+    cudaMalloc((void**)&d_checking, size);
+    cudaMemset(d_checking, 0, size);
+
+    cudaMalloc((void**)&d_all_start_for_split, size);
+    cudaMemset(d_all_start_for_split, 0, size);
 
     // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
@@ -563,7 +571,7 @@ public:
     // printf("smem_size: %d\n", smem_size);
 
     // 0-no split; 1-split; 2-only abft
-    int if_split_phase = 0;
+    // int if_split_phase = 0;
 
     bool deBug = true;
     int iterations = 1;
@@ -594,12 +602,15 @@ public:
     result = cudaGetLastError();
 
     if(if_split_phase == 1){
-      int num_blk_per_group = 2;
+      // int num_blk_per_group = 2;
+      int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
       // for(int i = 0; i < 2; i++){
         if(deBug){
           cudaEventRecord(start, stream);
         }
-        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, Lock_Signature, final_sum, num_blk_per_group);
+        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, 
+                                                                          Lock_Signature, final_sum, num_blk_per_group,
+                                                                          d_all_start_for_split, d_finding, d_checking, d_SM_JOBS);
         if(deBug){
           cudaEventRecord(stop, stream);
           cudaEventSynchronize(stop);
@@ -620,12 +631,14 @@ public:
     cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(SM_JOBS, d_SM_JOBS, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
 
     cudaFree(d_all_start);
     cudaFree(d_checking);
     cudaFree(d_compute);
     cudaFree(d_finding);
     cudaFree(d_SM_JOBS);
+    cudaFree(d_all_start_for_split);
 
     cudaFree(d_queues);
     cudaFree(Signature_Array);
@@ -639,10 +652,10 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, cudaStream_t stream = nullptr) {
-    return run(all_start, compute, finding, checking, SM_JOBS, stream);
+  Status operator()(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
+    return run(all_start, compute, finding, checking, SM_JOBS, all_start_for_split, if_split_phase, stream);
   }
-
+ 
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args, 

@@ -104,7 +104,7 @@ struct Options {
   int iterations;
 
   int partition;
-  int abft;
+  int if_split_phase;
   
   Options():
     help(false),
@@ -118,7 +118,7 @@ struct Options {
     alpha(1),
     beta(),
     partition(),
-    abft(1) { }
+    if_split_phase(0) { }
 
   bool valid() {
     return true;
@@ -140,13 +140,13 @@ struct Options {
     cmd.get_cmd_line_argument("beta", beta);
     
     cmd.get_cmd_line_argument("iterations", iterations);
-    cmd.get_cmd_line_argument("ABFT", abft);
+    cmd.get_cmd_line_argument("split", if_split_phase);
 
     // cmd.get_cmd_line_argument("partition", partition);
     partition = problem_size.m() / 128;
 
     // add checksum size
-    if(abft){
+    if(if_split_phase == 1 || if_split_phase == 0){
       problem_size.m() += partition * 2;
     }
   }
@@ -165,7 +165,7 @@ struct Options {
       << "  --beta=<f32>                Epilogue scalar beta\n\n"
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n"
       << "  --partition=<int>           Number of partition of the matrix.\n\n"
-      << "  --ABFT=<int>                Do ABFT.\n\n";
+      << "  --split=<int>               0-no split, 1-split, 2-baseline.\n\n";
 
     out << "\n\nExamples:\n\n"
       << "$ ./examples/14_ampere_tf32_tensorop_gemm/14_ampere_tf32_tensorop_gemm --m=1024 --n=512 --k=1024 \\\n"
@@ -286,7 +286,7 @@ int run(Options &options) {
   //     ElementOutput(-4),
   //     0);  // <- Fill matrix C on host with uniform-distribution random data
   
-  if(options.abft){
+  if(options.if_split_phase==1 || options.if_split_phase==0){
     int m = 2;
     int k = problem_size.m() - 2 * options.partition;
     int n = problem_size.k();
@@ -435,7 +435,7 @@ int run(Options &options) {
   int elapsed_matrix, elapsed_chksum = 0;
   int cnt_matrix, cnt_chksum = 0;
 
-  int *all_start, *compute, *finding, *checking, *h_SM_JOBS;
+  int *all_start, *compute, *finding, *checking, *h_SM_JOBS, *all_start_for_split;
 
   size_t size = sizeof(int)*132;
 
@@ -445,20 +445,34 @@ int run(Options &options) {
   checking = (int*)malloc(size);
   h_SM_JOBS = (int*)malloc(size);
 
+  all_start_for_split = (int*)malloc(size);
+
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
-    status = gemm_op(all_start, compute, finding, checking, h_SM_JOBS);
+    status = gemm_op(all_start, compute, finding, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
     CUTLASS_CHECK(status);
     
     for(int i=0; i<132; i++){
       // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
-      if(h_SM_JOBS[i]==1){
-        elapsed_matrix += (checking[i]-all_start[i]);
-        cnt_matrix++;
+      if(options.if_split_phase == 0){
+        if(h_SM_JOBS[i]==1){
+          elapsed_matrix += (checking[i]-all_start[i]);
+          cnt_matrix++;
+        }
+        else if(h_SM_JOBS[i]==2){
+          elapsed_chksum += (checking[i]-all_start[i]);
+          cnt_chksum++;
+        }
       }
-      else if(h_SM_JOBS[i]==2){
-        elapsed_chksum += (checking[i]-all_start[i]);
-        cnt_chksum++;
+      else if(options.if_split_phase == 1){
+        if(h_SM_JOBS[i]==1){
+          elapsed_matrix += (checking[i]-all_start[i]);
+          cnt_matrix++;
+        }
+        else if(h_SM_JOBS[i]==2){
+          elapsed_chksum += (checking[i]-all_start[i]);
+          cnt_chksum++;
+        }
       }
       else{
         elapsed_matrix += (checking[i]-all_start[i]);
@@ -470,6 +484,7 @@ int run(Options &options) {
     memset(finding, 0, size);
     memset(checking, 0, size);
     memset(h_SM_JOBS, 0, size);
+    memset(all_start_for_split, 0, size);
   }
 
   float avg_elapsed_matrix = elapsed_matrix / cnt_matrix;
@@ -482,6 +497,7 @@ int run(Options &options) {
   free(finding);
   free(checking);
   free(h_SM_JOBS);
+  free(all_start_for_split);
 
   //
   // Stop profiling loop

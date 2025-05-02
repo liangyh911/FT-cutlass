@@ -118,7 +118,8 @@ __device__ int reduce_sum(thread_group g, int *temp, int val){
 template <typename Operator>
 CUTLASS_GLOBAL
 void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array, 
-                        int *Lock_Signature, int *final_sum, int num_blk_per_group){
+                        int *Lock_Signature, int *final_sum, int num_blk_per_group,
+                        int *d_all_start_for_split, int *d_finding, int *d_checking, int *d_SM_JOBS){
   int thread_idx = threadIdx.x;
   int block_idx = blockIdx.x + gridDim.x * blockIdx.y;
 
@@ -126,10 +127,14 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
   int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
   unsigned int smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
-
+  
+  __syncthreads();
   if (thread_idx == 0){
+    *(d_all_start_for_split+smid) = clock();
     // printf("block idx: %d, block idx x: %d \n", block_idx, blockIdx.x);
     if (blockIdx.x != (params.grid_tiled_shape.m() - 1)){
+      *(d_SM_JOBS+smid) = 1;
+
       unsigned int next_matrix_smid, next_chk_smid;
       uint8_t matrix_block_idx = block_idx;
       uint8_t chk_block_idx;
@@ -228,11 +233,17 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
         //         block_idx, blockIdx.x, blockIdx.y, smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
       }
     }
+    else{
+      *(d_SM_JOBS+smid) = 2;
+    }
     next_matrix_block_idx = tmp_matrix_blk;
     next_chk_block_idx = tmp_chk_blk;
     flag = tmp_flag;
   }
   __syncthreads();
+  if(thread_idx == 0){
+    *(d_finding + smid) = clock();
+  }
 
   // begin chkeck
   if(flag == 1){
@@ -271,6 +282,10 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
       //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
       // }
     }
+  }
+  __syncthreads();
+  if(thread_idx == 0){
+    *(d_checking + smid) = clock();
   }
 }
 
