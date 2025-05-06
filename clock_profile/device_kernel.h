@@ -85,7 +85,7 @@ template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
             int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue *d_queues, int *SM_JOBS,
-            int *all_start, int *compute, int *finding, int *checking) {
+            int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
@@ -95,7 +95,7 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
   Operator op;
 
   op(params, *shared_storage, Signature_Array, Lock_Signature, final_sum, if_split_phase, d_queues, SM_JOBS,
-    all_start, compute, finding, checking);
+            all_start, compute, finding, recompute, compare, checking);
   cutlass::arch::synclog_print();
 }
 
@@ -119,7 +119,7 @@ template <typename Operator>
 CUTLASS_GLOBAL
 void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array, 
                         int *Lock_Signature, int *final_sum, int num_blk_per_group,
-                        int *d_all_start_for_split, int *d_finding, int *d_checking, int *d_SM_JOBS){
+                        int *d_all_start_for_split, int *d_finding, int *d_recompute, int *d_compare, int *d_checking, int *d_SM_JOBS){
   int thread_idx = threadIdx.x;
   int block_idx = blockIdx.x + gridDim.x * blockIdx.y;
 
@@ -129,8 +129,8 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
   asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
   
   __syncthreads();
-  if (thread_idx == 0){
-    *(d_all_start_for_split+smid) = clock();
+  if (thread_idx == 0 && block_idx == 0){
+    *(d_all_start_for_split) = clock();
     // printf("block idx: %d, block idx x: %d \n", block_idx, blockIdx.x);
     if (blockIdx.x != (params.grid_tiled_shape.m() - 1)){
       *(d_SM_JOBS+smid) = 1;
@@ -241,8 +241,8 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
     flag = tmp_flag;
   }
   __syncthreads();
-  if(thread_idx == 0){
-    *(d_finding + smid) = clock();
+  if(thread_idx == 0 && block_idx == 0){
+    *(d_finding) = clock();
   }
 
   // begin chkeck
@@ -263,11 +263,21 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
       int idx = matrix_start_idx + r * params.problem_size.n();
       recomputed_chksum += *(params.ref_D.data() + idx);
     }
+    __syncthreads();
+    if(thread_idx == 0 && block_idx == 0){
+      *(d_recompute) = clock();
+    }
+    
     if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
       diff = 1;
       printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
                 smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
     }
+    __syncthreads();
+    if(thread_idx == 0 && block_idx == 0){
+      *(d_compare) = clock();
+    }
+
     // Cooperative Groups Reduce
     __shared__ int temp[128];
     auto g = this_thread_block();
@@ -284,8 +294,8 @@ void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array
     }
   }
   __syncthreads();
-  if(thread_idx == 0){
-    *(d_checking + smid) = clock();
+  if(thread_idx == 0 && block_idx == 0){
+    *(d_checking) = clock();
   }
 }
 

@@ -173,7 +173,7 @@ __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
 __device__ RingQueue *d_queues;
 
-__device__ int *d_all_start, *d_compute, *d_finding, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
+__device__ int *d_all_start, *d_compute, *d_finding, * d_recompute, *d_compare, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
 template <
@@ -482,7 +482,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
+  Status run(int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
 
     // allocate matrix and checksum signature
 
@@ -534,8 +534,11 @@ public:
     cudaMalloc((void**)&d_finding, size);
     cudaMemset(d_finding, 0, size);
 
-    cudaMalloc((void**)&d_checking, size);
-    cudaMemset(d_checking, 0, size);
+    cudaMalloc((void**)&d_recompute, size);
+    cudaMemset(d_recompute, 0, size);
+
+    cudaMalloc((void**)&d_compare, size);
+    cudaMemset(d_compare, 0, size);
 
     cudaMalloc((void**)&d_checking, size);
     cudaMemset(d_checking, 0, size);
@@ -592,7 +595,7 @@ public:
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
                                                                       Lock_Signature, final_sum, if_split_phase, 
                                                                       d_queues, d_SM_JOBS,
-                                                                      d_all_start, d_compute, d_finding, d_checking);
+                                                                      d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
     }
     if(deBug){
       cudaEventRecord(stop, stream);
@@ -610,7 +613,7 @@ public:
         }
         cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, 
                                                                           Lock_Signature, final_sum, num_blk_per_group,
-                                                                          d_all_start_for_split, d_finding, d_checking, d_SM_JOBS);
+                                                                          d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
         if(deBug){
           cudaEventRecord(stop, stream);
           cudaEventSynchronize(stop);
@@ -629,6 +632,8 @@ public:
     cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(recompute, d_recompute, size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(compare, d_compare, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(SM_JOBS, d_SM_JOBS, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
@@ -637,6 +642,8 @@ public:
     cudaFree(d_checking);
     cudaFree(d_compute);
     cudaFree(d_finding);
+    cudaFree(d_recompute);
+    cudaFree(d_compare);
     cudaFree(d_SM_JOBS);
     cudaFree(d_all_start_for_split);
 
@@ -652,8 +659,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int *all_start, int *compute, int *finding, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
-    return run(all_start, compute, finding, checking, SM_JOBS, all_start_for_split, if_split_phase, stream);
+  Status operator()(int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
+    return run(all_start, compute, finding, checking, recompute, compare, SM_JOBS, all_start_for_split, if_split_phase, stream);
   }
  
   /// Runs the kernel using initialized state.

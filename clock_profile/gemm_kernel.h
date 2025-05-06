@@ -529,7 +529,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
                   int *final_sum, int if_split_phase, RingQueue *d_queues, int *SM_JOBS,
-                  int *all_start, int *compute, int *finding, int *checking) {
+                  int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
 
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -621,8 +621,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     // printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
 
     __syncthreads();
-    if(thread_idx == 0){
-      *(all_start+smid) = clock();
+    if(thread_idx == 0 && (threadblock_tile_offset.m() + threadblock_tile_offset.n() * params.grid_tiled_shape.m()) == 0){
+      *(all_start) = clock();
+      // printf("all_start: %d\n", *all_start);
     }
 
     if (!kSplitKSerial || gemm_k_iterations > 0) {
@@ -738,8 +739,8 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     //
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
     __syncthreads();
-    if(thread_idx == 0){
-      *(compute+smid) = clock();
+    if(thread_idx == 0 && block_idx == 0){
+      *(compute) = clock();
     }
     __syncthreads();
     if(if_split_phase == 0){
@@ -771,8 +772,8 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // }
       }
       __syncthreads();
-      if(thread_idx == 0){
-        *(finding+smid) = clock();
+      if(thread_idx == 0 && block_idx == 0){
+        *(finding) = clock();
       }
 
       // begin chkeck
@@ -795,12 +796,20 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
             int idx = matrix_start_idx + r * params.problem_size.n();
             recomputed_chksum += *(params.ref_D.data() + idx);
           }
-          // __syncthreads();
+          __syncthreads();
+          if(thread_idx == 0 && block_idx == 0){
+            *(recompute) = clock();
+          }
+          
         
           if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
             diff = 1;
             // printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
             //           smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+          }
+          __syncthreads();
+          if(thread_idx == 0 && block_idx == 0){
+            *(compare) = clock();
           }
           // Cooperative Groups Reduce
           // __shared__ int temp[128];
@@ -820,18 +829,19 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         }
       }
       __syncthreads();
-      if(thread_idx == 0){
-        *(checking+smid) = clock();
+      if(thread_idx == 0 && block_idx == 0){
+        *(checking) = clock();
+        // printf("checking: %d\n", *checking);
       }
     }
-    else if(if_split_phase == 1){
+    else if(if_split_phase == 1 && block_idx == 0){
       // 
       *(Signature_Array + block_idx) = (uint8_t)smid;
     }
     else{
       __syncthreads();
-      if(thread_idx == 0){
-        *(checking+smid) = clock();
+      if(thread_idx == 0 && block_idx == 0){
+        *(checking) = clock();
       }
     }
     
@@ -864,4 +874,3 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
 } // namespace kernel
 } // namespace gemm
 } // namespace cutlass
-

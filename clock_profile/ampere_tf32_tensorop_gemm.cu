@@ -432,16 +432,20 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  int elapsed_matrix, elapsed_chksum = 0;
-  int cnt_matrix, cnt_chksum = 0;
+  int elapsed_matrix = 0; 
+  int elapsed_chksum = 0;
+  int cnt_matrix = 0;
+  int cnt_chksum = 0;
 
-  int *all_start, *compute, *finding, *checking, *h_SM_JOBS, *all_start_for_split;
+  int *all_start, *compute, *finding, *recompute, *compare, *checking, *h_SM_JOBS, *all_start_for_split;
 
   size_t size = sizeof(int)*132;
 
   all_start = (int*)malloc(size);
   compute = (int*)malloc(size);
   finding = (int*)malloc(size);
+  recompute = (int*)malloc(size);
+  compare = (int*)malloc(size);
   checking = (int*)malloc(size);
   h_SM_JOBS = (int*)malloc(size);
 
@@ -449,52 +453,62 @@ int run(Options &options) {
 
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
-    status = gemm_op(all_start, compute, finding, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
+    status = gemm_op(all_start, compute, finding, recompute, compare, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
     CUTLASS_CHECK(status);
+
+    elapsed_matrix += (recompute[0]-all_start[0]);
     
-    for(int i=0; i<132; i++){
-      // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
-      if(options.if_split_phase == 0){
-        if(h_SM_JOBS[i]==1){
-          elapsed_matrix += (checking[i]-all_start[i]);
-          cnt_matrix++;
-        }
-        else if(h_SM_JOBS[i]==2){
-          elapsed_chksum += (checking[i]-all_start[i]);
-          cnt_chksum++;
-        }
-      }
-      else if(options.if_split_phase == 1){
-        if(h_SM_JOBS[i]==1){
-          elapsed_matrix += (checking[i]-all_start[i]);
-          cnt_matrix++;
-        }
-        else if(h_SM_JOBS[i]==2){
-          elapsed_chksum += (checking[i]-all_start[i]);
-          cnt_chksum++;
-        }
-      }
-      else{
-        elapsed_matrix += (checking[i]-all_start[i]);
-        cnt_matrix++;
-      }
-    }
+    // for(int i=0; i<132; i++){
+    //   // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
+    //   if(options.if_split_phase == 0){
+    //     if(h_SM_JOBS[i]==1){
+    //       elapsed_matrix += (checking[i]-all_start[i]);
+    //       cnt_matrix++;
+    //       // printf("%d\n", (checking[i]-all_start[i]));
+    //     }
+    //     else if(h_SM_JOBS[i]==2){
+    //       elapsed_chksum += (checking[i]-all_start[i]);
+    //       cnt_chksum++;
+    //     }
+    //   }
+    //   else if(options.if_split_phase == 1){
+    //     if(h_SM_JOBS[i]==1){
+    //       elapsed_matrix += (checking[i]-all_start[i]);
+    //       cnt_matrix++;
+    //     }
+    //     else if(h_SM_JOBS[i]==2){
+    //       elapsed_chksum += (checking[i]-all_start[i]);
+    //       cnt_chksum++;
+    //     }
+    //   }
+    //   else{
+    //     elapsed_matrix += (checking[i]-all_start[i]);
+    //     cnt_matrix++;
+    //   }
+    // }
+
     memset(all_start, 0, size);
     memset(compute, 0, size);
     memset(finding, 0, size);
+    memset(recompute, 0, size);
+    memset(compare, 0, size);
     memset(checking, 0, size);
     memset(h_SM_JOBS, 0, size);
     memset(all_start_for_split, 0, size);
   }
 
-  float avg_elapsed_matrix = elapsed_matrix / cnt_matrix;
-  float avg_elapsed_chksum = cnt_chksum!=0 ? (elapsed_chksum / cnt_chksum) : 0;
-  float avg_overall = (elapsed_matrix+avg_elapsed_chksum)/(cnt_matrix+cnt_chksum);
-  printf("matrix: %f, chksum: %f, overall: %f\n", avg_elapsed_matrix, avg_elapsed_chksum, avg_overall);
+  // float avg_elapsed_matrix = elapsed_matrix / cnt_matrix;
+  // float avg_elapsed_chksum = cnt_chksum!=0 ? (elapsed_chksum / cnt_chksum) : 0;
+  // float avg_overall = (elapsed_matrix+avg_elapsed_chksum)/(cnt_matrix+cnt_chksum);
+
+  float avg_elapsed_matrix = elapsed_matrix / options.iterations;
+  printf("matrix: %f\n", avg_elapsed_matrix);
 
   free(all_start);
   free(compute);
   free(finding);
+  free(recompute);
+  free(compare);
   free(checking);
   free(h_SM_JOBS);
   free(all_start_for_split);
