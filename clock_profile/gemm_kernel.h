@@ -313,7 +313,7 @@ struct Gemm {
     unsigned int smid, int block_idx, int num_blk_per_group, int *SM_JOBS){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
     // Signature for Matrxi SM
-    *(SM_JOBS + smid) = 1;
+    // *(SM_JOBS + smid) = 1;
     *(Signature_Array + block_idx) = (uint8_t)smid;
     
     // Find Finished (Naive: get next)
@@ -424,7 +424,7 @@ struct Gemm {
   }
   else{
     // Signature for Checksum (encoded) SM
-    *(SM_JOBS + smid) = 2;
+    // *(SM_JOBS + smid) = 2;
     *(Signature_Array + block_idx) = (uint8_t)smid;
     // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
@@ -433,9 +433,9 @@ struct Gemm {
 
 __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
                                 uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue *d_queues, int *SM_JOBS){
+                                unsigned int smid, int block_idx, int num_blk_per_group, RingQueue_v2 *d_queues, int *SM_JOBS){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
-    *(SM_JOBS + smid) = 1;
+    // *(SM_JOBS + smid) = 1;
     // *(Signature_Array + block_idx) = (uint8_t)smid;
     
     // Wait self-check finish and enqueue
@@ -443,10 +443,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
     unsigned int next_chk_smid, next_matrix_smid;
     
-    RingQueue *queue = &d_queues[smid];
     while(true){
       if(*(Signature_Array + chk_block_idx) != 255){
-        queue->enqueue(block_idx);
+        d_queues->enqueue(smid, block_idx);
         break;
       }
     }
@@ -454,11 +453,11 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     // Select from next SM's queue
     // int count = 0;
     next_matrix_smid = (smid + 1) % 132;
-    RingQueue *next_queue;
+    // RingQueue *next_queue;
     while(true){
-      // printf("%d\n", smid);
-      next_queue = &d_queues[next_matrix_smid];
-      if (next_queue->dequeue(&tmp_matrix_blk)){
+      // d_queues->dequeue(next_matrix_smid, &tmp_matrix_blk);
+      // break;
+      if (d_queues->dequeue(next_matrix_smid, &tmp_matrix_blk)){
         int tmp = (tmp_matrix_blk) / params.grid_tiled_shape.m();
         tmp_chk_blk = params.grid_tiled_shape.m() * (tmp + 1) - 1;
         next_chk_smid = *(Signature_Array + tmp_chk_blk);
@@ -473,6 +472,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
       // printf("cur SM:%d, next SM: %d, count: %d\n",smid, next_matrix_smid, count);
       // printf("%d\n", next_queue->tail);
     }
+    // printf("%d, %d, %p\n", smid, tmp_matrix_blk, &tmp_matrix_blk);
 
     // next_matrix_smid = smid;
     // while(true){
@@ -513,11 +513,9 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   }
   else{
     // Signature for Checksum (encoded) SM
-    *(SM_JOBS + smid) = 2;
+    // *(SM_JOBS + smid) = 2;
     *(Signature_Array + block_idx) = (uint8_t)smid;
-
-    RingQueue *queue = &d_queues[smid];
-    queue->enqueue(block_idx);
+    d_queues->enqueue(smid, block_idx);
 
     // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
@@ -528,7 +526,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue *d_queues, int *SM_JOBS,
+                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS,
                   int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
 
     // Compute threadblock location
@@ -754,20 +752,20 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
       // block view
       if(thread_idx == 0){
         // RingQueue *queue = &d_queues[smid];
-        // queue->enqueue(smid);
+        // d_queues->enqueue(smid, smid);
 
         // int group_partition = 2;
         int group_partition =  (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n();
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
-        // queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
+        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
+        queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
         
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
         flag = tmp_flag;
 
         // int value; 
-        // if(queue->dequeue(&value)){
+        // if(d_queues->dequeue(smid, &value)){
         //   printf("SM %d dequeued value: %d\n", smid, value);
         // }
       }
@@ -791,7 +789,7 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
           int diff = 0;
           
           // if use group, not unroll
-          // #pragma unroll
+          #pragma unroll
           for(int r = 0; r < 128; r++){
             int idx = matrix_start_idx + r * params.problem_size.n();
             recomputed_chksum += *(params.ref_D.data() + idx);
@@ -801,7 +799,6 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
             *(recompute) = clock();
           }
           
-        
           if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
             diff = 1;
             // printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 

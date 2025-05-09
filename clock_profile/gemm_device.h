@@ -171,7 +171,8 @@ namespace device {
 
 __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
-__device__ RingQueue *d_queues;
+__device__ RingQueue_v2 *d_queues;
+__device__ int *d_buffer, *d_head, *d_tail;
 
 __device__ int *d_all_start, *d_compute, *d_finding, * d_recompute, *d_compare, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
@@ -508,18 +509,31 @@ public:
     // ring queues for each SM
     int num_queues = 132;
     int capacity = 8;
-    cudaMalloc((void**)&d_queues, sizeof(RingQueue) * num_queues);
-    int** h_buffers = (int**)malloc(sizeof(int*) * num_queues);
-    for (int i = 0; i < num_queues; i++) {
-      cudaMalloc((void**)&h_buffers[i], sizeof(int) * capacity);
-      // cudaMemset(&h_buffers[i], 0, sizeof(int) * capacity);
-    }
-    int** d_buffers;
-    cudaMalloc(&d_buffers, sizeof(int*) * num_queues);
-    cudaMemcpy(d_buffers, h_buffers, sizeof(int*) * num_queues, cudaMemcpyHostToDevice);
-    initQueues<<<num_queues, 1>>>(d_queues, d_buffers, capacity);
-    free(h_buffers);
-    cudaFree(d_buffers);
+    cudaMalloc((void**)&d_queues, sizeof(RingQueue));
+    cudaMalloc((void**)&d_buffer, sizeof(int) * num_queues * capacity);
+    cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
+    
+    cudaMalloc((void**)&d_head, sizeof(int) * num_queues);
+    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
+    
+    cudaMalloc((void**)&d_tail, sizeof(int) * num_queues);
+    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
+
+    initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
+
+
+    // cudaMalloc((void**)&d_queues, sizeof(RingQueue) * num_queues);
+    // int** h_buffers = (int**)malloc(sizeof(int*) * num_queues);
+    // for (int i = 0; i < num_queues; i++) {
+    //   cudaMalloc((void**)&h_buffers[i], sizeof(int) * capacity);
+    //   // cudaMemset(&h_buffers[i], 0, sizeof(int) * capacity);
+    // }
+    // int** d_buffers;
+    // cudaMalloc(&d_buffers, sizeof(int*) * num_queues);
+    // cudaMemcpy(d_buffers, h_buffers, sizeof(int*) * num_queues, cudaMemcpyHostToDevice);
+    // initQueues<<<num_queues, 1>>>(d_queues, d_buffers, capacity);
+    // free(h_buffers);
+    // cudaFree(d_buffers);
 
     // cudaMalloc((void**)&d_queues, sizeof(RingQueue)*num_queues);
 
@@ -646,6 +660,10 @@ public:
     cudaFree(d_compare);
     cudaFree(d_SM_JOBS);
     cudaFree(d_all_start_for_split);
+
+    cudaFree(d_buffer);
+    cudaFree(d_head);
+    cudaFree(d_tail);
 
     cudaFree(d_queues);
     cudaFree(Signature_Array);

@@ -432,10 +432,8 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  int elapsed_matrix = 0; 
-  int elapsed_chksum = 0;
-  int cnt_matrix = 0;
-  int cnt_chksum = 0;
+  int elapsed_matrix = 0, elapsed_chksum = 0;
+  int cnt_matrix = 0, cnt_chksum = 0;
 
   int *all_start, *compute, *finding, *recompute, *compare, *checking, *h_SM_JOBS, *all_start_for_split;
 
@@ -454,9 +452,9 @@ int run(Options &options) {
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
     status = gemm_op(all_start, compute, finding, recompute, compare, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
-    CUTLASS_CHECK(status);
+    // CUTLASS_CHECK(status);
 
-    elapsed_matrix += (recompute[0]-all_start[0]);
+    elapsed_matrix += (checking[0]-all_start[0]);
     
     // for(int i=0; i<132; i++){
     //   // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
