@@ -73,18 +73,18 @@ template <typename  T>                                                          
 
 ////////////////////////////////////////////////////////////////////////////////
 
-__global__ void initQueues(RingQueue* queues, int** buffers, int cap) {
-  int idx = blockIdx.x;
-  if (idx < gridDim.x) {
-      queues[idx].initial(buffers[idx], cap);
-  }
+__global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, int *d_tail, int cap) {
+  d_queues->buffer = d_buffer;
+  d_queues->head = d_head;
+  d_queues->tail = d_tail;
+  d_queues->capacity = cap;
 }
 
 /// Generic CUTLASS kernel template.
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
-            int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue *d_queues, uint8_t *SM_JOBS) {
+            int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, uint8_t *SM_JOBS) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
