@@ -308,10 +308,10 @@ struct Gemm {
     }
   }
 
-  __device__ void group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+  __device__ void group_find_SM(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
     uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
     unsigned int smid, int block_idx, int num_blk_per_group, int *SM_JOBS){
-  if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
+  if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
     // Signature for Matrxi SM
     // *(SM_JOBS + smid) = 1;
     *(Signature_Array + block_idx) = (uint8_t)smid;
@@ -324,7 +324,7 @@ struct Gemm {
 
     // 
     // int num_blk_per_group = 2;
-    int new_blk_idx = block_idx - threadblock_tile_offset.n();
+    int new_blk_idx = block_idx - threadblock_tile_offset_n;
     int group_idx = new_blk_idx / num_blk_per_group;
 
     int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
@@ -522,6 +522,29 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
   }
 }
 
+__device__ void SM_based_schedule(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
+                                  int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
+                                  unsigned int smid, int block_idx){
+  if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
+    tmp_matrix_blk = (block_idx + 1) % 132;
+    
+    if ((tmp_matrix_blk + 1) % params.grid_tiled_shape.m() == 0){
+      tmp_matrix_blk = (tmp_matrix_blk + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+    }
+    int n = (tmp_matrix_blk) / params.grid_tiled_shape.m();
+    tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
+    tmp_flag = 1;
+
+    // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d), next chk SM: (%d)\n", 
+    //         block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
+
+  }
+  else{
+  // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
+  //     block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid);
+  }
+}
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
@@ -551,9 +574,9 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
     int threadblock_tile_offset_k = threadblock_tile_offset.k();
     int threadblock_tile_offset_n = smid / gridDim.x;
 
-    // int threadblock_tile_offset_m = threadblock_tile_offset.m();
-    // int threadblock_tile_offset_k = threadblock_tile_offset.k();
-    // int threadblock_tile_offset_n = threadblock_tile_offset.n();
+    // threadblock_tile_offset_m = threadblock_tile_offset.m();
+    // threadblock_tile_offset_k = threadblock_tile_offset.k();
+    // threadblock_tile_offset_n = threadblock_tile_offset.n();
     
     // Compute initial location in logical coordinates
     cutlass::MatrixCoord tb_offset_A{
@@ -664,6 +687,7 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
     //         threadblock_offset.row(), threadblock_offset.column());
 
     int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+
     // // new block id
     // int block_idx = smid;
 
@@ -765,15 +789,13 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
       if(thread_idx == 0){
         // d_queues->enqueue(smid, smid);
 
-        // int group_partition = 2;
+        // int group_partition = (params.grid_tiled_shape.m() - 1);
         int group_partition =  (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n();
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
-        queue_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, 
-                      Signature_Array, Lock_Signature, 
-                      tmp_matrix_blk, tmp_chk_blk, tmp_flag, 
-                      smid, block_idx, group_partition, d_queues, SM_JOBS);
-        
+        // group_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
+        // queue_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
+        SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
         flag = tmp_flag;
@@ -837,12 +859,12 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
             //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
             // }
           }
+          __syncthreads();
+          if(thread_idx == 0 && block_idx == 0){
+            *(checking) = clock();
+            // printf("checking: %d\n", *checking);
+          }
         }
-      }
-      __syncthreads();
-      if(thread_idx == 0 && block_idx == 0){
-        *(checking) = clock();
-        // printf("checking: %d\n", *checking);
       }
     }
     else if(if_split_phase == 1 && block_idx == 0){

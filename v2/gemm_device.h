@@ -618,29 +618,29 @@ public:
     }
     result = cudaGetLastError();
 
-    // if(if_split_phase == 1){
-    //   // int num_blk_per_group = 2;
-    //   int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
-    //   // for(int i = 0; i < 2; i++){
-    //     if(deBug){
-    //       cudaEventRecord(start, stream);
-    //     }
-    //     cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, 
-    //                                                                       Lock_Signature, final_sum, num_blk_per_group,
-    //                                                                       d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
-    //     if(deBug){
-    //       cudaEventRecord(stop, stream);
-    //       cudaEventSynchronize(stop);
-    //       cudaEventElapsedTime(&t_check, start, stop);
-    //       // t_check = t_check + tmp;
-    //       // tmp = 0;
-    //     }
-    //     // cudaMemset(Signature_Array, 255, block_num * sizeof(uint8_t));
-    //     // cudaMemset(Lock_Signature, 0, block_num * sizeof(int));
-    //     // cudaMemset(final_sum, 0, block_num*sizeof(int));
-    //     // cudaDeviceSynchronize();
-    //   // }
-    // }
+    if(if_split_phase == 1){
+      // int num_blk_per_group = 2;
+      int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
+      // for(int i = 0; i < 2; i++){
+        if(deBug){
+          cudaEventRecord(start, stream);
+        }
+        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, 
+                                                                          Lock_Signature, final_sum, num_blk_per_group,
+                                                                          d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
+        if(deBug){
+          cudaEventRecord(stop, stream);
+          cudaEventSynchronize(stop);
+          cudaEventElapsedTime(&t_check, start, stop);
+          // t_check = t_check + tmp;
+          // tmp = 0;
+        }
+        // cudaMemset(Signature_Array, 255, block_num * sizeof(uint8_t));
+        // cudaMemset(Lock_Signature, 0, block_num * sizeof(int));
+        // cudaMemset(final_sum, 0, block_num*sizeof(int));
+        // cudaDeviceSynchronize();
+      // }
+    }
 
     size = 132 * sizeof(int);
     cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
@@ -678,7 +678,7 @@ public:
 
   /// Runs the kernel using initialized state.
   Status operator()(int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
-    return run(all_start, compute, finding, checking, recompute, compare, SM_JOBS, all_start_for_split, if_split_phase, stream);
+    return run(all_start, compute, finding, recompute, compare, checking, SM_JOBS, all_start_for_split, if_split_phase, stream);
   }
  
   /// Runs the kernel using initialized state.
