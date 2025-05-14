@@ -549,7 +549,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS,
+                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule,
                   int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
 
     // Compute threadblock location
@@ -565,14 +565,35 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       return;
     }
 
-    // // new offset based on SM id
+    // 
+    // new offset based on SM id
+    // 
+
     // get SM id
     unsigned int smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
-    // new offset
-    int threadblock_tile_offset_m = smid % gridDim.x;
-    int threadblock_tile_offset_k = threadblock_tile_offset.k();
-    int threadblock_tile_offset_n = smid / gridDim.x;
+    int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
+    
+    // new offset - navie
+    // threadblock_tile_offset_m = smid % gridDim.x;
+    // threadblock_tile_offset_k = threadblock_tile_offset.k();
+    // threadblock_tile_offset_n = smid / gridDim.x;
+    
+    // new offset - first Z matrix, last Y checksum
+    if(smid < *SM_schedule){
+      // for matrix
+      threadblock_tile_offset_m = smid % (gridDim.x - (*(SM_schedule+2)));
+      threadblock_tile_offset_k = threadblock_tile_offset.k();
+      threadblock_tile_offset_n = smid / (gridDim.x - (*(SM_schedule+2)));
+    }
+    else{
+      // for checksum
+      unsigned int local_chk_blk_idx = smid - *SM_schedule;
+      threadblock_tile_offset_m = (gridDim.x - (*(SM_schedule+2))) + (local_chk_blk_idx % (*(SM_schedule+2)));
+      threadblock_tile_offset_k = threadblock_tile_offset.k();
+      threadblock_tile_offset_n = local_chk_blk_idx / (*(SM_schedule+2));
+    }
+    
 
     // threadblock_tile_offset_m = threadblock_tile_offset.m();
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
