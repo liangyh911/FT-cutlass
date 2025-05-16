@@ -174,7 +174,8 @@ __device__ uint8_t *Signature_Array;
 __device__ int *Lock_Signature;
 __device__ RingQueue_v2 *d_queues;
 __device__ int *d_buffer, *d_head, *d_tail;
-__device__ int *SM_schedule;
+
+__device__ int *SM_check_res;
 
 __device__ int *d_all_start, *d_compute, *d_finding, * d_recompute, *d_compare, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
@@ -504,6 +505,9 @@ public:
     cudaMallocManaged(&final_sum, block_num*sizeof(int));
     cudaMemset(final_sum, 0, block_num*sizeof(int));
 
+    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
+    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
+
     // 0 - no job, 1 - matrix, 2 - checksum
     cudaMalloc((void**)&d_SM_JOBS, 132*sizeof(int));
     cudaMemset(d_SM_JOBS, 0, 132*sizeof(int));
@@ -523,7 +527,7 @@ public:
 
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
 
-    // SM based schedule
+    // SM based schedule 
     int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128/2))));
     int max_col = (int)ceil((double)(132 /( params_.grid_tiled_shape.m() - 1)));
     if(max_col > params_.grid_tiled_shape.n()){
@@ -532,12 +536,22 @@ public:
     int remaining_SM = (int)(max_col * checksumblk_per_col);
     int matrix_SM = (int)(132 - remaining_SM);
 
-    cudaMalloc((void **)&SM_schedule, sizeof(int) * 3);
-    cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule+1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule+2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
+    int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
+    int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
+    int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
 
-    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d\n", matrix_SM, remaining_SM, checksumblk_per_col);
+    // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
+    int *SM_schedule;
+    cudaMalloc((void **)&SM_schedule, sizeof(int) * 6);
+    cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 3), &matrix_next_blk_offset_m, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 4), &matrix_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
+
+    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d\n", 
+            matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n);
 
 
     // Profile using clock
@@ -563,7 +577,7 @@ public:
     cudaMalloc((void**)&d_all_start_for_split, size);
     cudaMemset(d_all_start_for_split, 0, size);
 
-    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
+    printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
@@ -600,6 +614,7 @@ public:
     cudaEventCreate(&stop);
     float t_compute, t_check = 0;
     // dim3 new_block(64,1,1);
+    dim3 new_grid(12,11,1);
 
     cutlass::arch::synclog_setup();
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
@@ -611,7 +626,7 @@ public:
     for(int i = 0; i < iterations; i++){
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
                                                                       Lock_Signature, final_sum, if_split_phase, 
-                                                                      d_queues, d_SM_JOBS, SM_schedule,
+                                                                      d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
                                                                       d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
     }
     if(deBug){
@@ -628,7 +643,7 @@ public:
         if(deBug){
           cudaEventRecord(start, stream);
         }
-        cutlass::check_between_SM<GemmKernel><<<grid, block, 0, stream>>>(params_, Signature_Array, 
+        cutlass::check_between_SM<GemmKernel><<<new_grid, block, 0, stream>>>(params_, Signature_Array, 
                                                                           Lock_Signature, final_sum, num_blk_per_group,
                                                                           d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
         if(deBug){

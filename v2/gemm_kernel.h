@@ -549,7 +549,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule,
+                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule, int *SM_check_res,
                   int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
 
     // Compute threadblock location
@@ -578,6 +578,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // threadblock_tile_offset_m = smid % gridDim.x;
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
     // threadblock_tile_offset_n = smid / gridDim.x;
+
+    // if(smid == 1 && threadIdx.x == 0){
+    //   printf("%d, %d, %d\n", threadblock_buffer[0], threadblock_buffer[1], threadblock_buffer[2]);
+    // }
     
     // new offset - first Z matrix, last Y checksum
     if(smid < *SM_schedule){
@@ -593,8 +597,13 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       threadblock_tile_offset_k = threadblock_tile_offset.k();
       threadblock_tile_offset_n = local_chk_blk_idx / (*(SM_schedule+2));
     }
+    if(threadblock_tile_offset_m > params.grid_tiled_shape.m() || threadblock_tile_offset_n > params.grid_tiled_shape.n()){
+      // if(threadIdx.x==0){
+      //   printf("smid: %d\n", smid);
+      // }
+      return;
+    }
     
-
     // threadblock_tile_offset_m = threadblock_tile_offset.m();
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
     // threadblock_tile_offset_n = threadblock_tile_offset.n();
@@ -708,10 +717,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //         threadblock_offset.row(), threadblock_offset.column());
 
     int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
-
-    // // new block id
-    // int block_idx = smid;
-
+    
     // if(threadIdx.x == 0){
     //   printf("SM id: %d, block id: %d\n", smid, block_idx);
     // }
@@ -880,6 +886,12 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
             //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
             // }
           }
+
+          // Atomic sum
+          // if(diff != 0){
+          //   atomicAdd((SM_check_res+smid), diff);
+          // }
+
           __syncthreads();
           if(thread_idx == 0 && block_idx == 0){
             *(checking) = clock();
@@ -898,6 +910,14 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         *(checking) = clock();
       }
     }
+
+    // __syncthreads();
+    // if(thread_idx == 0){
+    //   threadblock_buffer[0] = threadblock_tile_offset_m;
+    //   threadblock_buffer[1] = threadblock_tile_offset_k;
+    //   threadblock_buffer[2] = threadblock_tile_offset_n;
+    // }
+    
     
     //
     // Release the semaphore
