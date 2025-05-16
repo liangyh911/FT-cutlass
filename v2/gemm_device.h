@@ -539,19 +539,21 @@ public:
     int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
     int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
     int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
+    int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)132));
 
     // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
     int *SM_schedule;
-    cudaMalloc((void **)&SM_schedule, sizeof(int) * 6);
+    cudaMalloc((void **)&SM_schedule, sizeof(int) * 7);
     cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 3), &matrix_next_blk_offset_m, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 4), &matrix_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d\n", 
-            matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n);
+    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+            matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
@@ -624,7 +626,7 @@ public:
       cudaEventRecord(start, stream);
     }
     for(int i = 0; i < iterations; i++){
-      cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+      cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
                                                                       Lock_Signature, final_sum, if_split_phase, 
                                                                       d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
                                                                       d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);

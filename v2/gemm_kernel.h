@@ -573,37 +573,44 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     unsigned int smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
+
+    // if(threadIdx.x==0){
+    //   printf("smid: %d\n", smid);
+    // }
     
     // new offset - navie
     // threadblock_tile_offset_m = smid % gridDim.x;
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
     // threadblock_tile_offset_n = smid / gridDim.x;
 
-    // if(smid == 1 && threadIdx.x == 0){
-    //   printf("%d, %d, %d\n", threadblock_buffer[0], threadblock_buffer[1], threadblock_buffer[2]);
-    // }
-    
+    for(int iter=0; iter < *(SM_schedule+6); iter++){
+
     // new offset - first Z matrix, last Y checksum
     if(smid < *SM_schedule){
       // for matrix
-      threadblock_tile_offset_m = smid % (gridDim.x - (*(SM_schedule+2)));
+      threadblock_tile_offset_m = (smid % (params.grid_tiled_shape.m() - (*(SM_schedule+2))) + iter * (*(SM_schedule+3))) % (params.grid_tiled_shape.m()-1);
+      int add_col = ((smid % (params.grid_tiled_shape.m() - (*(SM_schedule+2))) + iter * (*(SM_schedule+3))) / (params.grid_tiled_shape.m()-1));
       threadblock_tile_offset_k = threadblock_tile_offset.k();
-      threadblock_tile_offset_n = smid / (gridDim.x - (*(SM_schedule+2)));
+      threadblock_tile_offset_n = smid / (params.grid_tiled_shape.m() - (*(SM_schedule+2))) + iter * (*(SM_schedule+4)) + add_col;
     }
     else{
       // for checksum
       unsigned int local_chk_blk_idx = smid - *SM_schedule;
-      threadblock_tile_offset_m = (gridDim.x - (*(SM_schedule+2))) + (local_chk_blk_idx % (*(SM_schedule+2)));
+      threadblock_tile_offset_m = (params.grid_tiled_shape.m() - (*(SM_schedule+2))) + (local_chk_blk_idx % (*(SM_schedule+2)));
       threadblock_tile_offset_k = threadblock_tile_offset.k();
-      threadblock_tile_offset_n = local_chk_blk_idx / (*(SM_schedule+2));
+      threadblock_tile_offset_n = local_chk_blk_idx / (*(SM_schedule+2)) + iter * (*(SM_schedule+5));
     }
-    if(threadblock_tile_offset_m > params.grid_tiled_shape.m() || threadblock_tile_offset_n > params.grid_tiled_shape.n()){
-      // if(threadIdx.x==0){
-      //   printf("smid: %d\n", smid);
+    if(threadblock_tile_offset_n >= params.grid_tiled_shape.n()){
+      // if(smid == 23 && threadIdx.x==0){
+      //   printf("return: smid: %d, m: %d, n:%d\n", smid, threadblock_tile_offset_m,threadblock_tile_offset_n);
       // }
       return;
     }
     
+    // if(smid == 23 && threadIdx.x==0){
+    //   printf("smid: %d, m: %d, n:%d\n", smid, threadblock_tile_offset_m,threadblock_tile_offset_n);
+    // }
+
     // threadblock_tile_offset_m = threadblock_tile_offset.m();
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
     // threadblock_tile_offset_n = threadblock_tile_offset.n();
@@ -917,6 +924,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //   threadblock_buffer[1] = threadblock_tile_offset_k;
     //   threadblock_buffer[2] = threadblock_tile_offset_n;
     // }
+    // }
     
     
     //
@@ -938,6 +946,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
       semaphore.release(lock);
     }
+  }
   }
 };
 
