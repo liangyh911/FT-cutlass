@@ -552,12 +552,12 @@ public:
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-            matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+    //         matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
-    size = num_queues*sizeof(int);
+    size = SM_iter * sizeof(int);
     cudaMalloc((void**)&d_all_start, size);
     cudaMemset(d_all_start, 0, size);
 
@@ -579,7 +579,7 @@ public:
     cudaMalloc((void**)&d_all_start_for_split, size);
     cudaMemset(d_all_start_for_split, 0, size);
 
-    printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
+    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
@@ -662,7 +662,7 @@ public:
       // }
     }
 
-    size = 132 * sizeof(int);
+    size = SM_iter * sizeof(int);
     cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);

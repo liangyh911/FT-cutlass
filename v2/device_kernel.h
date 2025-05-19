@@ -93,6 +93,12 @@ CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
             int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule, int *SM_check_res,
             int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
+  // unsigned int smid;
+  // asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+  // if(threadIdx.x==0){
+  //   printf("smid: %d\n", smid);
+  // }
+  
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.

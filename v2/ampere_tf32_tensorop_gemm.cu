@@ -432,12 +432,14 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  int elapsed_compute = 0, elapsed_finding = 0, elapsed_recompute = 0, elapsed_compare = 0, elapsed_reduce = 0;
+  int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132));
+
+  int *elapsed_compute, *elapsed_finding, *elapsed_recompute, *elapsed_compare, *elapsed_reduce;
   int cnt_matrix = 0, cnt_chksum = 0;
 
   int *all_start, *compute, *finding, *recompute, *compare, *checking, *h_SM_JOBS, *all_start_for_split;
 
-  size_t size = sizeof(int)*132;
+  size_t size = sizeof(int) * gemm_iter;
 
   all_start = (int*)malloc(size);
   compute = (int*)malloc(size);
@@ -447,48 +449,27 @@ int run(Options &options) {
   checking = (int*)malloc(size);
   h_SM_JOBS = (int*)malloc(size);
 
+  elapsed_compute = (int*)malloc(size);
+  elapsed_finding = (int*)malloc(size);
+  elapsed_recompute = (int*)malloc(size);
+  elapsed_compare = (int*)malloc(size);
+  elapsed_reduce = (int*)malloc(size);
+
   all_start_for_split = (int*)malloc(size);
 
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
     status = gemm_op(all_start, compute, finding, recompute, compare, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
-    // CUTLASS_CHECK(status);
+    CUTLASS_CHECK(status);
 
-    elapsed_compute += (compute[0]-all_start[0]);
-    elapsed_finding += (finding[0]-all_start[0]);
-    elapsed_recompute += (recompute[0]-all_start[0]);
-    elapsed_compare += (compare[0]-all_start[0]);
-    elapsed_reduce += (checking[0]-all_start[0]);
+    for(int i = 0; i < gemm_iter; i++){
+      elapsed_compute[i] += (compute[i]-all_start[i]);
+      elapsed_finding[i] += (finding[i]-all_start[i]);
+      elapsed_recompute[i] += (recompute[i]-all_start[i]);
+      elapsed_compare[i] += (compare[i]-all_start[i]);
+      elapsed_reduce[i] += (checking[i]-all_start[i]);
+    }
   
-    // for(int i=0; i<132; i++){
-    //   // printf("%d, %d: %d\n", i, *(h_SM_JOBS+i), (checking[i]-all_start[i]));
-    //   if(options.if_split_phase == 0){
-    //     if(h_SM_JOBS[i]==1){
-    //       elapsed_matrix += (checking[i]-all_start[i]);
-    //       cnt_matrix++;
-    //       // printf("%d\n", (checking[i]-all_start[i]));
-    //     }
-    //     else if(h_SM_JOBS[i]==2){
-    //       elapsed_chksum += (checking[i]-all_start[i]);
-    //       cnt_chksum++;
-    //     }
-    //   }
-    //   else if(options.if_split_phase == 1){
-    //     if(h_SM_JOBS[i]==1){
-    //       elapsed_matrix += (checking[i]-all_start[i]);
-    //       cnt_matrix++;
-    //     }
-    //     else if(h_SM_JOBS[i]==2){
-    //       elapsed_chksum += (checking[i]-all_start[i]);
-    //       cnt_chksum++;
-    //     }
-    //   }
-    //   else{
-    //     elapsed_matrix += (checking[i]-all_start[i]);
-    //     cnt_matrix++;
-    //   }
-    // }
-
     memset(all_start, 0, size);
     memset(compute, 0, size);
     memset(finding, 0, size);
@@ -499,25 +480,16 @@ int run(Options &options) {
     memset(all_start_for_split, 0, size);
   }
 
-  // float avg_elapsed_matrix = elapsed_matrix / cnt_matrix;
-  // float avg_elapsed_chksum = cnt_chksum!=0 ? (elapsed_chksum / cnt_chksum) : 0;
-  // float avg_overall = (elapsed_matrix+avg_elapsed_chksum)/(cnt_matrix+cnt_chksum);
+  for(int i = 0; i < gemm_iter; i++){
+    float avg_elapsed_compute = elapsed_compute[i] / options.iterations;
+    float avg_elapsed_finding = elapsed_finding[i] / options.iterations;
+    float avg_elapsed_recompute = elapsed_recompute[i] / options.iterations;
+    float avg_elapsed_compare = elapsed_compare[i] / options.iterations;
+    float avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
   
-  // // elapsed_compute = elapsed_compute / options.iterations;
-  // // elapsed_finding = elapsed_finding / options.iterations;
-  // // elapsed_recompute = elapsed_recompute / options.iterations;
-  // // elapsed_compare= elapsed_compare / options.iterations;
-  // // elapsed_reduce = elapsed_reduce / options.iterations;
-  // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", elapsed_compute, elapsed_finding, elapsed_recompute, elapsed_compare, elapsed_reduce);
-
-
-  float avg_elapsed_compute = elapsed_compute / options.iterations;
-  float avg_elapsed_finding = elapsed_finding / options.iterations;
-  float avg_elapsed_recompute = elapsed_recompute / options.iterations;
-  float avg_elapsed_compare = elapsed_compare / options.iterations;
-  float avg_elapsed_reduce = elapsed_reduce / options.iterations;
-
-  printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);
+    printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
+          avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+  }
 
 
   free(all_start);

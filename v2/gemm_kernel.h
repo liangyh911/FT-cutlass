@@ -152,7 +152,13 @@ struct Gemm {
   //
 
   CUTLASS_HOST_DEVICE
-  Gemm() { } 
+  Gemm() { 
+    // unsigned int smid;
+    // asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    // if(threadIdx.x==0 && smid == 0){
+    //   printf("smid: %d\n", smid);
+    // }
+  } 
 
   /// Determines whether kernel satisfies alignment
   CUTLASS_HOST_DEVICE
@@ -551,7 +557,16 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
                   uint8_t *Signature_Array, int *Lock_Signature, 
                   int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule, int *SM_check_res,
                   int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
+    
+    // get SM id
+    unsigned int smid;
+    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
 
+    // if(threadIdx.x==0){
+    //   printf("operator smid: %d\n", smid);
+    // }
+              
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -559,23 +574,18 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
 
     // Early exit if CTA is out of range
-    if (params.grid_tiled_shape.m() <= threadblock_tile_offset.m() ||
-      params.grid_tiled_shape.n() <= threadblock_tile_offset.n()) {
+    // if (params.grid_tiled_shape.m() <= threadblock_tile_offset.m() ||
+    //   params.grid_tiled_shape.n() <= threadblock_tile_offset.n()) {
 
-      return;
-    }
+    //   return;
+    // }
 
     // 
     // new offset based on SM id
     // 
 
-    // get SM id
-    unsigned int smid;
-    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
-    int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
-
     // if(threadIdx.x==0){
-    //   printf("smid: %d\n", smid);
+    //   printf("exit smid: %d\n", smid);
     // }
     
     // new offset - navie
@@ -583,7 +593,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // threadblock_tile_offset_k = threadblock_tile_offset.k();
     // threadblock_tile_offset_n = smid / gridDim.x;
 
-    for(int iter=0; iter < *(SM_schedule+6); iter++){
+    for(int iter = 0; iter < *(SM_schedule+6); iter++){
 
     // new offset - first Z matrix, last Y checksum
     if(smid < *SM_schedule){
@@ -601,8 +611,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       threadblock_tile_offset_n = local_chk_blk_idx / (*(SM_schedule+2)) + iter * (*(SM_schedule+5));
     }
     if(threadblock_tile_offset_n >= params.grid_tiled_shape.n()){
-      // if(smid == 23 && threadIdx.x==0){
-      //   printf("return: smid: %d, m: %d, n:%d\n", smid, threadblock_tile_offset_m,threadblock_tile_offset_n);
+      // if(threadIdx.x==0){
+      //   printf("return smid: %d\n", smid);
       // }
       return;
     }
@@ -689,8 +699,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
 
     __syncthreads();
-    if(thread_idx == 0 && (threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m()) == 0){
-      *(all_start) = clock();
+    if(thread_idx == 0 && smid == 0){
+      *(all_start + iter) = clock();
       // printf("all_start: %d\n", *all_start);
     }
 
@@ -807,8 +817,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //
     // __shared__ unsigned int next_chk_smid, next_matrix_smid;
     __syncthreads();
-    if(thread_idx == 0 && block_idx == 0){
-      *(compute) = clock();
+    if(thread_idx == 0 && smid == 0){
+      *(compute + iter) = clock();
     }
 
     // if(block_idx == 94){
@@ -845,8 +855,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         // }
       }
       __syncthreads();
-      if(thread_idx == 0 && block_idx == 0){
-        *(finding) = clock();
+      if(thread_idx == 0 && smid == 0){
+        *(finding + iter) = clock();
       }
 
       // begin chkeck
@@ -864,14 +874,15 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           int diff = 0;
           
           // if use group, not unroll
-          // #pragma unroll
+          #pragma unroll
           for(int r = 0; r < 128; r++){
             int idx = matrix_start_idx + r * params.problem_size.n();
             recomputed_chksum += *(params.ref_D.data() + idx);
+            // recomputed_chksum += 1408;
           }
           __syncthreads();
-          if(thread_idx == 0 && block_idx == 0){
-            *(recompute) = clock();
+          if(thread_idx == 0 && smid == 0){
+            *(recompute + iter) = clock();
           }
           
           if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
@@ -880,36 +891,39 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
             //           smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
           }
           __syncthreads();
-          if(thread_idx == 0 && block_idx == 0){
-            *(compare) = clock();
+          if(thread_idx == 0 && smid == 0){
+            *(compare + iter) = clock();
           }
+
           // Cooperative Groups Reduce
-          // __shared__ int temp[128];
-          int &temp = int_smem[3];
-          auto g = this_thread_block();
-          int block_sum = reduce_sum(g, &temp, diff);
-          if(g.thread_rank() == 0){
-            atomicAdd((final_sum + block_idx), block_sum);
-            if(*(final_sum + block_idx) != 0){
-              printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
-            }
-            // else{
-            //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
-            // }
-          }
+          // int &temp = int_smem[3];
+          // auto g = this_thread_block();
+          // int block_sum = reduce_sum(g, &temp, diff);
+          // if(g.thread_rank() == 0){
+          //   atomicAdd((final_sum + block_idx), block_sum);
+          //   if(*(final_sum + block_idx) != 0){
+          //     printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
+          //   }
+          //   // else{
+          //   //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+          //   // }
+          // }
 
           // Atomic sum
-          // if(diff != 0){
-          //   atomicAdd((SM_check_res+smid), diff);
-          // }
-          // if(*(SM_check_res+smid)!=0){
-          //   printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
-          // }
+          if(diff != 0){
+            atomicAdd((SM_check_res+smid), diff);
+          }
+          __syncthreads();
+          if(*(SM_check_res+smid)!=0){
+            if(thread_idx == 0){
+              // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+            }
+          }
 
           __syncthreads();
-          if(thread_idx == 0 && block_idx == 0){
-            *(checking) = clock();
-            // printf("checking: %d\n", *checking);
+          if(thread_idx == 0 && smid == 0){
+            *(checking + iter) = clock();
+            // printf("checking: %d\n", *(checking + iter));
           }
         }
       }
@@ -920,8 +934,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     }
     else{
       __syncthreads();
-      if(thread_idx == 0 && block_idx == 0){
-        *(checking) = clock();
+      if(thread_idx == 0 && smid == 0){
+        *(checking + iter) = clock();
       }
     }
 
