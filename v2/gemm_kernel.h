@@ -524,9 +524,9 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
 
 __device__ void SM_based_schedule(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                   int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-                                  unsigned int smid, int block_idx){
+                                  unsigned int smid, int block_idx, int matrix_SM){
   if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
-    tmp_matrix_blk = (block_idx + 1) % 132;
+    tmp_matrix_blk = (block_idx + 1) % matrix_SM;
     
     if ((tmp_matrix_blk + 1) % params.grid_tiled_shape.m() == 0){
       tmp_matrix_blk = (tmp_matrix_blk + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
@@ -810,6 +810,11 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     if(thread_idx == 0 && block_idx == 0){
       *(compute) = clock();
     }
+
+    // if(block_idx == 94){
+    //   printf("iter: %d, thread: %d, value: %f\n", iter, thread_idx, *(params.ref_D.data() + thread_idx));
+    // }
+
     __syncthreads();
     if(if_split_phase == 0){
       // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
@@ -828,7 +833,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
         // group_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
         // queue_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
-        SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, *(SM_schedule));
 
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
@@ -859,7 +864,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           int diff = 0;
           
           // if use group, not unroll
-          #pragma unroll
+          // #pragma unroll
           for(int r = 0; r < 128; r++){
             int idx = matrix_start_idx + r * params.problem_size.n();
             recomputed_chksum += *(params.ref_D.data() + idx);
@@ -883,11 +888,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           int &temp = int_smem[3];
           auto g = this_thread_block();
           int block_sum = reduce_sum(g, &temp, diff);
-
           if(g.thread_rank() == 0){
             atomicAdd((final_sum + block_idx), block_sum);
             if(*(final_sum + block_idx) != 0){
-              // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+              printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
             }
             // else{
             //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
@@ -897,6 +901,9 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           // Atomic sum
           // if(diff != 0){
           //   atomicAdd((SM_check_res+smid), diff);
+          // }
+          // if(*(SM_check_res+smid)!=0){
+          //   printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
           // }
 
           __syncthreads();
