@@ -626,10 +626,15 @@ public:
       cudaEventRecord(start, stream);
     }
     for(int i = 0; i < iterations; i++){
-      cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                                      Lock_Signature, final_sum, if_split_phase, 
-                                                                      d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
-                                                                      d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
+      // cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+      //                                                                 Lock_Signature, final_sum, if_split_phase, 
+      //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
+      //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
+      
+      void *kernelArgs[] = {&params_, &Signature_Array, &Lock_Signature, &final_sum, &if_split_phase, 
+                                                      &d_queues, &d_SM_JOBS, &SM_schedule, &SM_check_res,
+                                                      &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking};
+      cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
     }
     if(deBug){
       cudaEventRecord(stop, stream);

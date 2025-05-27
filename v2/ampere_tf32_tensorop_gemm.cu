@@ -45,7 +45,7 @@ implicitly to tf32 inside the GEMM kernel which means no change is needed to acc
 fp32 data by using NVIDIA Ampere architecture.
 
 nvcc ampere_tf32_tensorop_gemm.cu -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o cutlass_test.exe
-ncu -f -o abft_if_profile --set full ./cutlass_ncu_abft_if.exe --m=1280 --n=1280 --k=1280 --iterations=1
+ncu -f -o no_unroll_128 --set full ./out.exe --m=1408 --n=1408 --k=1408 --split=0 --iterations=1
 
 */
 
@@ -460,7 +460,7 @@ int run(Options &options) {
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
     status = gemm_op(all_start, compute, finding, recompute, compare, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
-    CUTLASS_CHECK(status);
+    // CUTLASS_CHECK(status);
 
     for(int i = 0; i < gemm_iter; i++){
       elapsed_compute[i] += (compute[i]-all_start[i]);

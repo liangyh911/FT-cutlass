@@ -98,12 +98,15 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
   // if(threadIdx.x==0){
   //   printf("smid: %d\n", smid);
   // }
+  // printf("kernel 101\n");
   
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
   typename Operator::SharedStorage *shared_storage =
       reinterpret_cast<typename Operator::SharedStorage *>(SharedStorageBase);
+
+  // printf("kernel 108\n");
 
   Operator op;
 
