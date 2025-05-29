@@ -615,9 +615,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       // if(threadIdx.x==0){
       //   printf("return smid: %d\n", smid);
       // }
-      return;
-
-      // beyond_bound = true;
+      // return;
+      beyond_bound = true;
     }
     
     // if(smid == 23 && threadIdx.x==0){
@@ -851,6 +850,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // }
 
     cooperative_groups::this_grid().sync();
+
+    if(beyond_bound){
+      return;
+    }
     // __syncthreads();
 
     if(if_split_phase == 0){
