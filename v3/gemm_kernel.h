@@ -579,6 +579,92 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
   }
 }
 
+  __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+                                        int next_matrix_block_idx, int next_chk_block_idx, int *(SM_schedule), int thread_idx){
+
+    int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
+    int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
+    matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+    int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
+    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+  }
+
+  __device__ void last_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+                                        int next_matrix_block_idx, int next_chk_block_idx, int *(SM_schedule), int thread_idx){
+    int add_col = 0;
+    
+    int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
+    if(MatrixRowBlkOffset < 0){
+      MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+      add_col = 1;
+    }
+    int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
+    matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+    int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
+    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+  }
+
+  __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
+                              int iter, int *recompute, int *compare, unsigned int smid, int thread_idx,
+                              int next_matrix_block_idx, int next_chk_block_idx){
+    float recomputed_chksum = 0;
+    int diff = 0;
+    
+    // if use group, not unroll
+    int N = params.problem_size.n();
+    // void *p = params.ref_D.data();
+    #pragma unroll
+    for(int r = 0; r < 128; r++){
+      int idx = matrix_start_idx + r * N;
+      recomputed_chksum += *(params.ref_D.data() + idx);
+      // float temp = params.ref_D.data(idx);
+    }
+    
+    __syncthreads();
+    if(thread_idx == 0 && smid == 0){
+      *(recompute + iter) = clock();
+    }
+    
+    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+      diff = 1;
+      printf("%d Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+                iter, smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+    }
+    __syncthreads();
+    if(thread_idx == 0 && smid == 0){
+      *(compare + iter) = clock();
+    }
+
+    // Cooperative Groups Reduce
+    // int &temp = int_smem[3];
+    // auto g = this_thread_block();
+    // int block_sum = reduce_sum(g, &temp, diff);
+    // if(g.thread_rank() == 0){
+    //   atomicAdd((final_sum + block_idx), block_sum);
+    //   if(*(final_sum + block_idx) != 0){
+    //     printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
+    //   }
+    //   // else{
+    //   //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+    //   // }
+    // }
+
+    // Atomic sum
+    if(diff != 0){
+      atomicAdd((SM_check_res+smid), diff);
+    }
+    __syncthreads();
+    if(*(SM_check_res+smid)!=0){
+      if(thread_idx == 0){
+        // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+      }
+    }
+  }
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
@@ -922,115 +1008,125 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       if(thread_idx == 0 && smid == 0){
         *(finding + iter) = clock();
       }
-      
-      // int t = 0;
-      // for(int i = 0; i < 10000; i++){
-      //   int a = i*10;
-      //   t = a;
-      //   if(thread_idx == 0 && t == 100){
-      //     printf("abcd\n");
-      //   }
-      // }
 
       // begin chkeck
-      
       if(flag == 1){
         if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
-          int MatrixColBlkOffset, MatrixRowBlkOffset, matrix_start_idx, ChkColBlkOffset, ChkRowBlkOffset, chk_start_idx;
-          add_col = 0;
+          // int MatrixColBlkOffset, MatrixRowBlkOffset, matrix_start_idx, ChkColBlkOffset, ChkRowBlkOffset, chk_start_idx;
+          // add_col = 0;
 
-          // iter 1 ~ n-2
+          int matrix_start_idx, chk_start_idx;
+
+          // iter 1 ~ (n-2)
           if(iter < (*((SM_schedule)+6)) && iter > 0){
-            MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
-            if(MatrixRowBlkOffset < 0){
-              MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-              add_col = 1;
-            }
-            MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
-            matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+            // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
+            // if(MatrixRowBlkOffset < 0){
+            //   MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+            //   add_col = 1;
+            // }
+            // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
+            // matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-            ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-            ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
-            chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+            // ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+            // ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
+            // chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+
+            last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
           }
           // iter n-1
           else if(iter == (*((SM_schedule)+6))-1){
-            MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
-            MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
-            matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+            /*
+            2 cases: 
+              1. only one iter: 
+                matrix & chk offset
+                recompute & compare & atomic
+                exit
+              2. last iter, more than one iters:
+                2 steps:
+                  check last
+                  check self
+            */
+            
+            curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
 
-            ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
-            ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-            chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+            // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
+            // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
+            // matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+            // ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
+            // ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+            // chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
           }
           // iter 0
           else{
             continue;
           } 
 
-          float recomputed_chksum = 0;
-          int diff = 0;
+          // float recomputed_chksum = 0;
+          // int diff = 0;
 
-          // if(block_idx == 1 && thread_idx == 0){
-          //   printf("%d, %d, %d\n", MatrixRowBlkOffset, MatrixColBlkOffset, matrix_start_idx);
-          //   for(int r = 0; r < 1; r++){
-          //     for(int c = 0; c < 128; c++){
-          //       int idx = 256*128 + (c + r * params.problem_size.n());
-          //       printf("%f, ", *(params.ref_D.data() + idx));
-          //     }
-          //     printf("\n");
-          //   }
+          // // if(block_idx == 1 && thread_idx == 0){
+          // //   printf("%d, %d, %d\n", MatrixRowBlkOffset, MatrixColBlkOffset, matrix_start_idx);
+          // //   for(int r = 0; r < 1; r++){
+          // //     for(int c = 0; c < 128; c++){
+          // //       int idx = 256*128 + (c + r * params.problem_size.n());
+          // //       printf("%f, ", *(params.ref_D.data() + idx));
+          // //     }
+          // //     printf("\n");
+          // //   }
+          // // }
+          
+          // // if use group, not unroll
+          // int N = params.problem_size.n();
+          // // void *p = params.ref_D.data();
+          // #pragma unroll
+          // for(int r = 0; r < 128; r++){
+          //   int idx = matrix_start_idx + r * N;
+          //   recomputed_chksum += *(params.ref_D.data() + idx);
+          //   // float temp = params.ref_D.data(idx);
           // }
           
-          // if use group, not unroll
-          int N = params.problem_size.n();
-          // void *p = params.ref_D.data();
-          #pragma unroll
-          for(int r = 0; r < 128; r++){
-            int idx = matrix_start_idx + r * N;
-            recomputed_chksum += *(params.ref_D.data() + idx);
-            // float temp = params.ref_D.data(idx);
-          }
+          // __syncthreads();
+          // if(thread_idx == 0 && smid == 0){
+          //   *(recompute + iter) = clock();
+          // }
           
-          __syncthreads();
-          if(thread_idx == 0 && smid == 0){
-            *(recompute + iter) = clock();
-          }
-          
-          if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
-            diff = 1;
-            printf("%d Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                      iter, smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
-          }
-          __syncthreads();
-          if(thread_idx == 0 && smid == 0){
-            *(compare + iter) = clock();
-          }
-
-          // Cooperative Groups Reduce
-          // int &temp = int_smem[3];
-          // auto g = this_thread_block();
-          // int block_sum = reduce_sum(g, &temp, diff);
-          // if(g.thread_rank() == 0){
-          //   atomicAdd((final_sum + block_idx), block_sum);
-          //   if(*(final_sum + block_idx) != 0){
-          //     printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
-          //   }
-          //   // else{
-          //   //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
-          //   // }
+          // if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+          //   diff = 1;
+          //   printf("%d Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+          //             iter, smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+          // }
+          // __syncthreads();
+          // if(thread_idx == 0 && smid == 0){
+          //   *(compare + iter) = clock();
           // }
 
-          // Atomic sum
-          if(diff != 0){
-            atomicAdd((SM_check_res+smid), diff);
-          }
-          __syncthreads();
-          if(*(SM_check_res+smid)!=0){
-            if(thread_idx == 0){
-              // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
-            }
-          }
+          // // Cooperative Groups Reduce
+          // // int &temp = int_smem[3];
+          // // auto g = this_thread_block();
+          // // int block_sum = reduce_sum(g, &temp, diff);
+          // // if(g.thread_rank() == 0){
+          // //   atomicAdd((final_sum + block_idx), block_sum);
+          // //   if(*(final_sum + block_idx) != 0){
+          // //     printf("Difference detected at iteration: %d, at SM %d. Reduced Sum: %d\n", iter, smid, *(final_sum + block_idx));
+          // //   }
+          // //   // else{
+          // //   //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+          // //   // }
+          // // }
+
+          // // Atomic sum
+          // if(diff != 0){
+          //   atomicAdd((SM_check_res+smid), diff);
+          // }
+          // __syncthreads();
+          // if(*(SM_check_res+smid)!=0){
+          //   if(thread_idx == 0){
+          //     // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+          //   }
+          // }
+
+          check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
 
           __syncthreads();
           if(thread_idx == 0 && smid == 0){
@@ -1050,16 +1146,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         *(checking + iter) = clock();
       }
     }
-
-    // __syncthreads();
-    // if(thread_idx == 0){
-    //   threadblock_buffer[0] = threadblock_tile_offset_m;
-    //   threadblock_buffer[1] = threadblock_tile_offset_k;
-    //   threadblock_buffer[2] = threadblock_tile_offset_n;
-    // }
-    // }
-    
-    
+        
     //
     // Release the semaphore
     //
