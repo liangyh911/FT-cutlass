@@ -552,8 +552,8 @@ public:
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-            matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+    //         matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock

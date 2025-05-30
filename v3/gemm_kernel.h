@@ -971,9 +971,9 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     }
     // __syncthreads();
 
-    if(beyond_bound){
-      return;
-    }
+    // if(beyond_bound){
+    //   return;
+    // }
 
     if(if_split_phase == 0){
       // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
@@ -1018,7 +1018,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           int matrix_start_idx, chk_start_idx;
 
           // iter 1 ~ (n-2)
-          if(iter < (*((SM_schedule)+6)) && iter > 0){
+          if(iter < ((*((SM_schedule)+6))-1) && iter > 0){
             // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
             // if(MatrixRowBlkOffset < 0){
             //   MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
@@ -1032,6 +1032,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
             // chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
 
             last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
           }
           // iter n-1
           else if(iter == (*((SM_schedule)+6))-1){
@@ -1047,7 +1048,17 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
                   check self
             */
             
+            //check last iteration
+            last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 0, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+
+            // __syncthreads();
+            // if(beyond_bound){
+            //   return;
+            // }
+            // check current iteration
             curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
 
             // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
             // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
@@ -1126,7 +1137,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
           //   }
           // }
 
-          check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+          // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
 
           __syncthreads();
           if(thread_idx == 0 && smid == 0){
