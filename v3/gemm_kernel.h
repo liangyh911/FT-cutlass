@@ -437,338 +437,6 @@ struct Gemm {
   }
 }
 
-__device__ int unroll(Params const &params, int matrix_start_idx){
-  int recomputed_chksum = 0;
-
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 0 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 1 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 2 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 3 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 4 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 5 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 6 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 7 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 8 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 9 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 10 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 11 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 12 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 13 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 14 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 15 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 16 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 17 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 18 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 19 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 20 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 21 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 22 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 23 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 24 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 25 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 26 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 27 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 28 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 29 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 30 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 31 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 32 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 33 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 34 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 35 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 36 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 37 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 38 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 39 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 40 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 41 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 42 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 43 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 44 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 45 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 46 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 47 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 48 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 49 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 50 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 51 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 52 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 53 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 54 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 55 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 56 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 57 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 58 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 59 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 60 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 61 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 62 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 63 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 64 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 65 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 66 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 67 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 68 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 69 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 70 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 71 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 72 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 73 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 74 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 75 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 76 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 77 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 78 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 79 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 80 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 81 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 82 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 83 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 84 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 85 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 86 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 87 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 88 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 89 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 90 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 91 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 92 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 93 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 94 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 95 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 96 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 97 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 98 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 99 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 100 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 101 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 102 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 103 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 104 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 105 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 106 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 107 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 108 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 109 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 110 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 111 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 112 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 113 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 114 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 115 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 116 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 117 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 118 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 119 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 120 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 121 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 122 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 123 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 124 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 125 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 126 * params.problem_size.n());
-  recomputed_chksum += *(params.ref_D.data() + matrix_start_idx + 127 * params.problem_size.n());
-  
-  return recomputed_chksum;
-}
-
-__device__ float unroll_small_loop(Params const &params, int matrix_start_idx, int n){
-  float t1 = 0;
-  #pragma unroll 
-  for(int i = 0; i < 4; i++){
-    t1 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t2 = 0;
-  #pragma unroll 
-  for(int i = 4; i < 8; i++){
-    t2 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t3 = 0;
-  #pragma unroll 
-  for(int i = 8; i < 12; i++){
-    t3 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t4 = 0;
-  #pragma unroll 
-  for(int i = 12; i < 16; i++){
-    t4 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t5 = 0;
-  #pragma unroll 
-  for(int i = 16; i < 20; i++){
-    t5 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t6 = 0;
-  #pragma unroll 
-  for(int i = 20; i < 24; i++){
-    t6 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t7 = 0;
-  #pragma unroll 
-  for(int i = 24; i < 28; i++){
-    t7 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t8 = 0;
-  #pragma unroll 
-  for(int i = 28; i < 32; i++){
-    t8 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t9 = 0;
-  #pragma unroll 1
-  for(int i = 32; i < 36; i++){
-    t9 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t10 = 0;
-  #pragma unroll 
-  for(int i = 36; i < 40; i++){
-    t10 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t11 = 0;
-  #pragma unroll 
-  for(int i = 40; i < 44; i++){
-    t11 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t12 = 0;
-  #pragma unroll 
-  for(int i = 44; i < 48; i++){
-    t12 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t13 = 0;
-  #pragma unroll 
-  for(int i = 48; i < 52; i++){
-    t13 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t14 = 0;
-  #pragma unroll
-  for(int i = 52; i < 56; i++){
-    t14 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t15 = 0;
-  #pragma unroll 1
-  for(int i = 56; i < 60; i++){
-    t15 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t16 = 0;
-  #pragma unroll 
-  for(int i = 60; i < 64; i++){
-    t16 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t17 = 0;
-  #pragma unroll 
-  for(int i = 64; i < 68; i++){
-    t17 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t18 = 0;
-  #pragma unroll  
-  for(int i = 68; i < 72; i++){
-    t18 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t19 = 0;
-  #pragma unroll 
-  for(int i = 72; i < 76; i++){
-    t19 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t20 = 0;
-  #pragma unroll 
-  for(int i = 76; i < 80; i++){
-    t20 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t21 = 0;
-  #pragma unroll 
-  for(int i = 80; i < 84; i++){
-    t21 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t22 = 0;
-  #pragma unroll 
-  for(int i = 84; i < 88; i++){
-    t22 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t23 = 0;
-  #pragma unroll 1
-  for(int i = 88; i < 92; i++){
-    t23 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t24 = 0;
-  #pragma unroll 
-  for(int i = 92; i < 96; i++){
-    t24 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t25 = 0;
-  #pragma unroll 
-  for(int i = 96; i < 100; i++){
-    t25 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t26 = 0;
-  #pragma unroll 
-  for(int i = 100; i < 104; i++){
-    t26 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t27 = 0;
-  #pragma unroll 
-  for(int i = 104; i < 108; i++){
-    t27 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t28 = 0;
-  #pragma unroll 
-  for(int i = 108; i < 112; i++){
-    t28 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t29 = 0;
-  #pragma unroll 
-  for(int i = 112; i < 116; i++){
-    t29 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t30 = 0;
-  #pragma unroll 
-  for(int i = 116; i < 120; i++){
-    t30 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t31 = 0;
-  #pragma unroll 
-  for(int i = 120; i < 124; i++){
-    t31 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  float t32 = 0;
-  #pragma unroll 1
-  for(int i = 124; i < 128; i++){
-    t32 += *(params.ref_D.data() + matrix_start_idx + i * n);
-  }
-
-  return (t1+t2+t3+t4+t5+t6+t7+t8+t9+t10+t11+t12+t13+t14+t15+t16+
-          t17+t18+t19+t20+t21+t22+t23+t24+t25+t26+t27+t28+t29+t30+t31+t32);
-}
-
 __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                 uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
                                 unsigned int smid, int block_idx, int num_blk_per_group, RingQueue_v2 *d_queues, int *SM_JOBS){
@@ -862,7 +530,7 @@ __device__ void queue_find_SM(Params const &params, int threadblock_tile_offset_
 
 __device__ void SM_based_schedule(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                   int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
-                                  unsigned int smid, int block_idx, int matrix_SM){
+                                  unsigned int smid, int block_idx, int matrix_SM, int iter){
   if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
     // issue there
     // tmp_matrix_blk = (block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
@@ -901,8 +569,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
     tmp_flag = 1;
 
-    printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix block: (%d), next chk block: (%d)\n", 
-            block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
+    // printf("Check %dth. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix block: (%d), next chk block: (%d)\n", 
+    //         iter, block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
 
   }
   else{
@@ -988,6 +656,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     
     int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
     int thread_idx = threadIdx.x;
+
     Semaphore semaphore(params.semaphore + block_idx, thread_idx);
 
     if(!beyond_bound){
@@ -1228,6 +897,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       int &flag = int_smem[2];
 
       int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
+      int matrix_SM = *(SM_schedule);
       // block view
       if(thread_idx == 0){
         // d_queues->enqueue(smid, smid);
@@ -1237,7 +907,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
         // group_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, SM_JOBS);
         // queue_find_SM(params, threadblock_tile_offset_m, threadblock_tile_offset_n, Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS);
-        SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, *(SM_schedule));
+        SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, matrix_SM, iter);
 
         next_matrix_block_idx = tmp_matrix_blk;
         next_chk_block_idx = tmp_chk_blk;
@@ -1263,22 +933,27 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       // }
 
       // begin chkeck
+      
       if(flag == 1){
         if (threadblock_tile_offset_m != (params.grid_tiled_shape.m() - 1)){
           int MatrixColBlkOffset, MatrixRowBlkOffset, matrix_start_idx, ChkColBlkOffset, ChkRowBlkOffset, chk_start_idx;
-          
+          add_col = 0;
+
+          // iter 1 ~ n-2
           if(iter < (*((SM_schedule)+6)) && iter > 0){
-            MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
             MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
             if(MatrixRowBlkOffset < 0){
               MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+              add_col = 1;
             }
+            MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
             matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-            ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
             ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
+            ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
             chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
           }
+          // iter n-1
           else if(iter == (*((SM_schedule)+6))-1){
             MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
             MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
@@ -1288,9 +963,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
             ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
             chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
           }
+          // iter 0
           else{
             continue;
-          }
+          } 
 
           float recomputed_chksum = 0;
           int diff = 0;
