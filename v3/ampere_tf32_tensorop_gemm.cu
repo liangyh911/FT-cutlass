@@ -432,7 +432,7 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132));
+  int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132)) + 1;
 
   int *elapsed_compute, *elapsed_finding, *elapsed_recompute, *elapsed_compare, *elapsed_reduce;
   int cnt_matrix = 0, cnt_chksum = 0;
@@ -465,9 +465,17 @@ int run(Options &options) {
     for(int i = 0; i < gemm_iter; i++){
       elapsed_compute[i] += (compute[i]-all_start[i]);
       elapsed_finding[i] += (finding[i]-all_start[i]);
-      elapsed_recompute[i] += (recompute[i]-all_start[i]);
-      elapsed_compare[i] += (compare[i]-all_start[i]);
-      elapsed_reduce[i] += (checking[i]-all_start[i]);
+      
+      if(i != 0 && i == (gemm_iter-1)){
+        elapsed_recompute[i] += (recompute[i]-all_start[i-1]);
+        elapsed_compare[i] += (compare[i]-all_start[i-1]);
+        elapsed_reduce[i] += (checking[i]-all_start[i-1]);
+      }
+      else{
+        elapsed_recompute[i] += (recompute[i]-all_start[i]);
+        elapsed_compare[i] += (compare[i]-all_start[i]);
+        elapsed_reduce[i] += (checking[i]-all_start[i]);
+      }
     }
   
     memset(all_start, 0, size);

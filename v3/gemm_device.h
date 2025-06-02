@@ -557,7 +557,7 @@ public:
 
 
     // Profile using clock
-    size = SM_iter * sizeof(int);
+    size = (SM_iter+1) * sizeof(int);
     cudaMalloc((void**)&d_all_start, size);
     cudaMemset(d_all_start, 0, size);
 
@@ -667,7 +667,7 @@ public:
       // }
     }
 
-    size = SM_iter * sizeof(int);
+    size = (SM_iter+1) * sizeof(int);
     cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
     cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);

@@ -1056,10 +1056,11 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
                   check last
                   check self
             */
-            
-            //check last iteration
-            last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
-            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 0, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+            if(*(SM_schedule+6) != 1){
+              //check last iteration
+              last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
+              check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+            }
 
             // __syncthreads();
             if(beyond_bound){
@@ -1067,7 +1068,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
             }
             // check current iteration
             curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
-            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter+1, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
 
             // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
             // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
