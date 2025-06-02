@@ -972,11 +972,11 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // if(block_idx == 94){
     //   printf("iter: %d, thread: %d, value: %f\n", iter, thread_idx, *(params.ref_D.data() + thread_idx));
     // }
-    if(iter == (*((SM_schedule)+6))-1){
-      cooperative_groups::this_grid().sync();
-    }
-    else if(iter == 0){
+    if(iter == 0 && (*((SM_schedule)+6)) != 1){
       continue;
+    }
+    else if(iter == (*((SM_schedule)+6))-1){
+      cooperative_groups::this_grid().sync();
     }
     // __syncthreads();
 
@@ -1028,18 +1028,6 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
           // iter 1 ~ (n-2)
           if(iter < ((*((SM_schedule)+6))-1) && iter > 0){
-            // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m() - (*(SM_schedule+3));
-            // if(MatrixRowBlkOffset < 0){
-            //   MatrixRowBlkOffset += (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-            //   add_col = 1;
-            // }
-            // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
-            // matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-
-            // ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-            // ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
-            // chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-
             last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
             check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
           }
@@ -1056,27 +1044,21 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
                   check last
                   check self
             */
+            int ti = iter;
             if(*(SM_schedule+6) != 1){
               //check last iteration
               last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
-              check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+              check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
+              ti++;
             }
-
+            // cooperative_groups::this_grid().sync();
             // __syncthreads();
             if(beyond_bound){
               return;
             }
             // check current iteration
             curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, SM_schedule, thread_idx);
-            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter+1, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
-
-            // MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
-            // MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
-            // matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-
-            // ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
-            // ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-            // chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx);
           }
           // iter 0
           // else{
