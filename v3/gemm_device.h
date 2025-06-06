@@ -610,7 +610,7 @@ public:
     // int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 1;
+    int iterations = 10000;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -695,9 +695,9 @@ public:
     cudaFree(Lock_Signature);
     cudaFree(SM_schedule);
 
-    // if(deBug){
-    //   printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);
-    // }
+    if(deBug){
+      printf("computer kernel time: %f\n", t_compute/iterations);
+    }
 
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
   }
