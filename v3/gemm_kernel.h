@@ -657,18 +657,18 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     if(diff != 0){
       atomicAdd((SM_check_res+smid), diff);
     }
-    // __syncthreads();
-    // if(*(SM_check_res+smid)!=0){
-    //   if(thread_idx == 0){
-    //     printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
-    //   }
-    // }
-
     __syncthreads();
-    if(thread_idx == 0 && smid == 0){
-      *(checking + iter) = clock();
-      // printf("checking: %d\n", *(checking + iter));
+    if(*(SM_check_res+smid)!=0){
+      if(thread_idx == 0){
+        printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+      }
     }
+
+    // __syncthreads();
+    // if(thread_idx == 0 && smid == 0){
+    //   *(checking + iter) = clock();
+    //   // printf("checking: %d\n", *(checking + iter));
+    // }
   }
 
   /// Executes one GEMM
