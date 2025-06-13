@@ -588,7 +588,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
     int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
     int ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
-    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
   }
 
   __device__ void last_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
@@ -605,7 +605,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
     int ChkRowBlkOffset = (params.grid_tiled_shape.m() - (*(SM_schedule+2)));
     int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m() - (*(SM_schedule+4)) - add_col;
-    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+    chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
   }
 
   __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
@@ -677,14 +677,15 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
                   uint8_t *Signature_Array, int *Lock_Signature, 
                   int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule, int *SM_check_res,
                   int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
-    
+
     // get SM id
     unsigned int smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
 
     // if(threadIdx.x==0){
-    //   printf("operator smid: %d\n", smid);
+    //   printf("shape: (%d %d %d), warpGemm: (%d, %d, %d)\n", Mma::Shape::kM, Mma::Shape::kN, Mma::Shape::kK, Mma::WarpGemm::kM, Mma::WarpGemm::kN, Mma::WarpGemm::kK);
+    //   // printf("operator smid: %d\n", smid);
     // }
               
     // Compute threadblock location
@@ -1092,10 +1093,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       *(Signature_Array + block_idx) = (uint8_t)smid;
     }
     else{
-      __syncthreads();
-      if(thread_idx == 0 && smid == 0){
-        *(checking + iter) = clock();
-      }
+      // __syncthreads();
+      // if(thread_idx == 0 && smid == 0){
+      //   *(checking + iter) = clock();
+      // }
     }
         
     //

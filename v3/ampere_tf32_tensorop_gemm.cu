@@ -44,7 +44,7 @@ data types in tensor cores.  One big advantage is that we can load in fp32 data 
 implicitly to tf32 inside the GEMM kernel which means no change is needed to accelerate traditional
 fp32 data by using NVIDIA Ampere architecture.
 
-nvcc ampere_tf32_tensorop_gemm.cu -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o cutlass_test.exe
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o out.exe
 ncu -f -o no_unroll_128 --set full ./out.exe --m=1408 --n=1408 --k=1408 --split=0 --iterations=1
 
 */
@@ -147,7 +147,7 @@ struct Options {
 
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
-      problem_size.m() += partition * 2;
+      problem_size.m() += partition * 1;
     }
   }
 
@@ -287,8 +287,8 @@ int run(Options &options) {
   //     0);  // <- Fill matrix C on host with uniform-distribution random data
   
   if(options.if_split_phase==1 || options.if_split_phase==0){
-    int m = 2;
-    int k = problem_size.m() - 2 * options.partition;
+    int m = 1;
+    int k = problem_size.m() - 1 * options.partition;
     int n = problem_size.k();
     for(int r = 0; r < k; r++){
       for(int c = 0; c < n; c++){
@@ -301,11 +301,11 @@ int run(Options &options) {
     chk_vector = (float*)malloc(sizeof(float)* k * 2);
     for(int c = 0; c < k; c++){
       chk_vector[c] = (float)1;
-      chk_vector[c + k] = (float)(c+1);
+      // chk_vector[c + k] = (float)(c+1);
     }
     // encode chksum
     for(int p = 0; p < options.partition; p++){
-      for(int r = 0; r < 2; r++){
+      for(int r = 0; r < 1; r++){
         for(int c = 0; c < n; c++){
             float sum = 0.0;
             for(int i = 0; i < (k/options.partition); i++){
@@ -314,7 +314,7 @@ int run(Options &options) {
                 sum += (a * b);
             }
             // printf("%f, ", sum);
-            int idx = (k * n) + (r * n + c) + p * (2 * n);
+            int idx = (k * n) + (r * n + c) + p * (1 * n);
             *(tensor_a.host_data() + idx) = sum;
         }
         // printf("\n");

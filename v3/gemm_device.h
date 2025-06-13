@@ -528,7 +528,7 @@ public:
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
 
     // SM based schedule 
-    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128/2))));
+    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128))));
     int max_col = (int)ceil((double)(132 /( params_.grid_tiled_shape.m() - 1)));
     if(max_col > params_.grid_tiled_shape.n()){
       max_col = params_.grid_tiled_shape.n();
@@ -552,8 +552,7 @@ public:
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-    //         matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_sext_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
@@ -610,7 +609,7 @@ public:
     // int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 10000;
+    int iterations = 1;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
