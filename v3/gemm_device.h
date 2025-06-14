@@ -528,7 +528,7 @@ public:
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
 
     // SM based schedule 
-    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128))));
+    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
     int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
     if(max_col > params_.grid_tiled_shape.n()){
       max_col = params_.grid_tiled_shape.n();
@@ -540,7 +540,7 @@ public:
     int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
     int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
     // iteration based on GeMM not (GeMM + chksum)
-    int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)132));
+    int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)matrix_SM));
 
     // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
     int *SM_schedule;
@@ -553,8 +553,8 @@ public:
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-            matrix_SM, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+    //         matrix_SM, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
@@ -580,7 +580,7 @@ public:
     cudaMalloc((void**)&d_all_start_for_split, size);
     cudaMemset(d_all_start_for_split, 0, size);
 
-    printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
+    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
@@ -611,7 +611,7 @@ public:
     // int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 1;
+    int iterations = 3;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -619,7 +619,14 @@ public:
     // dim3 new_block(64,1,1);
     dim3 new_grid(12,11,1);
 
+    void *kernelArgs[] = {&params_, &Signature_Array, &Lock_Signature, &final_sum, &if_split_phase, 
+                &d_queues, &d_SM_JOBS, &SM_schedule, &SM_check_res,
+                &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking};
+
     cutlass::arch::synclog_setup();
+
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
+
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     cudaDeviceSynchronize();
@@ -632,9 +639,6 @@ public:
       //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
       //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
       
-      void *kernelArgs[] = {&params_, &Signature_Array, &Lock_Signature, &final_sum, &if_split_phase, 
-                                                      &d_queues, &d_SM_JOBS, &SM_schedule, &SM_check_res,
-                                                      &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking};
       cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
     }
     if(deBug){
