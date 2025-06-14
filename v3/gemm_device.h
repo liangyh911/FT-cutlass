@@ -529,7 +529,7 @@ public:
 
     // SM based schedule 
     int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128))));
-    int max_col = (int)ceil((double)(132 /( params_.grid_tiled_shape.m() - 1)));
+    int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
     if(max_col > params_.grid_tiled_shape.n()){
       max_col = params_.grid_tiled_shape.n();
     }
@@ -539,6 +539,7 @@ public:
     int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
     int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
     int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
+    // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)132));
 
     // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
@@ -552,7 +553,8 @@ public:
     cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_sext_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+            matrix_SM, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
@@ -578,7 +580,7 @@ public:
     cudaMalloc((void**)&d_all_start_for_split, size);
     cudaMemset(d_all_start_for_split, 0, size);
 
-    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
+    printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);

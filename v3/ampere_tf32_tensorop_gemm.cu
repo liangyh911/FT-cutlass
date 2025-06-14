@@ -209,7 +209,7 @@ using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
+    cutlass::gemm::GemmShape<128, 256, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
 // This code section describes tile size a warp will compute
 using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
 // This code section describes the size of MMA op
@@ -298,7 +298,7 @@ int run(Options &options) {
       }
     }
     float *chk_vector;
-    chk_vector = (float*)malloc(sizeof(float)* k * 2);
+    chk_vector = (float*)malloc(sizeof(float)* k * 1);
     for(int c = 0; c < k; c++){
       chk_vector[c] = (float)1;
       // chk_vector[c + k] = (float)(c+1);
@@ -495,8 +495,8 @@ int run(Options &options) {
     float avg_elapsed_compare = elapsed_compare[i] / options.iterations;
     float avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
   
-    printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
-          avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+    // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
+    //       avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
   }
 
 
