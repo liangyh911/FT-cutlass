@@ -544,7 +544,7 @@ public:
     int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
     int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
-    int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)matrix_SM));
+    int SM_iter = (int)ceil((double)(((params_.grid_tiled_shape.m() - checksumblk_per_col) * params_.grid_tiled_shape.n())/(double)matrix_SM));
 
     // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
     int *SM_schedule;
@@ -705,7 +705,7 @@ public:
     cudaFree(SM_schedule);
 
     if(deBug){
-      printf("computer kernel time: %f\n", t_compute/iterations);
+      printf("compute kernel time: %f\n", t_compute/iterations);
     }
 
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;

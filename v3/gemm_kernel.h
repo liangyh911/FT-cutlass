@@ -634,8 +634,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     
     if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
       diff = 1;
-      // printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-      //           iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+      printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+                iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
     }
     // __syncthreads();
     // if(thread_idx == 0 && smid == 0){
@@ -663,7 +663,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     __syncthreads();
     if(*(SM_check_res+smid)!=0){
       if(thread_idx == 0){
-        printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+        // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
         // *(SM_check_res+smid) = 0;
       }
     }
@@ -980,11 +980,12 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // if(block_idx == 94){
     //   printf("iter: %d, thread: %d, value: %f\n", iter, thread_idx, *(params.ref_D.data() + thread_idx));
     // }
-    if(iter == 0 && (*((SM_schedule)+6)) != 1){
-      continue;
-    }
+    
+    // if(iter == 0 && (*((SM_schedule)+6)) != 1){
+    //   continue;
+    // }
     // else if(iter == (*((SM_schedule)+6))-1){
-      cooperative_groups::this_grid().sync();
+    //   cooperative_groups::this_grid().sync();
     // }
     
     // __syncthreads();
@@ -994,6 +995,13 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // }
 
     if(if_split_phase == 0){
+      if(iter == 0 && (*((SM_schedule)+6)) != 1){
+        continue;
+      }
+      else if(iter == (*((SM_schedule)+6))-1){
+        cooperative_groups::this_grid().sync();
+      }
+
       // __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
       int *int_smem = reinterpret_cast<int *>(&shared_storage);
       int &next_matrix_block_idx = int_smem[0];
