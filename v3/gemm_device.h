@@ -527,8 +527,12 @@ public:
 
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
 
-    // SM based schedule 
-    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
+    // SM based schedule
+    int checksumblk_per_col = 0;
+    if(if_split_phase == 0){
+      // if able ABFT
+      checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
+    }
     int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
     if(max_col > params_.grid_tiled_shape.n()){
       max_col = params_.grid_tiled_shape.n();
@@ -538,7 +542,7 @@ public:
 
     int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
     int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
-    int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
+    int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)matrix_SM));
 
