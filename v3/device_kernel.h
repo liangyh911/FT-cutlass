@@ -90,9 +90,10 @@ __global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, i
 /// Generic CUTLASS kernel template.
 template <typename Operator>
 CUTLASS_GLOBAL
-void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
-            int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, int *SM_JOBS, int *SM_schedule, int *SM_check_res,
-            int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking) {
+void Kernel(typename Operator::Params params, 
+            int if_split_phase, int *SM_check_res
+            // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
+          ) {
   // unsigned int smid;
   // asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
   // if(threadIdx.x==0){
@@ -110,8 +111,9 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
 
   Operator op;
 
-  op(params, *shared_storage, Signature_Array, Lock_Signature, final_sum, if_split_phase, d_queues, SM_JOBS, SM_schedule, SM_check_res,
-            all_start, compute, finding, recompute, compare, checking);
+  op(params, *shared_storage, if_split_phase, SM_check_res
+    // all_start, compute, finding, recompute, compare, checking
+  );
   cutlass::arch::synclog_print();
 }
 

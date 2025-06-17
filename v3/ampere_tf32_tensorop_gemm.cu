@@ -44,8 +44,8 @@ data types in tensor cores.  One big advantage is that we can load in fp32 data 
 implicitly to tf32 inside the GEMM kernel which means no change is needed to accelerate traditional
 fp32 data by using NVIDIA Ampere architecture.
 
-nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o out.exe
-ncu -f -o no_unroll_128 --set full ./out.exe --m=1408 --n=1408 --k=1408 --split=0 --iterations=1
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -lineinfo -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o out.exe
+ncu -f -o no_unroll_128 --set full ./out.exe --m=38400 --n=38400 --k=38400 --split=2 --iterations=1
 
 */
 
@@ -290,19 +290,27 @@ int run(Options &options) {
     int m = 1;
     int k = problem_size.m() - 1 * options.partition;
     int n = problem_size.k();
+    // printf("begin init A %d %d, %d\n", options.partition, k, n);
     for(int r = 0; r < k; r++){
       for(int c = 0; c < n; c++){
         int idx = r * n + c;
+        // if(r > 41942){
+        //   // 2048
+        //   printf("%d\n", c);
+        // }
         // *(tensor_a.host_data()+idx) = (float)rand()/RAND_MAX;
         *(tensor_a.host_data()+idx) = (float)1;
       }
+      // printf("%d\n", r); //41942
     }
+    // printf("init A\n");
     float *chk_vector;
     chk_vector = (float*)malloc(sizeof(float)* k * 1);
     for(int c = 0; c < k; c++){
       chk_vector[c] = (float)1;
       // chk_vector[c + k] = (float)(c+1);
     }
+    // printf("init check vector\n");
     // encode chksum
     for(int p = 0; p < options.partition; p++){
       for(int r = 0; r < 1; r++){
@@ -320,6 +328,7 @@ int run(Options &options) {
         // printf("\n");
       }
     }
+    // printf("encode chksum\n");
     // printf("[ \n");
     // for(int r = 0; r < problem_size.m(); r++){
     //   for(int c = 0; c < problem_size.k(); c++){
@@ -432,82 +441,82 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132)) + 1;
+  // int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132)) + 1;
 
-  int *elapsed_compute, *elapsed_finding, *elapsed_recompute, *elapsed_compare, *elapsed_reduce;
-  int cnt_matrix = 0, cnt_chksum = 0;
+  // int *elapsed_compute, *elapsed_finding, *elapsed_recompute, *elapsed_compare, *elapsed_reduce;
+  // int cnt_matrix = 0, cnt_chksum = 0;
 
-  int *all_start, *compute, *finding, *recompute, *compare, *checking, *h_SM_JOBS, *all_start_for_split;
+  // int *all_start, *compute, *finding, *recompute, *compare, *checking, *h_SM_JOBS, *all_start_for_split;
 
-  size_t size = sizeof(int) * gemm_iter;
+  // size_t size = sizeof(int) * gemm_iter;
 
-  all_start = (int*)malloc(size);
-  compute = (int*)malloc(size);
-  finding = (int*)malloc(size);
-  recompute = (int*)malloc(size);
-  compare = (int*)malloc(size);
-  checking = (int*)malloc(size);
-  h_SM_JOBS = (int*)malloc(size);
+  // all_start = (int*)malloc(size);
+  // compute = (int*)malloc(size);
+  // finding = (int*)malloc(size);
+  // recompute = (int*)malloc(size);
+  // compare = (int*)malloc(size);
+  // checking = (int*)malloc(size);
+  // h_SM_JOBS = (int*)malloc(size);
 
-  elapsed_compute = (int*)malloc(size);
-  elapsed_finding = (int*)malloc(size);
-  elapsed_recompute = (int*)malloc(size);
-  elapsed_compare = (int*)malloc(size);
-  elapsed_reduce = (int*)malloc(size);
+  // elapsed_compute = (int*)malloc(size);
+  // elapsed_finding = (int*)malloc(size);
+  // elapsed_recompute = (int*)malloc(size);
+  // elapsed_compare = (int*)malloc(size);
+  // elapsed_reduce = (int*)malloc(size);
 
-  all_start_for_split = (int*)malloc(size);
+  // all_start_for_split = (int*)malloc(size);
 
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
-    status = gemm_op(all_start, compute, finding, recompute, compare, checking, h_SM_JOBS, all_start_for_split, options.if_split_phase);
+    status = gemm_op(options.if_split_phase);
     // CUTLASS_CHECK(status);
 
-    for(int i = 0; i < gemm_iter; i++){
-      elapsed_compute[i] += (compute[i]-all_start[i]);
-      elapsed_finding[i] += (finding[i]-all_start[i]);
+    // for(int i = 0; i < gemm_iter; i++){
+    //   elapsed_compute[i] += (compute[i]-all_start[i]);
+    //   elapsed_finding[i] += (finding[i]-all_start[i]);
       
-      if(i != 0 && i == (gemm_iter-1)){
-        elapsed_recompute[i] += (recompute[i]-all_start[i-1]);
-        elapsed_compare[i] += (compare[i]-all_start[i-1]);
-        elapsed_reduce[i] += (checking[i]-all_start[i-1]);
-      }
-      else{
-        elapsed_recompute[i] += (recompute[i]-all_start[i]);
-        elapsed_compare[i] += (compare[i]-all_start[i]);
-        elapsed_reduce[i] += (checking[i]-all_start[i]);
-      }
-    }
+    //   if(i != 0 && i == (gemm_iter-1)){
+    //     elapsed_recompute[i] += (recompute[i]-all_start[i-1]);
+    //     elapsed_compare[i] += (compare[i]-all_start[i-1]);
+    //     elapsed_reduce[i] += (checking[i]-all_start[i-1]);
+    //   }
+    //   else{
+    //     elapsed_recompute[i] += (recompute[i]-all_start[i]);
+    //     elapsed_compare[i] += (compare[i]-all_start[i]);
+    //     elapsed_reduce[i] += (checking[i]-all_start[i]);
+    //   }
+    // }
   
-    memset(all_start, 0, size);
-    memset(compute, 0, size);
-    memset(finding, 0, size);
-    memset(recompute, 0, size);
-    memset(compare, 0, size);
-    memset(checking, 0, size);
-    memset(h_SM_JOBS, 0, size);
-    memset(all_start_for_split, 0, size);
+    // memset(all_start, 0, size);
+    // memset(compute, 0, size);
+    // memset(finding, 0, size);
+    // memset(recompute, 0, size);
+    // memset(compare, 0, size);
+    // memset(checking, 0, size);
+    // memset(h_SM_JOBS, 0, size);
+    // memset(all_start_for_split, 0, size);
   }
 
-  for(int i = 0; i < gemm_iter; i++){
-    float avg_elapsed_compute = elapsed_compute[i] / options.iterations;
-    float avg_elapsed_finding = elapsed_finding[i] / options.iterations;
-    float avg_elapsed_recompute = elapsed_recompute[i] / options.iterations;
-    float avg_elapsed_compare = elapsed_compare[i] / options.iterations;
-    float avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
+  // for(int i = 0; i < gemm_iter; i++){
+  //   float avg_elapsed_compute = elapsed_compute[i] / options.iterations;
+  //   float avg_elapsed_finding = elapsed_finding[i] / options.iterations;
+  //   float avg_elapsed_recompute = elapsed_recompute[i] / options.iterations;
+  //   float avg_elapsed_compare = elapsed_compare[i] / options.iterations;
+  //   float avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
   
-    // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
-    //       avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
-  }
+  //   // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
+  //   //       avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+  // }
 
 
-  free(all_start);
-  free(compute);
-  free(finding);
-  free(recompute);
-  free(compare);
-  free(checking);
-  free(h_SM_JOBS);
-  free(all_start_for_split);
+  // free(all_start);
+  // free(compute);
+  // free(finding);
+  // free(recompute);
+  // free(compare);
+  // free(checking);
+  // free(h_SM_JOBS);
+  // free(all_start_for_split);
 
   //
   // Stop profiling loop
