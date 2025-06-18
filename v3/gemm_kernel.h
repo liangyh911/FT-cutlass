@@ -213,6 +213,13 @@ struct Gemm {
     return Status::kSuccess;
   }
 
+__device__ void block_to_coordinate(int block_idx, int grid_tiled_shape_m,
+                                    int &threadblock_tile_offset_m, int &threadblock_tile_offset_n){
+  
+  threadblock_tile_offset_m = block_idx % grid_tiled_shape_m;
+  threadblock_tile_offset_n = block_idx / grid_tiled_shape_m;
+}
+
 __device__ void SM_based_schedule(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                   int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
                                   unsigned int smid, int block_idx, int matrix_SM, int iter, int checksumblk_per_col){
@@ -299,6 +306,16 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
   }
 
+  // __device__ void last_iter_chk_offsets_v2(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+  //                                       int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, int matrix_SM,
+  //                                       int thread_idx){
+  //   int last_local_blk = next_matrix_block_idx - (next_matrix_block_idx / params.grid_tiled_shape.m()) * checksumblk_per_col - (iter * matrix_SM);
+  //   int last_matrix_block_idx = last_local_blk + (params.grid_tiled_shape.m() - checksumblk_per_col) / last_local_blk;
+
+  //   int 
+  //   curr_iter_chk_offsets(Params const &params, matrix_start_idx, chk_start_idx, last_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, thread_idx);
+  // }
+
   __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
                               int iter, 
                               // int *recompute, int *compare, int *checking, 
@@ -368,18 +385,22 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       // if able ABFT
       checksumblk_per_col = (int)(ceil((double)((params.grid_tiled_shape.m()) / (double)(128))));
     }
-    int max_col = (int)ceil((double)132 / (double)(params.grid_tiled_shape.m() - checksumblk_per_col));
+    
+    int matrix_shape_m = params.grid_tiled_shape.m() - checksumblk_per_col;
+
+    int max_col = (int)ceil((double)132 / (double)(matrix_shape_m));
     if(max_col > params.grid_tiled_shape.n()){
       max_col = params.grid_tiled_shape.n();
     }
+
     int remaining_SM = (int)(max_col * checksumblk_per_col);
     int matrix_SM = (int)(132 - remaining_SM);
 
-    int matrix_next_blk_offset_m = matrix_SM % (params.grid_tiled_shape.m() - checksumblk_per_col);
-    int matrix_next_blk_offset_n = (matrix_SM / (params.grid_tiled_shape.m() - checksumblk_per_col));
+    int matrix_next_blk_offset_m = matrix_SM % (matrix_shape_m);
+    int matrix_next_blk_offset_n = (matrix_SM / matrix_shape_m);
     int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
-    int SM_iter = (int)ceil((double)(((params.grid_tiled_shape.m() - checksumblk_per_col) * params.grid_tiled_shape.n())/(double)matrix_SM));
+    int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
               
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -397,28 +418,37 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     for(int iter = 0; iter < SM_iter; iter++){
 
     bool beyond_bound = false;
+    threadblock_tile_offset_k = threadblock_tile_offset.k();
+    int block_idx;
+
     // new offset - first Z matrix, last Y checksum
-    int add_col = 0;
-    // int block_idx;
+    // int add_col = 0;
     // SM_schedule (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
+
     if(smid < matrix_SM){
       // for matrix
+      int local_matrix_idx = smid + iter * matrix_SM;
+      block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
+      block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
+
       // block_idx = smid + iter * matrix_SM;
       // threadblock_tile_offset_m = block_idx % params.grid_tiled_shape.m();
-      // threadblock_tile_offset_k = threadblock_tile_offset.k();
       // threadblock_tile_offset_n = block_idx / params.grid_tiled_shape.m();
 
-      threadblock_tile_offset_m = (smid % (params.grid_tiled_shape.m() - checksumblk_per_col) + iter * matrix_next_blk_offset_m) % (params.grid_tiled_shape.m() - checksumblk_per_col);
-      add_col = ((smid % (params.grid_tiled_shape.m() - checksumblk_per_col) + iter * matrix_next_blk_offset_m) / (params.grid_tiled_shape.m() - checksumblk_per_col));
-      threadblock_tile_offset_k = threadblock_tile_offset.k();
-      threadblock_tile_offset_n = smid / (params.grid_tiled_shape.m() - checksumblk_per_col) + iter * matrix_next_blk_offset_n + add_col;
+      // threadblock_tile_offset_m = (smid % (matrix_shape_m) + iter * matrix_next_blk_offset_m) % (matrix_shape_m);
+      // add_col = ((smid % (matrix_shape_m) + iter * matrix_next_blk_offset_m) / (matrix_shape_m));
+      // threadblock_tile_offset_n = smid / (matrix_shape_m) + iter * matrix_next_blk_offset_n + add_col;
     }
     else{
       // for checksum
-      unsigned int local_chk_blk_idx = smid - matrix_SM;
-      threadblock_tile_offset_m = (params.grid_tiled_shape.m() - checksumblk_per_col) + (local_chk_blk_idx % checksumblk_per_col);
-      threadblock_tile_offset_k = threadblock_tile_offset.k();
-      threadblock_tile_offset_n = local_chk_blk_idx / checksumblk_per_col + iter * checksum_next_blk_offset_n;
+      unsigned int local_chk_blk_idx = (smid - matrix_SM) + iter * remaining_SM;
+      block_to_coordinate(local_chk_blk_idx, checksumblk_per_col, threadblock_tile_offset_m, threadblock_tile_offset_n);
+      threadblock_tile_offset_m += matrix_shape_m;
+      block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+      
+      // unsigned int local_chk_blk_idx = smid - matrix_SM;
+      // threadblock_tile_offset_m = matrix_shape_m + (local_chk_blk_idx % checksumblk_per_col);
+      // threadblock_tile_offset_n = local_chk_blk_idx / checksumblk_per_col + iter * checksum_next_blk_offset_n;
     }
     if(threadblock_tile_offset_n >= params.grid_tiled_shape.n()){
       // return;
@@ -428,12 +458,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // if(smid == 23 && threadIdx.x==0){
     //   printf("smid: %d, m: %d, n:%d\n", smid, threadblock_tile_offset_m,threadblock_tile_offset_n);
     // }
-
-    // threadblock_tile_offset_m = threadblock_tile_offset.m();
-    // threadblock_tile_offset_k = threadblock_tile_offset.k();
-    // threadblock_tile_offset_n = threadblock_tile_offset.n();
     
-    int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+    // int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
     int thread_idx = threadIdx.x;
 
     Semaphore semaphore(params.semaphore + block_idx, thread_idx);
@@ -675,7 +701,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // if(beyond_bound){
     //   return;
     // }
-    #if 1
+    // #if 0
     if(if_split_phase == 0){
       if(iter == 0 && SM_iter != 1){
         continue;
@@ -763,7 +789,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
       //   *(checking + iter) = clock();
       // }
     }
-    #endif
+    // #endif
         
     //
     // Release the semaphore

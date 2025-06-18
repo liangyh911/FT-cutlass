@@ -575,7 +575,7 @@ public:
     // int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 0;
+    int iterations = 100;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
