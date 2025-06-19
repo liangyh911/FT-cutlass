@@ -220,6 +220,15 @@ __device__ void block_to_coordinate(int block_idx, int grid_tiled_shape_m,
   threadblock_tile_offset_n = block_idx / grid_tiled_shape_m;
 }
 
+__device__ int get_corresponding_chk_idx(int grid_tiled_shape_m, int matrix_blk, 
+                                        int threadblock_tile_offset_m, int matrix_shape_m){
+  int n = (matrix_blk) / grid_tiled_shape_m;
+  int m = threadblock_tile_offset_m / 128;
+  // int chk_blk = grid_tiled_shape_m * (n + 1) - 1;
+  int chk_blk = (grid_tiled_shape_m * n) + matrix_shape_m + m;
+  return chk_blk;
+}
+
 __device__ void SM_based_schedule(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                   int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
                                   unsigned int smid, int block_idx, int matrix_SM, int iter, int checksumblk_per_col){
@@ -257,9 +266,11 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     if ((tmp_matrix_blk + 1) % (params.grid_tiled_shape.m()-(checksumblk_per_col-1)) == 0){
       tmp_matrix_blk = (tmp_matrix_blk + checksumblk_per_col) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
     }
-    int n = (tmp_matrix_blk) / params.grid_tiled_shape.m();
+    // int n = (tmp_matrix_blk) / params.grid_tiled_shape.m();
     // int m = threadblock_tile_offset_m / 128;
-    tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
+    // tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
+    
+    tmp_chk_blk = get_corresponding_chk_idx(params.grid_tiled_shape.m(), tmp_matrix_blk, threadblock_tile_offset_m, (params.grid_tiled_shape.m() - checksumblk_per_col));
     tmp_flag = 1;
 
     // if(smid == 130 || smid == 128){
@@ -309,10 +320,14 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
   // __device__ void last_iter_chk_offsets_v2(Params const &params, int &matrix_start_idx, int &chk_start_idx,
   //                                       int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, int matrix_SM,
   //                                       int thread_idx){
+  //   // matrix_blk
   //   int last_local_blk = next_matrix_block_idx - (next_matrix_block_idx / params.grid_tiled_shape.m()) * checksumblk_per_col - (iter * matrix_SM);
   //   int last_matrix_block_idx = last_local_blk + (params.grid_tiled_shape.m() - checksumblk_per_col) / last_local_blk;
 
-  //   int 
+  //   // check blk
+  //   next_chk_block_idx = get_corresponding_chk_idx(params.grid_tiled_shape.m(), last_matrix_block_idx);
+  
+  //   // offsets
   //   curr_iter_chk_offsets(Params const &params, matrix_start_idx, chk_start_idx, last_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, thread_idx);
   // }
 
@@ -398,7 +413,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
     int matrix_next_blk_offset_m = matrix_SM % (matrix_shape_m);
     int matrix_next_blk_offset_n = (matrix_SM / matrix_shape_m);
-    int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
+    // int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
               
@@ -723,13 +738,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         SM_based_schedule(params, threadblock_tile_offset_m, threadblock_tile_offset_n, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, matrix_SM, iter, checksumblk_per_col);
 
         next_matrix_block_idx = tmp_matrix_blk;
+        // 
         next_chk_block_idx = tmp_chk_blk;
+        // 
         flag = tmp_flag;
-
-        // int value; 
-        // if(d_queues->dequeue(smid, &value)){
-        //   printf("SM %d dequeued value: %d\n", smid, value);
-        // }
       }
       __syncthreads();
       // if(thread_idx == 0 && smid == 0){
