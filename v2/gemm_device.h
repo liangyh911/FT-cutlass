@@ -170,13 +170,12 @@ namespace device {
     class Gemm;
 */
 
-__device__ uint8_t *Signature_Array;
-__device__ int *Lock_Signature;
-__device__ RingQueue_v2 *d_queues;
-__device__ int *d_buffer, *d_head, *d_tail;
+// __device__ uint8_t *Signature_Array;
+// __device__ int *Lock_Signature;
+// __device__ RingQueue_v2 *d_queues;
+// __device__ int *d_buffer, *d_head, *d_tail;
 
 __device__ int *SM_check_res;
-
 __device__ int *d_all_start, *d_compute, *d_finding, * d_recompute, *d_compare, *d_checking, *d_SM_JOBS, *d_all_start_for_split;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
 
@@ -486,98 +485,64 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, cudaStream_t stream = nullptr) {
 
-    // allocate matrix and checksum signature
+    // // SM based schedule
+    // int checksumblk_per_col = 0;
+    // if(if_split_phase == 0){
+    //   // if able ABFT
+    //   checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
+    // }
+    // int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
+    // if(max_col > params_.grid_tiled_shape.n()){
+    //   max_col = params_.grid_tiled_shape.n();
+    // }
+    // int remaining_SM = (int)(max_col * checksumblk_per_col);
+    // int matrix_SM = (int)(132 - remaining_SM);
 
-    // size_t size = 132 * sizeof(uint8_t) * 2;
-    int block_num = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
-    size_t size = block_num * sizeof(uint8_t);
-    cudaMalloc((void**)&Signature_Array, size);
-    cudaMemset(Signature_Array, 255, size);
+    // int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
+    // int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
+    // int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
+    // // iteration based on GeMM not (GeMM + chksum)
+    // int SM_iter = (int)ceil((double)(((params_.grid_tiled_shape.m() - checksumblk_per_col) * params_.grid_tiled_shape.n())/(double)matrix_SM));
 
-    // size = 132 * sizeof(int) * 2;
-    size = block_num * sizeof(int);
-    cudaMalloc((void**)&Lock_Signature, size);
-    cudaMemset(Lock_Signature, 0, size);
+    // // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
+    // int *SM_schedule;
+    // cudaMalloc((void **)&SM_schedule, sizeof(int) * 7);
+    // cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 3), &matrix_next_blk_offset_m, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 4), &matrix_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
 
-    int *final_sum;
-    cudaMallocManaged(&final_sum, block_num*sizeof(int));
-    cudaMemset(final_sum, 0, block_num*sizeof(int));
-
-    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
-    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
-
-    // 0 - no job, 1 - matrix, 2 - checksum
-    cudaMalloc((void**)&d_SM_JOBS, 132*sizeof(int));
-    cudaMemset(d_SM_JOBS, 0, 132*sizeof(int));
-
-    // ring queues for each SM
-    int num_queues = 132;
-    int capacity = 8;
-    cudaMalloc((void**)&d_queues, sizeof(RingQueue_v2));
-    cudaMalloc((void**)&d_buffer, sizeof(int) * num_queues * capacity);
-    cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
-    
-    cudaMalloc((void**)&d_head, sizeof(int) * num_queues);
-    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
-    
-    cudaMalloc((void**)&d_tail, sizeof(int) * num_queues);
-    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
-
-    initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
-
-    // SM based schedule 
-    int checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m() - 1) / (double)(128/2))));
-    int max_col = (int)ceil((double)(132 /( params_.grid_tiled_shape.m() - 1)));
-    if(max_col > params_.grid_tiled_shape.n()){
-      max_col = params_.grid_tiled_shape.n();
-    }
-    int remaining_SM = (int)(max_col * checksumblk_per_col);
-    int matrix_SM = (int)(132 - remaining_SM);
-
-    int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
-    int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
-    int checksum_next_blk_offset_n = remaining_SM / checksumblk_per_col;
-    int SM_iter = (int)ceil((double)((params_.grid_tiled_shape.m()*params_.grid_tiled_shape.n())/(double)132));
-
-    // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
-    int *SM_schedule;
-    cudaMalloc((void **)&SM_schedule, sizeof(int) * 7);
-    cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 3), &matrix_next_blk_offset_m, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 4), &matrix_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
-
-    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-    //         matrix_SM, remaining_SM, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+    //         matrix_SM, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
 
 
     // Profile using clock
-    size = SM_iter * sizeof(int);
-    cudaMalloc((void**)&d_all_start, size);
-    cudaMemset(d_all_start, 0, size);
+    // size_t size = (100+1) * sizeof(int);
+    // cudaMalloc((void**)&d_all_start, size);
+    // cudaMemset(d_all_start, 0, size);
 
-    cudaMalloc((void**)&d_compute, size);
-    cudaMemset(d_compute, 0, size);
+    // cudaMalloc((void**)&d_compute, size);
+    // cudaMemset(d_compute, 0, size);
 
-    cudaMalloc((void**)&d_finding, size);
-    cudaMemset(d_finding, 0, size);
+    // cudaMalloc((void**)&d_finding, size);
+    // cudaMemset(d_finding, 0, size);
 
-    cudaMalloc((void**)&d_recompute, size);
-    cudaMemset(d_recompute, 0, size);
+    // cudaMalloc((void**)&d_recompute, size);
+    // cudaMemset(d_recompute, 0, size);
 
-    cudaMalloc((void**)&d_compare, size);
-    cudaMemset(d_compare, 0, size);
+    // cudaMalloc((void**)&d_compare, size);
+    // cudaMemset(d_compare, 0, size);
 
-    cudaMalloc((void**)&d_checking, size);
-    cudaMemset(d_checking, 0, size);
+    // cudaMalloc((void**)&d_checking, size);
+    // cudaMemset(d_checking, 0, size);
 
-    cudaMalloc((void**)&d_all_start_for_split, size);
-    cudaMemset(d_all_start_for_split, 0, size);
+    // cudaMalloc((void**)&d_all_start_for_split, size);
+    // cudaMemset(d_all_start_for_split, 0, size);
 
     // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
@@ -610,15 +575,27 @@ public:
     // int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 1;
+    int iterations = 100;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    float t_compute, t_check = 0;
+    float t_compute = 0;
     // dim3 new_block(64,1,1);
     dim3 new_grid(12,11,1);
 
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res
+                // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
+              };
+
     cutlass::arch::synclog_setup();
+
+    // cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+    //                                                                 Lock_Signature, final_sum, if_split_phase, 
+    //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
+    //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
+
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
+
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     cudaDeviceSynchronize();
@@ -631,9 +608,6 @@ public:
       //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
       //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
       
-      void *kernelArgs[] = {&params_, &Signature_Array, &Lock_Signature, &final_sum, &if_split_phase, 
-                                                      &d_queues, &d_SM_JOBS, &SM_schedule, &SM_check_res,
-                                                      &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking};
       cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
     }
     if(deBug){
@@ -643,68 +617,57 @@ public:
     }
     result = cudaGetLastError();
 
-    if(if_split_phase == 1){
-      // int num_blk_per_group = 2;
-      int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
-      // for(int i = 0; i < 2; i++){
-        if(deBug){
-          cudaEventRecord(start, stream);
-        }
-        cutlass::check_between_SM<GemmKernel><<<new_grid, block, 0, stream>>>(params_, Signature_Array, 
-                                                                          Lock_Signature, final_sum, num_blk_per_group,
-                                                                          d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
-        if(deBug){
-          cudaEventRecord(stop, stream);
-          cudaEventSynchronize(stop);
-          cudaEventElapsedTime(&t_check, start, stop);
-          // t_check = t_check + tmp;
-          // tmp = 0;
-        }
-        // cudaMemset(Signature_Array, 255, block_num * sizeof(uint8_t));
-        // cudaMemset(Lock_Signature, 0, block_num * sizeof(int));
-        // cudaMemset(final_sum, 0, block_num*sizeof(int));
-        // cudaDeviceSynchronize();
-      // }
-    }
-
-    size = SM_iter * sizeof(int);
-    cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(recompute, d_recompute, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(compare, d_compare, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(SM_JOBS, d_SM_JOBS, size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_all_start);
-    cudaFree(d_checking);
-    cudaFree(d_compute);
-    cudaFree(d_finding);
-    cudaFree(d_recompute);
-    cudaFree(d_compare);
-    cudaFree(d_SM_JOBS);
-    cudaFree(d_all_start_for_split);
-
-    cudaFree(d_buffer);
-    cudaFree(d_head);
-    cudaFree(d_tail);
-    cudaFree(d_queues);
-    
-    cudaFree(Signature_Array);
-    cudaFree(Lock_Signature);
-    cudaFree(SM_schedule);
-
-    // if(deBug){
-    //   printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);
+    // if(if_split_phase == 1){
+    //   // int num_blk_per_group = 2;
+    //   int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
+    //   // for(int i = 0; i < 2; i++){
+    //     if(deBug){
+    //       cudaEventRecord(start, stream);
+    //     }
+    //     cutlass::check_between_SM<GemmKernel><<<new_grid, block, 0, stream>>>(params_, Signature_Array, 
+    //                                                                       Lock_Signature, final_sum, num_blk_per_group,
+    //                                                                       d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
+    //     if(deBug){
+    //       cudaEventRecord(stop, stream);
+    //       cudaEventSynchronize(stop);
+    //       cudaEventElapsedTime(&t_check, start, stop);
+    //       // t_check = t_check + tmp;
+    //       // tmp = 0;
+    //     }
+    //     // cudaMemset(Signature_Array, 255, block_num * sizeof(uint8_t));
+    //     // cudaMemset(Lock_Signature, 0, block_num * sizeof(int));
+    //     // cudaMemset(final_sum, 0, block_num*sizeof(int));
+    //     // cudaDeviceSynchronize();
+    //   // }
     // }
+
+    // size = (100+1) * sizeof(int);
+    // cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(recompute, d_recompute, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(compare, d_compare, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
+
+    // cudaFree(d_all_start);
+    // cudaFree(d_checking);
+    // cudaFree(d_compute);
+    // cudaFree(d_finding);
+    // cudaFree(d_recompute);
+    // cudaFree(d_compare);
+    // cudaFree(d_all_start_for_split);
+    
+    if(deBug){
+      printf("compute kernel time: %f\n", t_compute/iterations);
+    }
 
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, int *SM_JOBS, int *all_start_for_split, int if_split_phase, cudaStream_t stream = nullptr) {
-    return run(all_start, compute, finding, recompute, compare, checking, SM_JOBS, all_start_for_split, if_split_phase, stream);
+  Status operator()(int if_split_phase, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, stream);
   }
  
   /// Runs the kernel using initialized state.
