@@ -574,8 +574,11 @@ public:
     // 0-no split; 1-split; 2-only abft
     // int if_split_phase = 0;
 
+    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
+    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
+
     bool deBug = true;
-    int iterations = 100;
+    int iterations = 500;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -657,6 +660,8 @@ public:
     // cudaFree(d_recompute);
     // cudaFree(d_compare);
     // cudaFree(d_all_start_for_split);
+
+    cudaFree(SM_check_res);
     
     if(deBug){
       printf("compute kernel time: %f\n", t_compute/iterations);

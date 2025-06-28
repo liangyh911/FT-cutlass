@@ -44,7 +44,7 @@ data types in tensor cores.  One big advantage is that we can load in fp32 data 
 implicitly to tf32 inside the GEMM kernel which means no change is needed to accelerate traditional
 fp32 data by using NVIDIA Ampere architecture.
 
-nvcc ampere_tf32_tensorop_gemm.cu -O0 -lineinfo -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_80 -o out.exe
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o out.exe
 ncu -f -o no_unroll_128 --set full ./out.exe --m=38400 --n=38400 --k=38400 --split=2 --iterations=1
 
 */
