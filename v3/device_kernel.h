@@ -91,7 +91,7 @@ __global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, i
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res
+            int if_split_phase, int *SM_check_res, int partion
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {
   // unsigned int smid;
@@ -111,7 +111,7 @@ void Kernel(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res
+  op(params, *shared_storage, if_split_phase, SM_check_res, partion
     // all_start, compute, finding, recompute, compare, checking
   );
   cutlass::arch::synclog_print();

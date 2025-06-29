@@ -485,7 +485,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
 
     // // SM based schedule
     // int checksumblk_per_col = 0;
@@ -586,7 +586,7 @@ public:
     // dim3 new_block(64,1,1);
     dim3 new_grid(12,11,1);
 
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion
                 // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
               };
 
@@ -671,8 +671,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, stream);
+  Status operator()(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, partion, stream);
   }
  
   /// Runs the kernel using initialized state.

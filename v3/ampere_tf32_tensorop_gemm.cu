@@ -468,7 +468,7 @@ int run(Options &options) {
 
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
-    status = gemm_op(options.if_split_phase);
+    status = gemm_op(options.if_split_phase, options.partition);
     // CUTLASS_CHECK(status);
 
     // for(int i = 0; i < gemm_iter; i++){

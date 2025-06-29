@@ -380,7 +380,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     __syncthreads();
     if(*(SM_check_res+smid)!=0){
       if(thread_idx == 0){
-        printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+        // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
         // *(SM_check_res+smid) = 0;
       }
     }
@@ -395,7 +395,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                  int if_split_phase, int *SM_check_res
+                  int if_split_phase, int *SM_check_res, int partion
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
@@ -408,7 +408,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     int checksumblk_per_col = 0;
     if(if_split_phase == 0){
       // if able ABFT
-      checksumblk_per_col = (int)(ceil((double)((params.grid_tiled_shape.m()) / (double)(128))));
+      // checksumblk_per_col = (int)(ceil((double)((params.grid_tiled_shape.m()) / (double)(128))));
+      checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
     }
     
     int matrix_shape_m = params.grid_tiled_shape.m() - checksumblk_per_col;
