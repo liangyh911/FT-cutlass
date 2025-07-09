@@ -45,7 +45,7 @@ implicitly to tf32 inside the GEMM kernel which means no change is needed to acc
 fp32 data by using NVIDIA Ampere architecture.
 
 nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o out.exe
-ncu -f -o no_unroll_128 --set full ./out.exe --m=38400 --n=38400 --k=38400 --split=2 --iterations=1
+ncu -f -o m_4096 --set full ./out.exe --m=8192 --n=4096 --k=4096 --split=0 --iterations=1
 
 */
 

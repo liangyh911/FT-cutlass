@@ -337,9 +337,21 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     int last_chk_block_idx = get_corresponding_chk_idx(params.grid_tiled_shape.m(), last_matrix_block_idx, last_threadblock_tile_offset_m, (params.grid_tiled_shape.m() - checksumblk_per_col));
   
     // offsets
-    curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, last_matrix_block_idx, last_chk_block_idx, checksumblk_per_col, thread_idx);
+    // curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, last_matrix_block_idx, last_chk_block_idx, checksumblk_per_col, thread_idx);
+    curr_iter_chk_offsets_v2(params, matrix_start_idx, chk_start_idx, last_matrix_block_idx, checksumblk_per_col, thread_idx);
   }
 
+  __device__ void curr_iter_chk_offsets_v2(Params const &params, int &matrix_start_idx, int &chk_start_idx, 
+                                            int matrix_block_idx, int checksumblk_per_col, int thread_idx){
+    int offset = blockDim.x;
+
+    int MatrixColBlkOffset = matrix_block_idx / params.grid_tiled_shape.m();
+    int MatrixRowBlkOffset = matrix_block_idx % params.grid_tiled_shape.m();
+    matrix_start_idx = (MatrixColBlkOffset * offset) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - checksumblk_per_col);
+    chk_start_idx = (MatrixColBlkOffset * offset) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+  }
 
   __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
                               int iter, 
@@ -406,7 +418,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
 
     // SM based schedule info
     int checksumblk_per_col = 0;
-    if(if_split_phase == 0){
+    if(if_split_phase == 0 || if_split_phase == 1){
       // if able ABFT
       // checksumblk_per_col = (int)(ceil((double)((params.grid_tiled_shape.m()) / (double)(128))));
       checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
@@ -483,6 +495,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     
     int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
     int thread_idx = threadIdx.x;
+
+    // if(block_idx==0 && thread_idx==0){
+    //   printf("%d\n", partion);
+    // }
 
     Semaphore semaphore(params.semaphore + block_idx, thread_idx);
 
@@ -820,9 +836,8 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
         }
       }
     }
-    // else if(if_split_phase == 1 && block_idx == 0){
-    //   // 
-    //   *(Signature_Array + block_idx) = (uint8_t)smid;
+    // else if(if_split_phase == 1){
+    //   // *(Signature_Array + block_idx) = (uint8_t)smid;
     // }
     else{
       // __syncthreads();
