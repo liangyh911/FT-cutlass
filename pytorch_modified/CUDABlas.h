@@ -112,6 +112,52 @@ enum GEMMAndBiasActivationEpilogue {
   GELU,
 };
 
+/*CUTLASS*/
+
+template <typename Dtype>
+bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
+                                            const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
+                                            Dtype *c, int64_t ldc);
+
+template <typename Dtype>
+bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
+                                            const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
+                                            Dtype *c, int64_t ldc);
+
+template <typename Dtype>
+bool cutlass_gemm_and_bias_launcher(
+    bool transpose_mat1,
+    bool transpose_mat2,
+    int64_t m,
+    int64_t n,
+    int64_t k,
+    at::opmath_type<Dtype> alpha_val,
+    const Dtype* mat1_ptr,
+    int64_t mat1_ld,
+    const Dtype* mat2_ptr,
+    int64_t mat2_ld,
+    const Dtype* bias,
+    Dtype* result_ptr,
+    int64_t result_ld,
+    GEMMAndBiasActivationEpilogue activation = GEMMAndBiasActivationEpilogue::None);
+
+template <typename Dtype>
+bool cutlass_gemm_and_bias(
+    bool transpose_mat1,
+    bool transpose_mat2,
+    int64_t m,
+    int64_t n,
+    int64_t k,
+    at::opmath_type<Dtype> alpha_val,
+    const Dtype* mat1_ptr,
+    int64_t mat1_ld,
+    const Dtype* mat2_ptr,
+    int64_t mat2_ld,
+    const Dtype* bias,
+    Dtype* result_ptr,
+    int64_t result_ld,
+    GEMMAndBiasActivationEpilogue activation = GEMMAndBiasActivationEpilogue::None);
+
 // NOTE: GELU activation is not supported prior to CUDA 11.4 and will
 // do nothing if passed in that case.
 template <typename Dtype, typename C_Dtype = Dtype>
@@ -265,43 +311,6 @@ template <>
 TORCH_CUDA_CU_API void trsmBatched<c10::complex<float>>(CUDABLAS_TRSM_BATCHED_ARGTYPES(c10::complex<float>));
 template <>
 TORCH_CUDA_CU_API void trsmBatched<c10::complex<double>>(CUDABLAS_TRSM_BATCHED_ARGTYPES(c10::complex<double>));
-
-/*CUTLASS*/
-
-template <typename Dtype>
-bool cutlass_gemm_and_bias_launcher(
-    bool transpose_mat1,
-    bool transpose_mat2,
-    int64_t m,
-    int64_t n,
-    int64_t k,
-    at::opmath_type<Dtype> alpha_val,
-    const Dtype* mat1_ptr,
-    int64_t mat1_ld,
-    const Dtype* mat2_ptr,
-    int64_t mat2_ld,
-    const Dtype* bias,
-    Dtype* result_ptr,
-    int64_t result_ld,
-    GEMMAndBiasActivationEpilogue activation = GEMMAndBiasActivationEpilogue::None);
-
-template <typename Dtype>
-bool cutlass_gemm_and_bias(
-    bool transpose_mat1,
-    bool transpose_mat2,
-    int64_t m,
-    int64_t n,
-    int64_t k,
-    at::opmath_type<Dtype> alpha_val,
-    const Dtype* mat1_ptr,
-    int64_t mat1_ld,
-    const Dtype* mat2_ptr,
-    int64_t mat2_ld,
-    const Dtype* bias,
-    Dtype* result_ptr,
-    int64_t result_ld,
-    GEMMAndBiasActivationEpilogue activation = GEMMAndBiasActivationEpilogue::None);
-    
 
 /* LEVEL 2 BLAS FUNCTIONS */
 

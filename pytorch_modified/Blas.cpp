@@ -608,7 +608,8 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           const scalar_t* mat2_ptr = args.matb->const_data_ptr<scalar_t>();
           scalar_t* result_ptr = args.result->mutable_data_ptr<scalar_t>();
           // nn.Linear() without bias
-          at::cuda::blas::gemm<scalar_t>(
+          // at::cuda::blas::gemm<scalar_t>(
+          at::cuda::blas::cutlass_gemm_launcher<scalar_t>(
               args.transa,
               args.transb,
               args.m,

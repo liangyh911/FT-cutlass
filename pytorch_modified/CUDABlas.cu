@@ -1594,38 +1594,196 @@
    }
  }
  
- // template <typename Dtype>
- // bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  \
- //                   const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,\
- //                   Dtype *c, int64_t ldc){
- //   // problem size
- //   cutlass::gemm::GemmCoord problem_size({m, n, k});
+ template <typename Dtype>
+ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
+                   const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
+                   Dtype *c, int64_t ldc){
+   printf("cutlass_gemm\n");
+   // problem size
+   cutlass::gemm::GemmCoord problem_size({m, n, k});
  
- //   // Matrix Layerout
- //   using LayoutInputA = cutlass::layout::RowMajor;
- //   using LayoutInputB = cutlass::layout::ColumnMajor;
- //   // using LayoutInputA = typename std::conditional<
- //   //       TransposeA,
- //   //       cutlass::layout::RowMajor,
- //   //       cutlass::layout::ColumnMajor>::type;
- //   // using LayoutInputB = typename std::conditional<
- //   //   TransposeB,
- //   //   cutlass::layout::RowMajor,
- //   //   cutlass::layout::ColumnMajor>::type;
- //   using LayoutOutput = cutlass::layout::ColumnMajor;
+   // Matrix Layerout
+   using LayoutInputA = cutlass::layout::RowMajor;
+   using LayoutInputB = cutlass::layout::ColumnMajor;
+   // using LayoutInputA = typename std::conditional<
+   //       TransposeA,
+   //       cutlass::layout::RowMajor,
+   //       cutlass::layout::ColumnMajor>::type;
+   // using LayoutInputB = typename std::conditional<
+   //   TransposeB,
+   //   cutlass::layout::RowMajor,
+   //   cutlass::layout::ColumnMajor>::type;
+   using LayoutOutput = cutlass::layout::ColumnMajor;
  
- //   // init host_tensor of A, B, C and D
- //   cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
- //   cutlass::HostTensor<Dtype, LayoutInputB> tensor_b(problem_size.kn()); // Matrix B
- //   cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
+   // init host_tensor of A, B and D
+   cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
+   cutlass::HostTensor<Dtype, LayoutInputB> tensor_b(problem_size.kn()); // Matrix B
+   cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
    
- //   // copy data
- //   Dtype *mat1_ptr_ = const_cast<Dtype*>(a);
- //   Dtype *mat2_ptr_ = const_cast<Dtype*>(b);
- //   copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a, tensor_a.device_data(), m, k);
- //   copy_matrix<<<dim3((k + 16 - 1) / 16, (n + 16 - 1) / 16), dim3(16,16)>>>(b, tensor_b.device_data(), k, n);
+   // copy data
+   Dtype *a_ = const_cast<Dtype*>(a);
+   Dtype *b_ = const_cast<Dtype*>(b);
+   copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a_, tensor_a.device_data(), m, k);
+   copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(b_, tensor_b.device_data(), k, n);
    
- // }
+   // Initialize alpha and beta for dot product computation
+   alpha = Dtype(alpha);
+   beta = Dtype(beta);
+ 
+   // Split K dimension into 1 partitions
+   int split_k_slices = 1;
+ 
+   // Create a tuple of gemm kernel arguments. This is later passed as arguments to launch
+   
+   // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
+   using MMAOp = cutlass::arch::OpClassTensorOp;
+ 
+   // This code section describes CUDA SM architecture number
+   using SmArch = cutlass::arch::Sm80;
+ 
+   // This code section describes the tile size a thread block will compute
+   using ShapeMMAThreadBlock =
+       cutlass::gemm::GemmShape<128, 256, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
+   // This code section describes tile size a warp will compute
+   using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
+   // This code section describes the size of MMA op
+   using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+ 
+   // This code section describes how threadblocks are scheduled on GPU
+   using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+ 
+   // This code section describes the epilogue part of the kernel
+   using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+       Dtype,                                     // <- data type of output matrix
+       128 / cutlass::sizeof_bits<Dtype>::value,  // <- the number of elements per vectorized
+                                                         // memory access. For a byte, it's 16
+                                                         // elements. This becomes the vector width of
+                                                         // math instructions in the epilogue too
+       Dtype,                                // <- data type of accumulator
+       Dtype>;  // <- data type for alpha/beta in linear combination function
+ 
+   // Number of pipelines you want to use
+   constexpr int NumStages = 4;
+   
+   // define CUTLASS GEMM API
+   using Gemm = cutlass::gemm::device::Gemm<Dtype,
+                                          LayoutInputA,
+                                          Dtype,
+                                          LayoutInputB,
+                                          Dtype,
+                                          LayoutOutput,
+                                          Dtype,
+                                          MMAOp,
+                                          SmArch,
+                                          ShapeMMAThreadBlock,
+                                          ShapeMMAWarp,
+                                          ShapeMMAOp,
+                                          EpilogueOp,
+                                          SwizzleThreadBlock,
+                                          NumStages>;
+                                          
+   // instantiated CUTLASS kernel
+   typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
+     tensor_a.device_ref(),                          // <- reference to matrix A on device
+     tensor_b.device_ref(),                          // <- reference to matrix B on device
+     tensor_d.device_ref(),                          // <- reference to matrix C on device
+     tensor_d.device_ref(),                          // <- reference to matrix D on device
+     {alpha, beta},                                  // <- tuple of alpha and beta
+     split_k_slices};                                // <- k-dimension split factor
+ 
+   // Using the arguments, query for extra workspace required for matrix multiplication computation
+   size_t workspace_size = Gemm::get_workspace_size(arguments);
+ 
+   // Allocate workspace memory
+   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+ 
+   // Instantiate CUTLASS kernel depending on templates
+   Gemm gemm_op;
+ 
+   // Check the problem size is supported or not 
+   // printf("impl\n");
+   cutlass::Status status = gemm_op.can_implement(arguments);
+   CUTLASS_CHECK(status);
+ 
+   // Initialize CUTLASS kernel with arguments and workspace pointer
+   // printf("init\n");
+   status = gemm_op.initialize(arguments, workspace.get());
+   CUTLASS_CHECK(status);
+   
+   // Launch initialized CUTLASS kernel
+   // printf("launch\n");
+   status = gemm_op();
+   CUTLASS_CHECK(status);
+ 
+   // Wait for kernels to finish
+   cudaDeviceSynchronize();
+   
+   // Copy results back
+   // printf("copy back\n");
+   copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), c, m, n);
+   // result_ptr = tensor_d.device_data();
+   // printf("C:\n");
+   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
+   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
+   
+   // // Copy output data from CUTLASS and reference kernel to host for comparison
+   // tensor_d.sync_host();
+ 
+   return true;
+ }
+ 
+ template <typename Dtype>
+ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
+                             const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
+                             Dtype *c, int64_t ldc){
+   
+   bool state = false;
+   if constexpr (std::is_same<Dtype, float>::value) {
+     state = cutlass_gemm<float>(transa, transb, m, n, k, alpha,
+                                 a, lda, b, ldb, beta,
+                                 c, ldc);
+   }
+   else if constexpr (std::is_same<Dtype, double>::value) {
+     state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
+                                 a, lda, b, ldb, beta,
+                                 c, ldc);
+   } 
+   // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
+   //   state = cutlass_gemm<cutlass::half_t>(transa, transb, m, n, k, alpha,
+   //                                           *a, lda, *b, ldb, beta,
+   //                                           *c, ldc);
+   // } 
+   // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+   //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
+   //                                             *a, lda, *b, ldb, beta,
+   //                                             *c, ldc);
+   // } 
+   return state;
+ }
+ 
+ template bool cutlass_gemm_launcher<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<float> alpha,
+                                             const float *a, int64_t lda, const float *b, int64_t ldb, at::opmath_type<float> beta,
+                                             float *c, int64_t ldc);
+ 
+ template bool cutlass_gemm_launcher<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<double> alpha,
+                                             const double *a, int64_t lda, const double *b, int64_t ldb, at::opmath_type<double> beta,
+                                             double *c, int64_t ldc);
+ 
+ template bool cutlass_gemm_launcher<at::Half>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<at::Half> alpha,
+                                             const at::Half *a, int64_t lda, const at::Half *b, int64_t ldb, at::opmath_type<at::Half> beta,
+                                             at::Half *c, int64_t ldc);
+ 
+ template bool cutlass_gemm_launcher<at::BFloat16>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<at::BFloat16> alpha,
+                                             const at::BFloat16 *a, int64_t lda, const at::BFloat16 *b, int64_t ldb, at::opmath_type<at::BFloat16> beta,
+                                             at::BFloat16 *c, int64_t ldc);
+ 
+ template bool cutlass_gemm_launcher<c10::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<c10::complex<double>> alpha,
+                                             const c10::complex<double> *a, int64_t lda, const c10::complex<double> *b, int64_t ldb, at::opmath_type<c10::complex<double>> beta,
+                                             c10::complex<double> *c, int64_t ldc); 
+ 
+ template bool cutlass_gemm_launcher<c10::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<c10::complex<float>> alpha,
+                                             const c10::complex<float> *a, int64_t lda, const c10::complex<float> *b, int64_t ldb, at::opmath_type<c10::complex<float>> beta,
+                                             c10::complex<float> *c, int64_t ldc);                                           
  
  template <typename Dtype>
  bool cutlass_gemm_and_bias(bool transpose_mat1,
@@ -1647,7 +1805,8 @@
    // printf("lda: %d, ldb: %d, ldc: %d\n", mat1_ld, mat2_ld, result_ld);
    // printf("transposeA: %s\n", transpose_mat1?"true":"false");
    // printf("transposeB: %s\n", transpose_mat2?"true":"false");
- 
+   
+   printf("cutlass_gemm_and_bias\n");
    // Problem Size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  
@@ -1855,13 +2014,13 @@
        bias, result_ptr,result_ld,
        activation);
    }
-   // else if constexpr (std::is_same<Dtype, double>::value) {
-   //   state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
-   //     mat1_ptr, mat1_ld,
-   //     mat2_ptr, mat2_ld,
-   //     bias, result_ptr,result_ld,
-   //     activation);
-   // } 
+   else if constexpr (std::is_same<Dtype, double>::value) {
+     state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
+       mat1_ptr, mat1_ld,
+       mat2_ptr, mat2_ld,
+       bias, result_ptr,result_ld,
+       activation);
+   } 
    // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
    //   state = cutlass_gemm_and_bias<cutlass::half_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
    //     mat1_ptr, mat1_ld,
