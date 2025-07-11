@@ -540,7 +540,7 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
               activation_epilogue);
         }
         else {
-          // nn.Linear()
+          // nn.Linear() with bias
           // okay = at::cuda::blas::gemm_and_bias<scalar_t>(
             okay = at::cuda::blas::cutlass_gemm_and_bias_launcher<scalar_t>(
               args.transa == 't',
@@ -558,7 +558,6 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
               args.result_ld,
               activation_epilogue
           );
-          printf("finished\n");
       }});
     }
     if (!okay) {
@@ -608,6 +607,7 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           const scalar_t* mat1_ptr = args.mata->const_data_ptr<scalar_t>();
           const scalar_t* mat2_ptr = args.matb->const_data_ptr<scalar_t>();
           scalar_t* result_ptr = args.result->mutable_data_ptr<scalar_t>();
+          // nn.Linear() without bias
           at::cuda::blas::gemm<scalar_t>(
               args.transa,
               args.transb,

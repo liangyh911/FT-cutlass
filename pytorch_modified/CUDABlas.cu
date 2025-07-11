@@ -1589,9 +1589,43 @@
  
    if (row < rows && col < cols) {
      int idx = row * cols + col;
+     // int idx = col * rows + row;
      dst[idx] = src[idx];
    }
  }
+ 
+ // template <typename Dtype>
+ // bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  \
+ //                   const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,\
+ //                   Dtype *c, int64_t ldc){
+ //   // problem size
+ //   cutlass::gemm::GemmCoord problem_size({m, n, k});
+ 
+ //   // Matrix Layerout
+ //   using LayoutInputA = cutlass::layout::RowMajor;
+ //   using LayoutInputB = cutlass::layout::ColumnMajor;
+ //   // using LayoutInputA = typename std::conditional<
+ //   //       TransposeA,
+ //   //       cutlass::layout::RowMajor,
+ //   //       cutlass::layout::ColumnMajor>::type;
+ //   // using LayoutInputB = typename std::conditional<
+ //   //   TransposeB,
+ //   //   cutlass::layout::RowMajor,
+ //   //   cutlass::layout::ColumnMajor>::type;
+ //   using LayoutOutput = cutlass::layout::ColumnMajor;
+ 
+ //   // init host_tensor of A, B, C and D
+ //   cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
+ //   cutlass::HostTensor<Dtype, LayoutInputB> tensor_b(problem_size.kn()); // Matrix B
+ //   cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
+   
+ //   // copy data
+ //   Dtype *mat1_ptr_ = const_cast<Dtype*>(a);
+ //   Dtype *mat2_ptr_ = const_cast<Dtype*>(b);
+ //   copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a, tensor_a.device_data(), m, k);
+ //   copy_matrix<<<dim3((k + 16 - 1) / 16, (n + 16 - 1) / 16), dim3(16,16)>>>(b, tensor_b.device_data(), k, n);
+   
+ // }
  
  template <typename Dtype>
  bool cutlass_gemm_and_bias(bool transpose_mat1,
@@ -1609,6 +1643,11 @@
      int64_t result_ld,
      GEMMAndBiasActivationEpilogue activation){
    
+   // printf("m: %d, n: %d, k: %d\n", m, n, k);
+   // printf("lda: %d, ldb: %d, ldc: %d\n", mat1_ld, mat2_ld, result_ld);
+   // printf("transposeA: %s\n", transpose_mat1?"true":"false");
+   // printf("transposeB: %s\n", transpose_mat2?"true":"false");
+ 
    // Problem Size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  
@@ -1638,7 +1677,7 @@
    Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
    Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
    copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), m, k);
-   copy_matrix<<<dim3((k + 16 - 1) / 16, (n + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
+   copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
    // printf("print bias:\n");
    // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
  
@@ -1664,10 +1703,13 @@
    // cutlass::reference::device::TensorFill(tensor_d.device_view());
  
    // printf("print A:\n");
-   // outputChk(tensor_a.device_data(), 1, mat1_ld, m*k, m, n);
+   // outputChk(tensor_a.device_data(), 1, mat1_ld, m*k, m, k);
+   // outputChk(mat1_ptr_, 1, mat1_ld, m*k, m, k);
  
    // printf("print B:\n");
    // outputChk(tensor_b.device_data(), 1, mat2_ld, k*n, k, n);
+   // outputChk(mat2_ptr_, 1, mat2_ld, k*n, k, n);
+ 
  
    // printf("print bias:\n");
    // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
@@ -1777,9 +1819,11 @@
    
    // Copy results back
    // printf("copy back\n");
-   copy_matrix<<<dim3((m + 16 - 1) / 16, (n + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), result_ptr, m, n);
+   copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), result_ptr, m, n);
    // result_ptr = tensor_d.device_data();
-   outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
+   // printf("C:\n");
+   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
+   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
    
    // // Copy output data from CUTLASS and reference kernel to host for comparison
    // tensor_d.sync_host();
@@ -1811,6 +1855,27 @@
        bias, result_ptr,result_ld,
        activation);
    }
+   // else if constexpr (std::is_same<Dtype, double>::value) {
+   //   state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
+   //     mat1_ptr, mat1_ld,
+   //     mat2_ptr, mat2_ld,
+   //     bias, result_ptr,result_ld,
+   //     activation);
+   // } 
+   // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
+   //   state = cutlass_gemm_and_bias<cutlass::half_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
+   //     mat1_ptr, mat1_ld,
+   //     mat2_ptr, mat2_ld,
+   //     bias, result_ptr,result_ld,
+   //     activation);
+   // } 
+   // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+   //   state = cutlass_gemm_and_bias<cutlass::bfloat16_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
+   //     mat1_ptr, mat1_ld,
+   //     mat2_ptr, mat2_ld,
+   //     bias, result_ptr,result_ld,
+   //     activation);
+   // } 
    return state;
  }
  
