@@ -25,6 +25,7 @@
  #include "cutlass/util/tensor_view_io.h"
  #include "helper.h"
  #include <cutlass/util/reference/device/tensor_fill.h>
+ #include "cutlass/gemm/device/gemm_batched.h"
  
  #ifdef USE_ROCM
  #include <hipblaslt/hipblaslt-ext.hpp>
@@ -1552,12 +1553,12 @@
  /* CUTLASS version gemm_bias*/
  
  template <typename T>
- void outputChk(T *A, int64_t nb, int64_t ld, int64_t stride, int64_t row, int64_t col){
-   size_t size = nb * (row * col) * sizeof(T);
+ void outputChk(T *A, int64_t num_batches, int64_t ld, int64_t stride, int64_t row, int64_t col){
+   size_t size = num_batches * (row * col) * sizeof(T);
    T *tensor;
    tensor = (T *)malloc(size);
    cudaMemcpy(tensor, A, size, cudaMemcpyDeviceToHost);
-   for(int i = 0; i < nb; i++){
+   for(int i = 0; i < num_batches; i++){
      printf("[ \n");
      for(int r = 0; r < row; r++){
        printf("|");
@@ -1595,10 +1596,210 @@
  }
  
  template <typename Dtype>
+ __global__ void copy_batched_matrix(Dtype *src, Dtype *dst, int64_t rows, int64_t cols, int64_t stride){
+   int col = blockIdx.x * blockDim.x + threadIdx.x;
+   int row = blockIdx.y * blockDim.y + threadIdx.y;
+   int batch = blockIdx.z;
+ 
+   if (row < rows && col < cols) {
+     int idx = batch * stride + row * cols + col;
+     dst[idx] = src[idx];
+   }
+ }
+ 
+ template <typename Dtype>
+ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
+                         const Dtype *a, int64_t lda, int64_t stridea,                                         
+                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
+                         at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
+   using LayoutInputA = cutlass::layout::ColumnMajor;
+   using LayoutInputB = cutlass::layout::ColumnMajor;
+   using LayoutOutput = cutlass::layout::ColumnMajor;
+ 
+   // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
+   using MMAOp = cutlass::arch::OpClassTensorOp;
+ 
+   // This code section describes CUDA SM architecture number
+   using SmArch = cutlass::arch::Sm80;
+ 
+   // This code section describes the tile size a thread block will compute
+   using ShapeMMAThreadBlock =
+       cutlass::gemm::GemmShape<128, 256, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
+   // This code section describes tile size a warp will compute
+   using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
+   // This code section describes the size of MMA op
+   using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+ 
+   // This code section describes how threadblocks are scheduled on GPU
+   using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+ 
+   // This code section describes the epilogue part of the kernel
+   using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+       Dtype,                                     // <- data type of output matrix
+       128 / cutlass::sizeof_bits<Dtype>::value,  // <- the number of elements per vectorized
+                                                         // memory access. For a byte, it's 16
+                                                         // elements. This becomes the vector width of
+                                                         // math instructions in the epilogue too
+       Dtype,                                // <- data type of accumulator
+       Dtype>;  // <- data type for alpha/beta in linear combination function
+ 
+   // Number of pipelines you want to use
+   constexpr int NumStages = 4;
+ 
+   alpha = Dtype(alpha);
+   beta = Dtype(beta);
+   
+   // ldb = ldb * num_batches;
+ 
+   int const count_A = num_batches * lda * k;
+   int const count_B = num_batches * ldb * n;
+   int const count_C = num_batches * ldc * n;
+ 
+   // allocate the device memory
+   Dtype *A, *B, *C;
+   cudaMalloc(&C, (count_A + count_B + count_C) * sizeof(Dtype));
+   A = C + count_C;
+   B = A + count_A;
+   // cudaMalloc((void**)&A, count_A * sizeof(Dtype));
+   // cudaMalloc((void**)&B, count_B * sizeof(Dtype));     
+   // cudaMalloc((void**)&C, count_C * sizeof(Dtype));
+ 
+   // copy matrix A and matrix B
+   Dtype *a_ = const_cast<Dtype*>(a);
+   Dtype *b_ = const_cast<Dtype*>(b);
+   copy_batched_matrix<<<dim3((k+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea);
+   copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb);
+ 
+   // printf("A:\n");
+   // outputChk(A, num_batches, lda, stridea, m, k);
+   // printf("a:\n");
+   // outputChk(a_, num_batches, lda, stridea, m, k);
+ 
+   // printf("B:\n");
+   // outputChk(B, num_batches, ldb, strideb, k, n);
+   // printf("b:\n");
+   // outputChk(b_, num_batches, ldb, strideb, k, n);
+ 
+   // define CUTLASS GEMMBATCHED API
+   using Gemm = cutlass::gemm::device::GemmBatched<
+       Dtype, LayoutInputA,
+       Dtype, LayoutInputB,
+       Dtype, LayoutOutput,
+       Dtype,
+       MMAOp,
+       SmArch,
+       ShapeMMAThreadBlock,
+       ShapeMMAWarp,
+       ShapeMMAOp,
+       EpilogueOp
+       // SwizzleThreadBlock,
+       // NumStages
+   >;
+ 
+   Gemm gemm_op;
+ 
+   cutlass::Status status = gemm_op({
+     {m, n, k},
+     {A, lda}, 
+     stridea,
+     {B, ldb}, 
+     strideb,
+     {C, ldc}, 
+     stridec,
+     {C, ldc}, 
+     stridec,
+     {alpha, beta},
+     num_batches
+   });
+ 
+   if (status != cutlass::Status::kSuccess) {
+     return false;
+   }
+ 
+   cudaDeviceSynchronize();
+ 
+   // Copy Back
+   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec);
+ 
+   // printf("C:\n");
+   // outputChk(C, num_batches, ldc, stridec, m, n);
+   // printf("c:\n");
+   // outputChk(c, num_batches, ldc, stridec, m, n);
+ 
+   cudaFree(C);
+ 
+   return true;
+ }
+ 
+ template <typename Dtype>
+ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
+                             const Dtype *a, int64_t lda, int64_t stridea,                                         
+                             const Dtype *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+   
+   bool state = false;
+   if constexpr (std::is_same<Dtype, float>::value) {
+     state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
+                                   a, lda, stridea,                                         
+                                   b, ldb, strideb,                                           
+                                   beta, c, ldc, stridec, num_batches);
+   }
+   else if constexpr (std::is_same<Dtype, double>::value) {
+     state = cutlass_bgemm<double>(transa, transb, m, n, k, alpha,  
+                                   a, lda, stridea,                                         
+                                   b, ldb, strideb,                                           
+                                   beta, c, ldc, stridec, num_batches);
+   } 
+   // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
+   //   state = cutlass_gemm<cutlass::half_t>(transa, transb, m, n, k, alpha,
+   //                                           a, lda, b, ldb, beta,
+   //                                           c, ldc);
+   // } 
+   // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+   //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
+   //                                             a, lda, b, ldb, beta,
+   //                                             c, ldc);
+   // } 
+   return state;
+ }
+ 
+ template bool cutlass_bgemm_launcher<float>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<float> alpha,  
+                             const float *a, int64_t lda, int64_t stridea,                                         
+                             const float *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<float> beta, float *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+                             
+ template bool cutlass_bgemm_launcher<double>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<double> alpha,  
+                             const double *a, int64_t lda, int64_t stridea,                                         
+                             const double *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<double> beta, double *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+ 
+ template bool cutlass_bgemm_launcher<at::Half>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<at::Half> alpha,  
+                             const at::Half *a, int64_t lda, int64_t stridea,                                         
+                             const at::Half *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<at::Half> beta, at::Half *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+                               
+ template bool cutlass_bgemm_launcher<at::BFloat16>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<at::BFloat16> alpha,  
+                             const at::BFloat16 *a, int64_t lda, int64_t stridea,                                         
+                             const at::BFloat16 *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<at::BFloat16> beta, at::BFloat16 *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+ 
+ template bool cutlass_bgemm_launcher<c10::complex<double>>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<c10::complex<double>> alpha,  
+                             const c10::complex<double> *a, int64_t lda, int64_t stridea,                                         
+                             const c10::complex<double> *b, int64_t ldb, int64_t strideb,                                           
+                             at::opmath_type<c10::complex<double>> beta, c10::complex<double> *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+                               
+ template bool cutlass_bgemm_launcher<c10::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<c10::complex<float>> alpha,  
+                               const c10::complex<float> *a, int64_t lda, int64_t stridea,                                         
+                               const c10::complex<float> *b, int64_t ldb, int64_t strideb,                                           
+                               at::opmath_type<c10::complex<float>> beta, c10::complex<float> *c, int64_t ldc, int64_t stridec, int64_t num_batches);
+ 
+ 
+ template <typename Dtype>
  bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
                    const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
                    Dtype *c, int64_t ldc){
-   printf("cutlass_gemm\n");
+   // printf("cutlass_gemm\n");
    // problem size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  
@@ -1783,7 +1984,8 @@
  
  template bool cutlass_gemm_launcher<c10::complex<float>>(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<c10::complex<float>> alpha,
                                              const c10::complex<float> *a, int64_t lda, const c10::complex<float> *b, int64_t ldb, at::opmath_type<c10::complex<float>> beta,
-                                             c10::complex<float> *c, int64_t ldc);                                           
+                                             c10::complex<float> *c, int64_t ldc);   
+                                             
  
  template <typename Dtype>
  bool cutlass_gemm_and_bias(bool transpose_mat1,
@@ -1806,7 +2008,7 @@
    // printf("transposeA: %s\n", transpose_mat1?"true":"false");
    // printf("transposeB: %s\n", transpose_mat2?"true":"false");
    
-   printf("cutlass_gemm_and_bias\n");
+   // printf("cutlass_gemm_and_bias\n");
    // Problem Size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  

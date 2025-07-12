@@ -755,7 +755,9 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
             beta_val,
             result_ptr, ldc);
       } else {
-        at::cuda::blas::bgemm<scalar_t>(
+        // torch.matmul()
+        // at::cuda::blas::bgemm<scalar_t>(
+        at::cuda::blas::cutlass_bgemm_launcher<scalar_t>(
           transa, transb,
           m, n, k,
           alpha_val,
