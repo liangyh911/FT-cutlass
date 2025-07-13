@@ -411,7 +411,7 @@ public:
     dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
 
-    dim3 new_grid(12, 11, params_.batch_count);
+    dim3 new_grid(12, 11, 1);
 
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
 
@@ -428,8 +428,13 @@ public:
       }
     }
 
+    void *kernelArgs[] = {&params_};
+
     cutlass::arch::synclog_setup();
-    cutlass::Kernel_Batched<GemmKernel><<<new_grid, block, smem_size, stream>>>(params_);
+
+    checkCudaErrors(cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream));
+   
+    // cutlass::Kernel_Batched<GemmKernel><<<new_grid, block, smem_size, stream>>>(params_);
 
     result = cudaGetLastError();
 

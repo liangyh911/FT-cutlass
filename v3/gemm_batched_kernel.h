@@ -39,6 +39,10 @@
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/matrix_coord.h"
 
+#include <cooperative_groups.h>
+
+using namespace cooperative_groups;
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
