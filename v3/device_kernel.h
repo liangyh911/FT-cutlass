@@ -87,27 +87,35 @@ __global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, i
   d_queues->capacity = cap;
 }
 
-/// Generic CUTLASS kernel template.
+/// Generic CUTLASS kernel template of Batched GEMM.
 template <typename Operator>
 CUTLASS_GLOBAL
-void Kernel(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int partion
-            // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
-          ) {
-  // unsigned int smid;
-  // asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
-  // if(threadIdx.x==0){
-  //   printf("smid: %d\n", smid);
-  // }
-  // printf("kernel 101\n");
-  
+void Kernel_Batched(typename Operator::Params params) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
   typename Operator::SharedStorage *shared_storage =
       reinterpret_cast<typename Operator::SharedStorage *>(SharedStorageBase);
 
-  // printf("kernel 108\n");
+  Operator op;
+
+  op(params, *shared_storage);
+  cutlass::arch::synclog_print();
+}
+
+
+/// Generic CUTLASS kernel template.
+template <typename Operator>
+CUTLASS_GLOBAL
+void Kernel(typename Operator::Params params, 
+            int if_split_phase, int *SM_check_res, int partion
+            // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
+          ) {  
+  // Dynamic shared memory base pointer
+  extern __shared__ int SharedStorageBase[];
+  // Declare pointer to dynamic shared memory.
+  typename Operator::SharedStorage *shared_storage =
+      reinterpret_cast<typename Operator::SharedStorage *>(SharedStorageBase);
 
   Operator op;
 
