@@ -155,7 +155,7 @@ struct Options {
     cmd.get_cmd_line_argument("split", if_split_phase);
 
     // cmd.get_cmd_line_argument("partition", partition);
-    partition = problem_size.m() / 128;
+    partition = problem_size.m() / 4;
 
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
@@ -376,8 +376,24 @@ cudaError_t strided_batched_gemm_nn_reference(
   return result;
 }
 
+template<typename T>
+void outputChk(std::vector<T> &A, int64_t nb, int64_t ld, int64_t stride, int64_t row, int64_t col){
+  for(int i = 0; i < nb; i++){
+    printf("[ \n");
+    for(int r = 0; r < row; r++){
+      printf("|");
+      for(int c = 0; c < col; c++){
+        printf("%.6f", (float)(A[i*stride + c*ld + r]));
+        printf(", ");
+      }
+      printf("!\n");
+    }
+    printf("]\n");
+  }
+}
+
 template <typename Element>
-void encode_col_checksum(Element *A, int k, int n, int partition){
+void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, int b_idx, int stride, int lda){
   int m = 1;
   // init checksum vector
   float *chk_vector;
@@ -386,21 +402,20 @@ void encode_col_checksum(Element *A, int k, int n, int partition){
     chk_vector[c] = (float)1;
     // chk_vector[c + k] = (float)(c+1);
   }
-  // encode chksum
+  // encode chksum - column major
+  int k_per_partion = k / partition;
   for(int p = 0; p < partition; p++){
-    for(int r = 0; r < 1; r++){
-      for(int c = 0; c < n; c++){
-          float sum = 0.0;
-          for(int i = 0; i < (k/partition); i++){
-              float a = chk_vector[r * k + i];
-              float b = *(A + (c + (i+(k/partition)*p) * n));
-              sum += (a * b);
-          }
-          // printf("%f, ", sum);
-          int idx = (k * n) + (r * n + c) + p * (1 * n);
-          *(A + idx) = sum;
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = 0.0f;
+        for(int i = 0; i < k_per_partion; i++){
+          float a = chk_vector[r + i * m];
+          float b = A[(i + k_per_partion * p) + c * lda];
+          sum += a * b;
+        }
+        int idx = (k + p) + (c * lda) + (b_idx * stride);
+        A[idx] = sum;
       }
-      // printf("\n");
     }
   }
   free(chk_vector);
@@ -470,14 +485,24 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   // Limit range to avoid floating-point errors
   int const kRange = 8;
 
+  int m1 = m;
+  if(options.if_split_phase == 1 || options.if_split_phase == 0){
+    m1 = m-1 * options.partition;
+  }
+
   // fill A
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < k; col_idx++) {
-      for (int row_idx = 0; row_idx < m; row_idx++) {
+      for (int row_idx = 0; row_idx < m1; row_idx++) {
         host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange);
       }
     }
+    if(options.if_split_phase == 1 || options.if_split_phase == 0){
+      encode_col_checksum(host_A, (m-1*options.partition), k, options.partition, b_idx, batch_stride_A, lda);
+    }
   }
+  // outputChk(host_A, batch_count, lda, batch_stride_A, m, k);
+  
   // fill B
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < n; col_idx++) {
