@@ -101,6 +101,8 @@ The stride (batch_stride_B) between the first element of two batches is k
 
 nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o bout.exe
 
+nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o blout.exe
+
 */
 
 // Command line options parsing
@@ -155,7 +157,7 @@ struct Options {
     cmd.get_cmd_line_argument("split", if_split_phase);
 
     // cmd.get_cmd_line_argument("partition", partition);
-    partition = problem_size.m() / 4;
+    partition = problem_size.m() / 128;
 
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
@@ -446,7 +448,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   // the memory is batched along K dimension
   long long int batch_stride_A = static_cast<long long int>(lda) * static_cast<long long int>(k);
   // long long int batch_stride_B = static_cast<long long int>(k);
-  long long int batch_stride_B = static_cast<long long int>(ldb) * static_cast<long long int>(k);
+  long long int batch_stride_B = static_cast<long long int>(ldb) * static_cast<long long int>(n);
   long long int batch_stride_C = static_cast<long long int>(ldc) * static_cast<long long int>(n);
 
   // alpha and beta
@@ -487,7 +489,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   int m1 = m;
   if(options.if_split_phase == 1 || options.if_split_phase == 0){
-    m1 = m-1 * options.partition;
+    m1 = m - 1 * options.partition;
   }
 
   // fill A
@@ -507,11 +509,12 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < n; col_idx++) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
-        // host_B[row_idx + col_idx * ldb + b_idx * ldb * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
-        host_B[row_idx + col_idx * ldb + b_idx * ldb * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
+        // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
+        host_B[row_idx + col_idx * ldb + b_idx * ldb * n] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
       }
     }
   }
+
   // fill C
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < n; col_idx++) {
@@ -543,13 +546,14 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   }
 
   // run cutlass
-  result = cutlass_strided_batched_sgemm(
-    m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
-    beta, batch_count);
-  if (result != cudaSuccess)
-    return result;
+  for(int i = 0; i < options.iterations; i++){
+    result = cutlass_strided_batched_sgemm(
+      m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
+      beta, batch_count);
+    if (result != cudaSuccess)
+      return result;
+  }
   
-
   // copy device memory to host
   result = cudaMemcpy(result_C.data(), C, count_C * sizeof(float), cudaMemcpyDeviceToHost);
   if (result != cudaSuccess) {
