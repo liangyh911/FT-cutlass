@@ -128,7 +128,7 @@ struct Options {
     reference_check(true),
     iterations(1),
     alpha(1),
-    beta(),
+    beta(0),
     partition(),
     if_split_phase(2) { }
 
@@ -257,7 +257,9 @@ cudaError_t cutlass_strided_batched_sgemm(
   int ldc,
   long long int batch_stride_C,
   float beta,
-  int batch_count) {
+  int batch_count,
+  int if_split_phase,
+  int partition) {
 
   using Gemm = cutlass::gemm::device::GemmBatched<
     float, cutlass::layout::ColumnMajor,
@@ -316,7 +318,7 @@ cudaError_t cutlass_strided_batched_sgemm(
     batch_stride_C,
     {alpha, beta},
     batch_count
-  });
+  }, if_split_phase, partition);
 
   if (status != cutlass::Status::kSuccess) {
     return cudaErrorUnknown;
@@ -549,7 +551,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for(int i = 0; i < options.iterations; i++){
     result = cutlass_strided_batched_sgemm(
       m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
-      beta, batch_count);
+      beta, batch_count, options.if_split_phase, options.partition);
     if (result != cudaSuccess)
       return result;
   }

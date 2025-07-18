@@ -45,6 +45,18 @@
 #include "cutlass/gemm/kernel/default_gemm.h"
 #include "cutlass/gemm/device/default_gemm_configuration.h"
 
+#define checkCudaErrors(val) check ( (val), #val, __FILE__, __LINE__ )
+template< typename T >
+void check(T result, char const *const func, const char *const file, int const line)
+{
+    if (result)
+    {
+        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line, static_cast<unsigned int>(result), cudaGetErrorString(result), func);
+        cudaDeviceReset();
+        exit(EXIT_FAILURE);
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -164,6 +176,9 @@ namespace device {
     >
     class Gemm;
 */
+
+__device__ int *SM_check_res;
+
 template <
     /// Element type for A matrix operand
     typename ElementA_,
@@ -404,14 +419,23 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
 
     ThreadblockSwizzle threadblock_swizzle;
 
     dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
-
     dim3 new_grid(12, 11, 1);
+
+    bool deBug = true;
+    int iterations = 0;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float t_compute = 0;
+
+    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
+    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
 
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
 
@@ -419,7 +443,7 @@ public:
 
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
     if (smem_size >= (48 << 10)) {
-      result = cudaFuncSetAttribute(Kernel_Batched<GemmKernel>,
+      result = cudaFuncSetAttribute(Kernel<GemmKernel>,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                                     smem_size);
 
@@ -428,13 +452,29 @@ public:
       }
     }
 
-    void *kernelArgs[] = {&params_};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion};
 
     cutlass::arch::synclog_setup();
 
-    checkCudaErrors(cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream));
-   
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
     // cutlass::Kernel_Batched<GemmKernel><<<new_grid, block, smem_size, stream>>>(params_);
+
+    cudaDeviceSynchronize();
+    if(deBug){
+      cudaEventRecord(start, stream);
+    }
+
+    for(int i = 0; i < iterations; i++){
+      cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
+    }
+
+    if(deBug){
+      cudaEventRecord(stop, stream);
+      cudaEventSynchronize(stop);
+      cudaEventElapsedTime(&t_compute, start, stop);
+
+      printf("compute kernel time: %f\n", t_compute/iterations);
+    }
 
     result = cudaGetLastError();
 
@@ -677,9 +717,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(cudaStream_t stream = nullptr) {
-
-    return underlying_operator_.run(stream);
+  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, partion, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -689,14 +728,15 @@ public:
 
   /// Runs the kernel using initialized state.
   Status operator()(
-    Arguments const &args, 
+    Arguments const &args,
+    int if_split_phase, int partion, 
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(stream);
+      status = run(if_split_phase, partion, stream);
     }
 
     return status;

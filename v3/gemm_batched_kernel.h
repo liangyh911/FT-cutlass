@@ -141,7 +141,8 @@ struct GemmBatched {
 
   /// Executes one GEMM
   CUTLASS_DEVICE
-  void operator()(Params const &params, SharedStorage &shared_storage) {
+  void operator()(Params const &params, SharedStorage &shared_storage, 
+                    int if_split_phase, int *SM_check_res, int partion) {
 
     // get SM id
     unsigned int smid;
@@ -149,16 +150,27 @@ struct GemmBatched {
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
 
     // SM based schudule
+    // assign enough SMs for each batch 
+    int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n();
+    int batch_step = (int)(floor((double)132 / (double)SM_per_batch));
+    int local_smid = smid % SM_per_batch;
+    int init_batch_idx = smid / SM_per_batch;
+    if(init_batch_idx >= batch_step){
+      return;
+    }
+    smid = local_smid;
+
+    // 2nd split SM for each matrix
     int checksumblk_per_col = 0;
     int matrix_shape_m = params.grid_tiled_shape.m() - checksumblk_per_col;
 
-    int max_col = (int)ceil((double)132 / (double)(matrix_shape_m));
+    int max_col = (int)ceil((double)SM_per_batch / (double)(matrix_shape_m));
     if(max_col > params.grid_tiled_shape.n()){
       max_col = params.grid_tiled_shape.n();
     }
 
     int remaining_SM = (int)(max_col * checksumblk_per_col);
-    int matrix_SM = (int)(132 - remaining_SM);
+    int matrix_SM = (int)(SM_per_batch - remaining_SM);
 
     int matrix_next_blk_offset_m = matrix_SM % (matrix_shape_m);
     int matrix_next_blk_offset_n = (matrix_SM / matrix_shape_m);
@@ -171,6 +183,8 @@ struct GemmBatched {
 
     cutlass::gemm::GemmCoord threadblock_tile_offset =
         threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
+    
+    threadblock_tile_offset_k = threadblock_tile_offset.k();
 
     // Early exit if CTA is out of range
     // if (params.grid_tiled_shape.m() <= threadblock_tile_offset.m() ||
@@ -181,11 +195,8 @@ struct GemmBatched {
 
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension
-    for (int batch_idx = 0; 
-      batch_idx < params.batch_count; 
-      batch_idx += 1) {
-      
-      bool beyond_bound = false; 
+    for(int batch_idx = init_batch_idx; batch_idx < params.batch_count; batch_idx += batch_step) {
+      bool beyond_bound = false;
       for(int iter = 0; iter < SM_iter; iter++){  
         if(smid < matrix_SM){
           // for matrix
@@ -314,6 +325,11 @@ struct GemmBatched {
           // run efficient epilogue
           epilogue(output_op, iterator_D, accumulators, iterator_C);
         }
+
+        // check phase
+        #if 1
+        
+        #endif
       }
     }
   }
