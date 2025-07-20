@@ -249,19 +249,22 @@ struct GemmBatched {
       int idx = matrix_start_idx + r * N;
       recomputed_chksum += *(params.ref_D.data() + idx);
       // float temp = params.ref_D.data(idx);
+      // recomputed_chksum += temp;
+      // if(batch_idx == 14 && *(params.ref_D.data() + idx)!=1024) printf("sm: (%d, %d), (%d, %d), r:%d, %f, %f\n", real_smid, smid, block_idx, thread_idx, r, recomputed_chksum, *(params.ref_D.data() + idx));
     }
-        
+    
+    // float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
     if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
       diff = 1;
-      printf("%d %d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+      printf("%d %d Difference detected at ((%d, %d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
+                iter, batch_idx, real_smid, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
     }
 
     // Atomic sum
     if(diff != 0){
       atomicAdd((SM_check_res + real_smid), diff);
     }
-    __syncthreads();
+    // __syncthreads();
     if(*(SM_check_res + real_smid)!=0){
       if(thread_idx == 0){
         // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
@@ -279,31 +282,50 @@ struct GemmBatched {
                     int if_split_phase, int *SM_check_res, int partion) {
 
     // get SM id
-    unsigned int smid;
-    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    unsigned int real_smid;
+    asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
 
     // SM based schudule
     // assign enough SMs for each batch 
     int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n();
+    if(SM_per_batch > 132){
+      SM_per_batch = 132;
+    }
     int batch_step = (int)(floor((double)132 / (double)SM_per_batch));
-    int local_smid = smid % SM_per_batch;
-    
-    int init_batch_idx = smid / SM_per_batch;
+    int local_smid = real_smid % SM_per_batch;
+    int init_batch_idx = real_smid / SM_per_batch;
     int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
+
+    // int batch_step = (int)(ceil((double)132 / (double)SM_per_batch));
+    // int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
+    // SM_per_batch = (int)(floor((double)132 / (double)batch_step));
+    // int SM_per_batch_remaining = (int)(132 % SM_per_batch);
+    // int local_smid = real_smid;
+    // int init_batch_idx;
+    // if(SM_per_batch_remaining != 0){
+    //   int first_SM_count = (SM_per_batch + 1) * SM_per_batch_remaining;
+    //   if(real_smid < first_SM_count){
+    //     // SM groups have more than one SM
+    //     SM_per_batch += 1;
+    //     local_smid = real_smid % SM_per_batch;
+    //     init_batch_idx = real_smid / SM_per_batch;
+    //   }
+    //   else{
+    //     local_smid = (real_smid - first_SM_count) % SM_per_batch;
+    //     init_batch_idx = (real_smid - first_SM_count) / SM_per_batch + SM_per_batch_remaining;
+    //   }
+    // }
+    // else{
+    //   local_smid = real_smid % SM_per_batch;
+    //   init_batch_idx = real_smid / SM_per_batch;
+    // }
 
     // if(threadIdx.x == 0){
     //   printf("%d, %d, %d\n", SM_per_batch, batch_step, batch_iter);
     // }
 
-    // bool beyond_bound = false;
-    // int temp = init_batch_idx;
-    // if(init_batch_idx >= batch_step || init_batch_idx >= params.batch_count){
-    //   return;
-    //   // beyond_bound = true;
-    //   // init_batch_idx = 0;
-    // }
-    smid = local_smid;
+    int smid = local_smid;
 
     // 2nd split SM for each matrix
     int checksumblk_per_col = 0;
@@ -327,7 +349,7 @@ struct GemmBatched {
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
     
-    // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.grid_tiled_shape.m(), params.grid_tiled_shape.n());
+    // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.problem_size.m(), params.problem_size.n());
 
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -364,7 +386,12 @@ struct GemmBatched {
           threadblock_tile_offset_m = matrix_shape_m + (local_chk_blk_idx % checksumblk_per_col);
           threadblock_tile_offset_n = local_chk_blk_idx / checksumblk_per_col + iter * checksum_next_blk_offset_n;
         }
-        if(threadblock_tile_offset_n >= params.grid_tiled_shape.n() 
+
+        int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
+        // if(real_smid == 6) printf("%d, %d, %d\n", real_smid, threadIdx.x, col_idx);
+        if( 
+            // col_idx >= params.problem_size.n()
+            threadblock_tile_offset_n >= params.grid_tiled_shape.n() 
             || batch_idx >= params.batch_count 
             || init_batch_idx >= batch_step){
           // return;
@@ -546,8 +573,10 @@ struct GemmBatched {
                 // if(beyond_bound){
                 //   return;
                 // }
-                if(!beyond_bound){
+                if((!beyond_bound )&& (col_idx < params.problem_size.n())){
                   // check current iteration
+                  // if(thread_idx == 0 && batch_idx == 14) printf("%d, %d, %d, real_smid: %d, batch idx: %d, local_smid: %d\n", b, batch_idx, iter, real_smid, batch_idx, smid);
+                  // n <256
                   curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
                     checksumblk_per_col, thread_idx, batch_idx);
                   check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
@@ -557,9 +586,9 @@ struct GemmBatched {
             }
           }
         }
-        // else if(if_split_phase == 1){
-        //   // *(Signature_Array + block_idx) = (uint8_t)smid;
-        // }
+        else if(if_split_phase == 1){
+          // *(Signature_Array + block_idx) = (uint8_t)smid;
+        }
         else{
 
         }
