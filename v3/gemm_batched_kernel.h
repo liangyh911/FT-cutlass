@@ -197,7 +197,57 @@ struct GemmBatched {
     }
   }
 
-    __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+  __device__ void next_blks_idx(Params const &params, int threadblock_tile_offset_m,
+    int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
+    unsigned int smid, int block_idx, int matrix_SM, int iter, int checksumblk_per_col){
+
+    tmp_matrix_blk = (block_idx + 1) % matrix_SM;
+    tmp_chk_blk = get_corresponding_chk_idx(params.grid_tiled_shape.m(), tmp_matrix_blk, threadblock_tile_offset_m, params.grid_tiled_shape.m());
+    tmp_flag = 1;
+    }
+
+  __device__ void previous_blks_idx(Params const &params, int threadblock_tile_offset_m,
+    int &tmp_matrix_blk, int &tmp_chk_blk,
+    unsigned int smid, int block_idx, int matrix_SM, int iter, int checksumblk_per_col){
+
+    tmp_matrix_blk = block_idx - 1;
+    if(tmp_matrix_blk < 0){
+      tmp_matrix_blk = matrix_SM + tmp_matrix_blk;
+    }
+    int threadblock_tile_offset_n = tmp_matrix_blk / params.grid_tiled_shape.m();
+    tmp_matrix_blk = tmp_matrix_blk + threadblock_tile_offset_n * checksumblk_per_col;
+
+    tmp_chk_blk = get_corresponding_chk_idx((params.grid_tiled_shape.m() + checksumblk_per_col), tmp_matrix_blk, threadblock_tile_offset_m, params.grid_tiled_shape.m());
+  }
+
+  __device__ void update_col(Params const &params, int matrix_blk, int chk_blk, int threadblock_tile_offset_n, int batch_idx, int thread_idx, int checksumblk_per_col){
+
+    int M = params.problem_size.m();
+    int K = params.problem_size.k();
+    int N = params.problem_size.n();
+    int gridM = params.grid_tiled_shape.m() + checksumblk_per_col;
+    int tiled_N = blockDim.x;
+    int col_idx = (threadblock_tile_offset_n * tiled_N) + thread_idx; 
+
+    int MatrixColBlkOffset = matrix_blk / gridM;
+    int MatrixRowBlkOffset = matrix_blk % gridM;
+  
+    if(col_idx < N){
+      float accum = 0.f;
+      int idx_a = (batch_idx * params.stride_A) + (M + 1 * MatrixRowBlkOffset) * K;
+      int idx_b = (batch_idx * params.stride_B) + MatrixColBlkOffset + thread_idx;
+      int idx_chk = (batch_idx * params.stride_D) + (MatrixColBlkOffset * tiled_N) + (params.grid_tiled_shape.m() * 128 + 1 * MatrixRowBlkOffset) * N + thread_idx;
+  
+      for(int k = 0; k < K; k++){
+        float a = *(params.ref_A.data() + idx_a + k);
+        float b = *(params.ref_B.data() + idx_b + k * N);
+        accum += a * b;
+      }
+      *(params.ref_D.data() + idx_chk) = accum;
+    }
+  }
+
+  __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
                                         int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
                                         int thread_idx, int batch_idx){
     int offset = blockDim.x;
@@ -309,7 +359,9 @@ struct GemmBatched {
 
     // 2nd split SM for each matrix
     int checksumblk_per_col = 0;
-    if(if_split_phase == 0 || if_split_phase == 1){
+    if(if_split_phase == 0 
+      // || if_split_phase == 1
+    ){
       // if able ABFT
       checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
     }
@@ -348,6 +400,9 @@ struct GemmBatched {
 
     int block_idx;
     int thread_idx = threadIdx.x;
+
+    // check step
+    int check_step = 1;
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension
     // for(int batch_idx = init_batch_idx; batch_idx < params.batch_count; batch_idx += batch_step) {
@@ -499,9 +554,11 @@ struct GemmBatched {
         #if 1
         if(if_split_phase == 0){
           if(b_iter == 0 && batch_iter != 1){
+          // if(b_iter < check_step && batch_iter < check_step){
             continue;
           }
-          else if(b_iter == (batch_iter - 1)){
+          // else if(b_iter == (batch_iter - 1)){
+          else if(b_iter >= (batch_iter - check_step)){
             cooperative_groups::this_grid().sync();
           }
     
@@ -528,15 +585,21 @@ struct GemmBatched {
               int matrix_start_idx, chk_start_idx;
               // iter 1 ~ (n-2)
               if(b_iter < (batch_iter - 1) && b_iter > 0){
+              // if((b_iter < (batch_iter - check_step)) && (b_iter > (check_step - 1))){
                 // last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
                 //                       checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, thread_idx, batch_idx);
+                
                 curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
                                         checksumblk_per_col, thread_idx, (batch_idx - batch_step));
+
+                // curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
+                //                         checksumblk_per_col, thread_idx, (batch_idx - check_step * batch_step));
                 check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
                             b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
               }
               // iter n-1
               else if(b_iter == batch_iter - 1){
+              // else if(b_iter >= (batch_iter - check_step)){
                 int ti = b_iter;
                 if(batch_iter != 1){
                   //check last batch
@@ -544,6 +607,9 @@ struct GemmBatched {
                   //                       checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, thread_idx, batch_idx);
                   curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
                                             checksumblk_per_col, thread_idx, (batch_idx - batch_step));
+
+                  // curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
+                  //                         checksumblk_per_col, thread_idx, (batch_idx - check_step * batch_step));
                   check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
                                         ti, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
                   ti++;
@@ -565,8 +631,28 @@ struct GemmBatched {
             }
           }
         }
-        else if(if_split_phase == 1){
-          // *(Signature_Array + block_idx) = (uint8_t)smid;
+        else if(if_split_phase == 1 && !beyond_bound){
+          // checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
+          // // int new_blk_idx = block_idx + threadblock_tile_offset_n * checksumblk_per_col;
+
+          // int *int_smem = reinterpret_cast<int *>(&shared_storage);
+          // int &previous_matrix_block_idx = int_smem[0];
+          // int &previous_chk_block_idx = int_smem[1];
+
+          // if(thread_idx == 0){
+          //   int tmp_matrix_blk, tmp_chk_blk;
+            
+          //   previous_blks_idx(params, threadblock_tile_offset_m, tmp_matrix_blk, tmp_chk_blk, real_smid, block_idx, matrix_SM, b_iter, checksumblk_per_col);
+
+          //   previous_matrix_block_idx = tmp_matrix_blk;
+          //   previous_chk_block_idx = tmp_chk_blk;
+          // }
+          // __syncthreads();
+
+          // // if(thread_idx == 0 && !beyond_bound) printf("smid: %d, blk: %d, newblk: %d, pre_blk: %d, pre_chk: %d\n", real_smid, block_idx, new_blk_idx, previous_matrix_block_idx, previous_chk_block_idx);
+
+          // update_col(params, previous_matrix_block_idx, previous_chk_block_idx, threadblock_tile_offset_n, batch_idx, thread_idx, checksumblk_per_col);
+
         }
         else{
 

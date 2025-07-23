@@ -440,7 +440,7 @@ void encode_row_checksum(std::vector<Element> &A, int m, int k, int partition, i
   float *chk_vector;
   chk_vector = (float*)malloc(sizeof(float)* k_per_partion * 1);
   for(int r = 0; r < k_per_partion; r++){
-    chk_vector[r] = (float)1;
+    chk_vector[r] = 1.f;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode row chksum - column major
@@ -469,7 +469,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   // Arbitrary problem size
   int const m = options.problem_size.m();
-  int const n = options.problem_size.n();
+  // int const n = options.problem_size.n();
   int const k = options.problem_size.k();
   int const batch_count = options.batch_count;
 
@@ -481,14 +481,14 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   int const count_A = batch_count * lda * k;
   // int const count_B = ldb * n;
-  int const count_B = batch_count * ldb * n;
-  int const count_C = batch_count * ldc * n;
+  int const count_B = batch_count * ldb * options.problem_size.n();
+  int const count_C = batch_count * ldc * options.problem_size.n();
 
   // the memory is batched along K dimension
   long long int batch_stride_A = static_cast<long long int>(lda) * static_cast<long long int>(k);
   // long long int batch_stride_B = static_cast<long long int>(k);
-  long long int batch_stride_B = static_cast<long long int>(ldb) * static_cast<long long int>(n);
-  long long int batch_stride_C = static_cast<long long int>(ldc) * static_cast<long long int>(n);
+  long long int batch_stride_B = static_cast<long long int>(ldb) * static_cast<long long int>(options.problem_size.n());
+  long long int batch_stride_C = static_cast<long long int>(ldc) * static_cast<long long int>(options.problem_size.n());
 
   // alpha and beta
   float alpha = options.alpha;
@@ -530,8 +530,8 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < k; col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange);
-        // host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
+        // host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange);
+        host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
       }
     }
     // if(options.if_split_phase == 1 || options.if_split_phase == 0){
@@ -541,30 +541,30 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   // outputChk(host_A, batch_count, lda, batch_stride_A, m, k);
   
   // fill B
-  int n1 = n;
+  int n1 = options.problem_size.n();
   if(options.if_split_phase == 1 || options.if_split_phase == 0){
-    n1 = n - 1 * options.partition;
+    n1 = options.problem_size.n() - 1 * options.partition;
   }
 
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < n1; col_idx++) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
-        host_B[row_idx + col_idx * ldb + b_idx * ldb * n] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
-        // host_B[row_idx + col_idx * ldb + b_idx * ldb * n] = 1.f;
+        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
+        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
       }
     }
     if(options.if_split_phase == 1 || options.if_split_phase == 0){
-      encode_row_checksum(host_B, k, (n - 1 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
+      encode_row_checksum(host_B, k, (options.problem_size.n() - 1 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
     }
   }
   // outputChk(host_B, batch_count, ldb, batch_stride_B, k, n);
 
   // fill C
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
-    for (int col_idx = 0; col_idx < n; col_idx++) {
+    for (int col_idx = 0; col_idx < options.problem_size.n(); col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_C[row_idx + col_idx * ldc + b_idx * ldc * n] = 0.f;
+        host_C[row_idx + col_idx * ldc + b_idx * ldc * options.problem_size.n()] = 0.f;
       }
     }
   }
@@ -592,13 +592,17 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
     return result;
   }
 
+  int const n = (options.if_split_phase != 1) ? options.problem_size.n() : (options.problem_size.n() - 1 * options.partition);
+
   // run cutlass
   for(int i = 0; i < options.iterations; i++){
     result = cutlass_strided_batched_sgemm(
       m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
       beta, batch_count, options.if_split_phase, options.partition);
-    if (result != cudaSuccess)
+    if (result != cudaSuccess){
+      std::cerr << "cutlass result = " << result << std::endl;
       return result;
+    }
   }
   
   // copy device memory to host
@@ -608,14 +612,16 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
     return result;
   }
 
-  // outputChk(result_C, batch_count, ldc, batch_stride_C, m, n);
+  // outputChk(result_C, batch_count, ldc, batch_stride_C, m, options.problem_size.n());
 
   //compare with reference code
   if(options.validation == 1){
-    result = strided_batched_gemm_nn_reference(m, n, k, alpha, ref_A, lda, batch_stride_A, ref_B, ldb, batch_stride_B, ref_C, ldc, batch_stride_C,
+    result = strided_batched_gemm_nn_reference(m, options.problem_size.n(), k, alpha, ref_A, lda, batch_stride_A, ref_B, ldb, batch_stride_B, ref_C, ldc, batch_stride_C,
       beta, batch_count);
-    if (result != 0)
+    if (result != 0){
+      std::cerr << "reference result = " << result << std::endl;
       return result;
+    }
   }
 
   // Expect bit-level accuracy for this simple example
