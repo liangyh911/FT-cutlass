@@ -288,14 +288,9 @@ struct GemmBatched {
     float recomputed_chksum = 0;
     int diff = 0;
     
-    int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
+    int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
+    // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
     if(col_idx < params.problem_size.n()){
-
-      // // real smid
-      // unsigned int real_smid;
-      // asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
-      
-      // if use group, not unroll
       int N = params.problem_size.n();
       // void *p = params.ref_D.data();
       #pragma unroll
@@ -402,170 +397,161 @@ struct GemmBatched {
     int thread_idx = threadIdx.x;
 
     // check step
-    int check_step = 1;
+    // int check_step = 1;
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension
     // for(int batch_idx = init_batch_idx; batch_idx < params.batch_count; batch_idx += batch_step) {
     for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
       int batch_idx = init_batch_idx + b_iter * batch_step;
       // for(int iter = 0; iter < SM_iter; iter++){
-        bool beyond_bound = false;  
-        // int iter = 0;
-        if(smid < matrix_SM){
-          // for matrix
-          // int add_col = 0;
-          // threadblock_tile_offset_m = (smid % (matrix_shape_m) + matrix_next_blk_offset_m) % (matrix_shape_m);
-          // add_col = ((smid % (matrix_shape_m) + matrix_next_blk_offset_m) / (matrix_shape_m));
-          // threadblock_tile_offset_n = smid / (matrix_shape_m) + matrix_next_blk_offset_n + add_col;
+      if(smid < matrix_SM){
+        // for matrix
+        int local_matrix_idx = smid;
+        block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
+        block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
+      }
+      else{
+        // for checksum          
+        unsigned int local_chk_blk_idx = (smid - matrix_SM);
+        block_to_coordinate(local_chk_blk_idx, checksumblk_per_col, threadblock_tile_offset_m, threadblock_tile_offset_n);
+        threadblock_tile_offset_m += matrix_shape_m;
+        block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+      }
+  
+      // bool beyond_bound = false;  
+      // // int iter = 0;
 
-          int local_matrix_idx = smid;
-          block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
-          block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
-        }
-        else{
-          // for checksum          
-          // unsigned int local_chk_blk_idx = smid - matrix_SM;
-          // threadblock_tile_offset_m = matrix_shape_m + (local_chk_blk_idx % checksumblk_per_col);
-          // threadblock_tile_offset_n = local_chk_blk_idx / checksumblk_per_col + checksum_next_blk_offset_n;
+      // if(batch_idx >= params.batch_count || init_batch_idx >= batch_step){
+      //   // return;
+      //   beyond_bound = true;
+      // }
 
-          unsigned int local_chk_blk_idx = (smid - matrix_SM);
-          block_to_coordinate(local_chk_blk_idx, checksumblk_per_col, threadblock_tile_offset_m, threadblock_tile_offset_n);
-          threadblock_tile_offset_m += matrix_shape_m;
-          block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
-        }
+      // Compute position within threadblock
+      //  int thread_idx = threadIdx.x;
+      //  int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+      
+      if((batch_idx < params.batch_count) && (init_batch_idx < batch_step)){
+        // Compute initial location in logical coordinates
+        cutlass::MatrixCoord tb_offset_A{
+          threadblock_tile_offset_m * Mma::Shape::kM,
+          0
+        };
 
-        if(batch_idx >= params.batch_count || init_batch_idx >= batch_step){
-          // return;
-          beyond_bound = true;
-        }
+        cutlass::MatrixCoord tb_offset_B{
+          0,
+          threadblock_tile_offset_n * Mma::Shape::kN
+        };
 
-        // Compute position within threadblock
-        //  int thread_idx = threadIdx.x;
-        //  int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
+        // Construct iterators to A and B operands
+        typename Mma::IteratorA iterator_A(
+          params.params_A,
+          params.ref_A.data(),
+          params.problem_size.mk(),
+          thread_idx,
+          tb_offset_A);
+
+        iterator_A.add_pointer_offset(params.stride_A * batch_idx);
+
+        typename Mma::IteratorB iterator_B(
+          params.params_B,
+          params.ref_B.data(),
+          params.problem_size.kn(),
+          thread_idx,
+          tb_offset_B);
+
+        iterator_B.add_pointer_offset(params.stride_B * batch_idx);
+
+        //
+        // Main loop
+        //
+
+        // Broadcast the warp_id computed by lane 0 to ensure dependent code
+        // is compiled as warp-uniform.
+        int warp_idx = canonical_warp_idx_sync();
+
+        int lane_idx = threadIdx.x % 32;
         
-        if(!beyond_bound){
-          // Compute initial location in logical coordinates
-          cutlass::MatrixCoord tb_offset_A{
-            threadblock_tile_offset_m * Mma::Shape::kM,
-            0
-          };
+        Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
 
-          cutlass::MatrixCoord tb_offset_B{
-            0,
-            threadblock_tile_offset_n * Mma::Shape::kN
-          };
+        typename Mma::FragmentC accumulators;
 
-          // Construct iterators to A and B operands
-          typename Mma::IteratorA iterator_A(
-            params.params_A,
-            params.ref_A.data(),
-            params.problem_size.mk(),
-            thread_idx,
-            tb_offset_A);
-
-          iterator_A.add_pointer_offset(params.stride_A * batch_idx);
-
-          typename Mma::IteratorB iterator_B(
-            params.params_B,
-            params.ref_B.data(),
-            params.problem_size.kn(),
-            thread_idx,
-            tb_offset_B);
-
-          iterator_B.add_pointer_offset(params.stride_B * batch_idx);
-
-          //
-          // Main loop
-          //
-
-          // Broadcast the warp_id computed by lane 0 to ensure dependent code
-          // is compiled as warp-uniform.
-          int warp_idx = canonical_warp_idx_sync();
-
-          int lane_idx = threadIdx.x % 32;
-          
-          Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
-
-          typename Mma::FragmentC accumulators;
-
-          accumulators.clear();
+        accumulators.clear();
 
 
-          // Compute threadblock-scoped matrix multiply-add
-          mma(params.gemm_k_iterations, accumulators, iterator_A, iterator_B, accumulators);
+        // Compute threadblock-scoped matrix multiply-add
+        mma(params.gemm_k_iterations, accumulators, iterator_A, iterator_B, accumulators);
 
-          //
-          // Epilogue
-          //
+        //
+        // Epilogue
+        //
 
-          OutputOp output_op(params.epilogue);
+        OutputOp output_op(params.epilogue);
 
-          //
-          // Masked tile iterators constructed from members
-          //
+        //
+        // Masked tile iterators constructed from members
+        //
 
-          threadblock_tile_offset =
-              threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
+        threadblock_tile_offset =
+            threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
 
-          //assume identity swizzle
-          MatrixCoord threadblock_offset(
-            threadblock_tile_offset_m * Mma::Shape::kM,
-            threadblock_tile_offset_n * Mma::Shape::kN
-          );
+        //assume identity swizzle
+        MatrixCoord threadblock_offset(
+          threadblock_tile_offset_m * Mma::Shape::kM,
+          threadblock_tile_offset_n * Mma::Shape::kN
+        );
 
-          // if(thread_idx == 0){
-          //   printf("sm id: %d, gridDim.z: %d, init_batch_idx: %d, batch_idx: %d, m_offset: %d, n_offset: %d\n", 
-          //           smid, gridDim.z, threadblock_swizzle.get_batch_idx(), batch_idx, threadblock_offset.row(), threadblock_offset.column());
-          // }
+        // if(thread_idx == 0){
+        //   printf("sm id: %d, gridDim.z: %d, init_batch_idx: %d, batch_idx: %d, m_offset: %d, n_offset: %d\n", 
+        //           smid, gridDim.z, threadblock_swizzle.get_batch_idx(), batch_idx, threadblock_offset.row(), threadblock_offset.column());
+        // }
 
-          // Tile iterator writing to output tile
-          typename Epilogue::OutputTileIterator iterator_C(
-            params.params_C,
-            params.ref_C.data(),
-            params.problem_size.mn(),
-            thread_idx,
-            threadblock_offset
-          );
+        // Tile iterator writing to output tile
+        typename Epilogue::OutputTileIterator iterator_C(
+          params.params_C,
+          params.ref_C.data(),
+          params.problem_size.mn(),
+          thread_idx,
+          threadblock_offset
+        );
 
-          iterator_C.add_pointer_offset(params.stride_C * batch_idx);
+        iterator_C.add_pointer_offset(params.stride_C * batch_idx);
 
-          // Tile iterator writing to output tile
-          typename Epilogue::OutputTileIterator iterator_D(
-            params.params_D,
-            params.ref_D.data(),
-            params.problem_size.mn(),
-            thread_idx,
-            threadblock_offset
-          );
+        // Tile iterator writing to output tile
+        typename Epilogue::OutputTileIterator iterator_D(
+          params.params_D,
+          params.ref_D.data(),
+          params.problem_size.mn(),
+          thread_idx,
+          threadblock_offset
+        );
 
-          iterator_D.add_pointer_offset(params.stride_D * batch_idx);
+        iterator_D.add_pointer_offset(params.stride_D * batch_idx);
 
-          Epilogue epilogue(
-            shared_storage.epilogue, 
-            thread_idx, 
-            warp_idx, 
-            lane_idx);
+        Epilogue epilogue(
+          shared_storage.epilogue, 
+          thread_idx, 
+          warp_idx, 
+          lane_idx);
 
-          // run efficient epilogue
-          epilogue(output_op, iterator_D, accumulators, iterator_C);
+        // run efficient epilogue
+        epilogue(output_op, iterator_D, accumulators, iterator_C);
+      }
+
+      // check phase
+      #if 1
+      if(if_split_phase == 0){
+        if(b_iter == 0 && batch_iter != 1){
+          continue;
         }
-
-        // check phase
-        #if 1
-        if(if_split_phase == 0){
-          if(b_iter == 0 && batch_iter != 1){
-          // if(b_iter < check_step && batch_iter < check_step){
-            continue;
-          }
-          // else if(b_iter == (batch_iter - 1)){
-          else if(b_iter >= (batch_iter - check_step)){
-            cooperative_groups::this_grid().sync();
-          }
-    
+        else if(b_iter == (batch_iter - 1)){
+          cooperative_groups::this_grid().sync();
+        }
+        
+        if(init_batch_idx < batch_step){
           int *int_smem = reinterpret_cast<int *>(&shared_storage);
           int &next_matrix_block_idx = int_smem[0];
           int &next_chk_block_idx = int_smem[1];
-          int &flag = int_smem[2];
+          // int &flag = int_smem[2];
     
           int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
 
@@ -575,63 +561,50 @@ struct GemmBatched {
     
             next_matrix_block_idx = tmp_matrix_blk;
             next_chk_block_idx = tmp_chk_blk;
-            flag = tmp_flag;
+            // flag = tmp_flag;
           }
           __syncthreads();
     
           // begin chkeck
-          if(flag == 1){
+          // if(flag == 1){
             if (smid < matrix_SM){
               int matrix_start_idx, chk_start_idx;
               // iter 1 ~ (n-2)
               if(b_iter < (batch_iter - 1) && b_iter > 0){
-              // if((b_iter < (batch_iter - check_step)) && (b_iter > (check_step - 1))){
-                // last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                //                       checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, thread_idx, batch_idx);
+                int previous_batch_idx = batch_idx - batch_step;
                 
                 curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                                        checksumblk_per_col, thread_idx, (batch_idx - batch_step));
+                                        checksumblk_per_col, thread_idx, previous_batch_idx);
 
-                // curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                //                         checksumblk_per_col, thread_idx, (batch_idx - check_step * batch_step));
                 check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
                             b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
               }
               // iter n-1
               else if(b_iter == batch_iter - 1){
-              // else if(b_iter >= (batch_iter - check_step)){
-                int ti = b_iter;
                 if(batch_iter != 1){
                   //check last batch
-                  // last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                  //                       checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, thread_idx, batch_idx);
+                  int previous_batch_idx = batch_idx - batch_step;
                   curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                                            checksumblk_per_col, thread_idx, (batch_idx - batch_step));
+                                            checksumblk_per_col, thread_idx, previous_batch_idx);
 
-                  // curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                  //                         checksumblk_per_col, thread_idx, (batch_idx - check_step * batch_step));
                   check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
-                                        ti, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
-                  ti++;
+                                        (b_iter-1), real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
                 }
                 // cooperative_groups::this_grid().sync();
-                if(beyond_bound){
+                if(batch_idx >= params.batch_count){
                   return;
                 }
-                // if((!beyond_bound)){
-                  // check current iteration
-                  // if(thread_idx == 0 && batch_idx == 14) printf("%d, %d, %d, real_smid: %d, batch idx: %d, local_smid: %d\n", b, batch_idx, iter, real_smid, batch_idx, smid);
-                  // n <256
                   curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
                                             checksumblk_per_col, thread_idx, batch_idx);
                   check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
-                                    ti, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
-                // }
+                                      b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
               }
             }
-          }
+          // }
         }
-        else if(if_split_phase == 1 && !beyond_bound){
+      }
+      else if(if_split_phase == 1){
+        if((batch_idx < params.batch_count) && (init_batch_idx < batch_step)){
           // checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
           // // int new_blk_idx = block_idx + threadblock_tile_offset_n * checksumblk_per_col;
 
@@ -652,12 +625,12 @@ struct GemmBatched {
           // // if(thread_idx == 0 && !beyond_bound) printf("smid: %d, blk: %d, newblk: %d, pre_blk: %d, pre_chk: %d\n", real_smid, block_idx, new_blk_idx, previous_matrix_block_idx, previous_chk_block_idx);
 
           // update_col(params, previous_matrix_block_idx, previous_chk_block_idx, threadblock_tile_offset_n, batch_idx, thread_idx, checksumblk_per_col);
-
         }
-        else{
+      }
+      else{
 
-        }
-        #endif
+      }
+      #endif
       // }
     }
     // if(threadIdx.x == 0) printf("init_batch: %d\n", temp);
@@ -669,4 +642,3 @@ struct GemmBatched {
 } // namespace kernel
 } // namespace gemm
 } // namespace cutlass
-
