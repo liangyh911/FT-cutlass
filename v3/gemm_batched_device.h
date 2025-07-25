@@ -428,7 +428,7 @@ public:
     dim3 new_grid(12, 11, 1);
 
     bool deBug = true;
-    int iterations = 0;
+    int iterations = 1;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -437,11 +437,15 @@ public:
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
 
+    // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", new_grid.x, new_grid.y, new_grid.z, block.x, block.y, block.z);
+
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
 
     cudaError_t result;
 
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
+
+    // printf("share memory size: %d\n", smem_size);
     if (smem_size >= (48 << 10)) {
       result = cudaFuncSetAttribute(Kernel<GemmKernel>,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -475,6 +479,8 @@ public:
 
       printf("compute kernel time: %f\n", t_compute/iterations);
     }
+
+    cudaFree(SM_check_res);
 
     result = cudaGetLastError();
 

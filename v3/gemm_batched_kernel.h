@@ -226,21 +226,69 @@ struct GemmBatched {
     int K = params.problem_size.k();
     int N = params.problem_size.n();
     int gridM = params.grid_tiled_shape.m() + checksumblk_per_col;
-    int tiled_N = blockDim.x;
-    int col_idx = (threadblock_tile_offset_n * tiled_N) + thread_idx; 
+    int tiled_N = blockDim.x; 
 
     int MatrixColBlkOffset = matrix_blk / gridM;
     int MatrixRowBlkOffset = matrix_blk % gridM;
+
+    int col_idx = (MatrixColBlkOffset * tiled_N) + thread_idx;
   
     if(col_idx < N){
       float accum = 0.f;
       int idx_a = (batch_idx * params.stride_A) + (M + 1 * MatrixRowBlkOffset) * K;
-      int idx_b = (batch_idx * params.stride_B) + MatrixColBlkOffset + thread_idx;
-      int idx_chk = (batch_idx * params.stride_D) + (MatrixColBlkOffset * tiled_N) + (params.grid_tiled_shape.m() * 128 + 1 * MatrixRowBlkOffset) * N + thread_idx;
+      int idx_b = (batch_idx * params.stride_B) + (MatrixColBlkOffset * tiled_N) + thread_idx;
+      int idx_chk = (batch_idx * params.stride_D) + (MatrixColBlkOffset * tiled_N) + (M + 1 * MatrixRowBlkOffset) * N + thread_idx;
   
       for(int k = 0; k < K; k++){
         float a = *(params.ref_A.data() + idx_a + k);
         float b = *(params.ref_B.data() + idx_b + k * N);
+        accum += a * b;
+      }
+      *(params.ref_D.data() + idx_chk) = accum;
+    }
+  }
+  
+  __device__ void update_col_v2(Params const &params, float *smem, int threadblock_tile_offset_n, int batch_idx, int thread_idx, int checksumblk_per_col){
+
+    int M = params.problem_size.m();
+    int K = params.problem_size.k();
+    int N = params.problem_size.n();
+    int gridM = params.grid_tiled_shape.m() + checksumblk_per_col;
+    int tiled_N = blockDim.x;
+
+    int matrix_blk = (int)(*smem);
+    int MatrixColBlkOffset = matrix_blk / gridM;
+    int MatrixRowBlkOffset = matrix_blk % gridM;
+
+    int col_idx = (MatrixColBlkOffset * tiled_N) + thread_idx; 
+    
+    // load to share memory (smem size: 73728, 18432, 72*256, 18*1024)
+    float *d_A = smem + 2; 
+    // float *d_B = smem + (2 + (1 * K));
+
+    if(col_idx < K){
+      int idx_a = (batch_idx * params.stride_A) + (M + 1 * MatrixRowBlkOffset) * K;
+      int idx_da = col_idx;
+      // int idx_b = (batch_idx * params.stride_B) + (MatrixColBlkOffset * tiled_N) + thread_idx;
+      for(int k = 0; k < K; k++){
+        *(d_A + idx_da + k * K) = *(params.ref_A.data() + idx_a + k * K);
+        // *(d_B + k + K * thread_idx) = *(params.ref_B.data() + idx_b + k * N);
+      }
+    }
+    __syncthreads();
+
+  
+    if(col_idx < N){
+      float accum = 0.f;
+      int idx_a = (1 * MatrixRowBlkOffset) * K;
+      int idx_b = (batch_idx * params.stride_B) + (MatrixColBlkOffset * tiled_N) + thread_idx;
+      int idx_chk = (batch_idx * params.stride_D) + (MatrixColBlkOffset * tiled_N) + (M + 1 * MatrixRowBlkOffset) * N + thread_idx;
+  
+      for(int k = 0; k < K; k++){
+        // float a = *(params.ref_A.data() + idx_a + k);
+        float a = *(d_A + idx_a + k);
+        float b = *(params.ref_B.data() + idx_b + k * N);
+        // if(thread_idx == 0) printf("a: %f, b: %f\n", a, b);
         accum += a * b;
       }
       *(params.ref_D.data() + idx_chk) = accum;
@@ -287,9 +335,9 @@ struct GemmBatched {
                               int block_idx, int batch_idx, int threadblock_tile_offset_n){
     float recomputed_chksum = 0;
     int diff = 0;
-    
     int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
     // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
+
     if(col_idx < params.problem_size.n()){
       int N = params.problem_size.n();
       // void *p = params.ref_D.data();
@@ -297,13 +345,10 @@ struct GemmBatched {
       for(int r = 0; r < 128; r++){
         int idx = matrix_start_idx + r * N;
         recomputed_chksum += *(params.ref_D.data() + idx);
-        // float temp = params.ref_D.data(idx);
-        // recomputed_chksum += temp;
-        // if(batch_idx == 14 && *(params.ref_D.data() + idx)!=1024) printf("sm: (%d, %d), (%d, %d), r:%d, %f, %f\n", real_smid, smid, block_idx, thread_idx, r, recomputed_chksum, *(params.ref_D.data() + idx));
       }
       
-      // float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
-      if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+      float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
+      if(fabs(recomputed_chksum - check_sum_val) > (float)1e1){
         diff = 1;
         printf("%d %d Difference detected at ((%d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
                   iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
@@ -567,64 +612,69 @@ struct GemmBatched {
     
           // begin chkeck
           // if(flag == 1){
-            if (smid < matrix_SM){
-              int matrix_start_idx, chk_start_idx;
-              // iter 1 ~ (n-2)
-              if(b_iter < (batch_iter - 1) && b_iter > 0){
+          if (smid < matrix_SM){
+            int matrix_start_idx, chk_start_idx;
+            // iter 1 ~ (n-2)
+            if(b_iter < (batch_iter - 1) && b_iter > 0){
+              int previous_batch_idx = batch_idx - batch_step;
+              
+              curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
+                                      checksumblk_per_col, thread_idx, previous_batch_idx);
+
+              check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
+                          b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
+            }
+            // iter n-1
+            else if(b_iter == batch_iter - 1){
+              if(batch_iter != 1){
+                //check last batch
                 int previous_batch_idx = batch_idx - batch_step;
-                
                 curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                                        checksumblk_per_col, thread_idx, previous_batch_idx);
+                                          checksumblk_per_col, thread_idx, previous_batch_idx);
 
                 check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
-                            b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
+                                      (b_iter-1), real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
               }
-              // iter n-1
-              else if(b_iter == batch_iter - 1){
-                if(batch_iter != 1){
-                  //check last batch
-                  int previous_batch_idx = batch_idx - batch_step;
-                  curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                                            checksumblk_per_col, thread_idx, previous_batch_idx);
-
-                  check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
-                                        (b_iter-1), real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
-                }
-                // cooperative_groups::this_grid().sync();
-                if(batch_idx >= params.batch_count){
-                  return;
-                }
-                  curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
-                                            checksumblk_per_col, thread_idx, batch_idx);
-                  check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
-                                      b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
+              // cooperative_groups::this_grid().sync();
+              if(batch_idx >= params.batch_count){
+                return;
               }
+                curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 
+                                          checksumblk_per_col, thread_idx, batch_idx);
+                check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, 
+                                    b_iter, real_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx, batch_idx, threadblock_tile_offset_n);
             }
+          }
           // }
         }
       }
       else if(if_split_phase == 1){
         if((batch_idx < params.batch_count) && (init_batch_idx < batch_step)){
-          // checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
-          // // int new_blk_idx = block_idx + threadblock_tile_offset_n * checksumblk_per_col;
+          checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
 
-          // int *int_smem = reinterpret_cast<int *>(&shared_storage);
-          // int &previous_matrix_block_idx = int_smem[0];
-          // int &previous_chk_block_idx = int_smem[1];
+          int *int_smem = reinterpret_cast<int *>(&shared_storage);
+          int &previous_matrix_block_idx = int_smem[0];
+          int &previous_chk_block_idx = int_smem[1];
 
-          // if(thread_idx == 0){
-          //   int tmp_matrix_blk, tmp_chk_blk;
+          // float *int_smem = reinterpret_cast<float *>(&shared_storage);
+          // float &previous_matrix_block_idx = int_smem[0];
+          // float &previous_chk_block_idx = int_smem[1];
+
+          if(thread_idx == 0){
+            int tmp_matrix_blk, tmp_chk_blk;
             
-          //   previous_blks_idx(params, threadblock_tile_offset_m, tmp_matrix_blk, tmp_chk_blk, real_smid, block_idx, matrix_SM, b_iter, checksumblk_per_col);
+            previous_blks_idx(params, threadblock_tile_offset_m, tmp_matrix_blk, tmp_chk_blk, real_smid, block_idx, matrix_SM, b_iter, checksumblk_per_col);
 
-          //   previous_matrix_block_idx = tmp_matrix_blk;
-          //   previous_chk_block_idx = tmp_chk_blk;
-          // }
-          // __syncthreads();
+            previous_matrix_block_idx = (float)tmp_matrix_blk;
+            previous_chk_block_idx = (float)tmp_chk_blk;
+          }
+          __syncthreads();
 
-          // // if(thread_idx == 0 && !beyond_bound) printf("smid: %d, blk: %d, newblk: %d, pre_blk: %d, pre_chk: %d\n", real_smid, block_idx, new_blk_idx, previous_matrix_block_idx, previous_chk_block_idx);
+          // int new_blk_idx = block_idx + threadblock_tile_offset_n * checksumblk_per_col;
+          // if(thread_idx == 0) printf("smid: %d, blk: %d, newblk: %d, pre_blk: %d, pre_chk: %d\n", real_smid, block_idx, new_blk_idx, (int)(*int_smem), (int)(*(int_smem+1)));
 
-          // update_col(params, previous_matrix_block_idx, previous_chk_block_idx, threadblock_tile_offset_n, batch_idx, thread_idx, checksumblk_per_col);
+          update_col(params, previous_matrix_block_idx, previous_chk_block_idx, threadblock_tile_offset_n, batch_idx, thread_idx, checksumblk_per_col);
+          // update_col_v2(params, int_smem, threadblock_tile_offset_n, batch_idx, thread_idx, checksumblk_per_col);
         }
       }
       else{

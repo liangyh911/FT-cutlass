@@ -391,13 +391,13 @@ bool valid( int m, int n, int k,
             std::vector<T> &C, std::vector<T> &ref_C, 
             int ldc, long long int batch_stride_C, int batch_count){
   bool correct = true;
-  for (int batch_idx = 0; batch_idx < 2; batch_idx++) {
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
     for (int n_idx = 0; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
           T c = C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           T ref_c = ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           if(c != ref_c){
-            // printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f\n", batch_idx, m_idx, n_idx, c, ref_c);
+            printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
             correct = false;
           }
       }
@@ -440,7 +440,7 @@ void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, i
         float sum = 0.0f;
         for(int i = 0; i < k_per_partion; i++){
           float a = chk_vector[r + i * m];
-          float b = A[(i + k_per_partion * p) + c * lda];
+          float b = A[(i + k_per_partion * p) + c * lda + (b_idx * stride)];
           sum += a * b;
         }
         int idx = (k + p) + (c * lda) + (b_idx * stride);
