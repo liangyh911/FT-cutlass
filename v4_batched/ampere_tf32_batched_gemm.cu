@@ -162,7 +162,7 @@ struct Options {
     cmd.get_cmd_line_argument("validate", validation);
 
     // cmd.get_cmd_line_argument("partition", partition);
-    partition = problem_size.n() / 128;
+    partition = 1;
 
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
@@ -617,7 +617,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
     return result;
   }
 
-  int const n = (options.if_split_phase != 1) ? options.problem_size.n() : (options.problem_size.n() - 2 * options.partition);
+  int const n = (options.if_split_phase == 1 || options.if_split_phase == 0) ? (options.problem_size.n() - 2 * options.partition) : options.problem_size.n();
 
   // run cutlass
   for(int i = 0; i < options.iterations; i++){
