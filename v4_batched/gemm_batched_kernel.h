@@ -249,35 +249,6 @@ struct GemmBatched {
     }
   }
 
-  __device__ void update_col_v3(Params const &params, int thread_idx, int batch_idx){
-
-    int M = params.problem_size.m();
-    int K = params.problem_size.k();
-    int N = params.problem_size.n();
-    int tiled_N = blockDim.x; 
-
-    int iter = (int)(ceil((double)N / (double)tiled_N));
-
-    for(int i = 0; i < iter; i++){
-      int col_idx = (i * tiled_N) + thread_idx;
-      if(col_idx < N){
-        for(int m = 0; m < 2; m++){
-          float accum = 0.f;
-          int idx_a = (batch_idx * params.stride_A) + ((M + m) * K);
-          int idx_b = (batch_idx * params.stride_B) + col_idx;
-          int idx_chk = (batch_idx * params.stride_D) + (M + m) * N + col_idx;
-        
-          for(int k = 0; k < K; k++){
-            float a = *(params.ref_A.data() + idx_a + k);
-            float b = *(params.ref_B.data() + idx_b + k * N);
-            accum += a * b;
-          }
-          *(params.ref_D.data() + idx_chk) = accum;
-        }
-      }
-    }
-  }
-
   __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
                                         int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
                                         int thread_idx, int batch_idx){
@@ -537,26 +508,16 @@ struct GemmBatched {
     // int check_step = 1;
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension    
-    for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
-      int batch_idx;
-      if(real_smid < (matrix_SM * batch_step)){
-        // for matrix
+    int batch_idx;
+    if(real_smid < (matrix_SM * batch_step)){
+      // for matrix
+      for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
         batch_idx = init_batch_idx + b_iter * batch_step;
         int local_matrix_idx = smid;
         block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
         block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
-      }
-      else{
-        // remaining for checksum 
-        batch_idx = (real_smid - (matrix_SM * batch_step)) + b_iter * batch_step;
-        // if(thread_idx==0) printf("iter: %d, checksum: smid: %d, init_batch_idx: %d, batch_step: %d, batch_idx: %d\n", b_iter, real_smid, init_batch_idx, batch_step, batch_idx);
-      }
-      
-      if(batch_idx < params.batch_count){
-        // GEMM
-        if(init_batch_idx < batch_step){
-          // if(real_smid < (matrix_SM * batch_step)){
-          // Compute initial location in logical coordinates
+
+        if(batch_idx < params.batch_count){
           cutlass::MatrixCoord tb_offset_A{
             threadblock_tile_offset_m * Mma::Shape::kM,
             0
@@ -655,10 +616,17 @@ struct GemmBatched {
 
           // run efficient epilogue
           epilogue(output_op, iterator_D, accumulators, iterator_C);
+
         }
-        else{
-          // Checksum
-          // if(thread_idx==0) printf("[later] iter: %d, checksum: smid: %d, init_batch_idx: %d, batch_step: %d, batch_idx: %d\n", b_iter, real_smid, init_batch_idx, batch_step, batch_idx);
+      }
+    }
+    else{
+      // remaining for checksum
+      int chk_SM = 132 - matrix_SM * batch_step;
+      int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_SM));
+      for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+        batch_idx = (real_smid - (matrix_SM * batch_step)) + b_iter * chk_SM;
+        if(batch_idx < params.batch_count){
           if(if_split_phase == 0){
             // self checksum
             update_col_v3(params, thread_idx, batch_idx);
@@ -667,20 +635,27 @@ struct GemmBatched {
             
           }
         }
-      }
+      } 
+      // if(thread_idx==0) printf("iter: %d, checksum: smid: %d, init_batch_idx: %d, batch_step: %d, batch_idx: %d\n", b_iter, real_smid, init_batch_idx, batch_step, batch_idx);
+    }
 
-      if(if_split_phase == 0){
-        // check checksum
-        cooperative_groups::this_grid().sync();
+    #if 0
+    if(if_split_phase == 0){
+      // check checksum
+      cooperative_groups::this_grid().sync();
+      for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
+        batch_idx = init_batch_idx + b_iter * batch_step;
+        int checked_batch_idx = (init_batch_idx + 1) % batch_step + b_iter * batch_step;
         if(init_batch_idx < batch_step && batch_idx < params.batch_count){
           int row_idx = thread_idx + smid * blockDim.x;
           // first N threads for check phase
           if(row_idx < params.problem_size.n()){
-            check_phase_v2(params, batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
+            check_phase_v2(params, checked_batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
           }
         }
       }
     }
+    #endif
     // if(threadIdx.x == 0) printf("init_batch: %d\n", temp);
   }
 };
