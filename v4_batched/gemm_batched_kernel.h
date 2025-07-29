@@ -438,19 +438,19 @@ struct GemmBatched {
       diff = 1;
     }
 
-    // Locate corrupted SM
-    int error_n_offset = row_idx / blockDim.x;
-    int error_m_offset = loc / 128;
-    int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
-    int error_smid = error_local_smid + matrix_SM * batch_idx % batch_step;
-
-    // record results
-    // Atomic sum
+    
     if(diff != 0){
+      // Locate corrupted SM
+      int error_n_offset = row_idx / blockDim.x;
+      int error_m_offset = loc / 128;
+      int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
+      int error_smid = error_local_smid + matrix_SM * batch_idx % batch_step;
+
+      // record results
+      // Atomic sum
       atomicAdd((SM_check_res + error_smid), diff);
     }
     __syncthreads();
-
   }
 
 
@@ -503,9 +503,6 @@ struct GemmBatched {
 
     int block_idx;
     int thread_idx = threadIdx.x;
-
-    // check step
-    // int check_step = 1;
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension    
     int batch_idx;
@@ -639,18 +636,24 @@ struct GemmBatched {
       // if(thread_idx==0) printf("iter: %d, checksum: smid: %d, init_batch_idx: %d, batch_step: %d, batch_idx: %d\n", b_iter, real_smid, init_batch_idx, batch_step, batch_idx);
     }
 
-    #if 0
+    #if 1
     if(if_split_phase == 0){
       // check checksum
       cooperative_groups::this_grid().sync();
-      for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
-        batch_idx = init_batch_idx + b_iter * batch_step;
-        int checked_batch_idx = (init_batch_idx + 1) % batch_step + b_iter * batch_step;
-        if(init_batch_idx < batch_step && batch_idx < params.batch_count){
-          int row_idx = thread_idx + smid * blockDim.x;
-          // first N threads for check phase
-          if(row_idx < params.problem_size.n()){
-            check_phase_v2(params, checked_batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
+
+      if(real_smid < (matrix_SM * batch_step)){
+        int check_req_SM = params.grid_tiled_shape.n();
+        int check_step = ((int)(floor((double)matrix_SM / (double)check_req_SM))) * batch_step;
+        int check_iter = (int)(ceil((double)params.batch_count / (double)check_step));
+        int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
+        
+        for(int i = 0; i < check_iter; i += 1){
+          int checked_batch_idx = checked_init_batch_idx + i * check_step;
+          if(checked_batch_idx < params.batch_count){
+            int row_idx = thread_idx + smid * blockDim.x;
+            if(row_idx < params.problem_size.n()){
+              check_phase_v2(params, checked_batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
+            }
           }
         }
       }
