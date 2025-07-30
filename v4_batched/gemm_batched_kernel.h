@@ -465,14 +465,21 @@ struct GemmBatched {
     unsigned int real_smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
+    
+    int nSM = 128;
+    // return update checksum SM
+    if(real_smid > (nSM - 1)) return;
+    // if(threadIdx.x == 0) {
+    //   printf("gemm smid: %d\n", real_smid);
+    // }
 
     // SM based schudule
     // assign enough SMs for each batch 
     int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n();
-    if(SM_per_batch > 132){
-      SM_per_batch = 132;
+    if(SM_per_batch > nSM){
+      SM_per_batch = nSM;
     }
-    int batch_step = (int)(floor((double)132 / (double)SM_per_batch));
+    int batch_step = (int)(floor((double)nSM / (double)SM_per_batch));
     int local_smid = real_smid % SM_per_batch;
     int init_batch_idx = real_smid / SM_per_batch;
     int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
@@ -483,7 +490,7 @@ struct GemmBatched {
     // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.problem_size.m(), params.problem_size.n());
     
     int checksumblk_per_col = 0;
-    int matrix_SM = SM_per_batch;
+    // int matrix_SM = SM_per_batch;
     int matrix_shape_m = params.grid_tiled_shape.m();
 
     // Compute threadblock location
@@ -506,7 +513,7 @@ struct GemmBatched {
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension    
     int batch_idx;
-    if(real_smid < (matrix_SM * batch_step)){
+    // if(real_smid < (matrix_SM * batch_step)){
       // for matrix
       for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
         batch_idx = init_batch_idx + b_iter * batch_step;
@@ -616,49 +623,49 @@ struct GemmBatched {
 
         }
       }
-    }
-    else{
+    // }
+    // else{
       // remaining for checksum
-      int chk_SM = 132 - matrix_SM * batch_step;
-      int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_SM));
-      for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-        batch_idx = (real_smid - (matrix_SM * batch_step)) + b_iter * chk_SM;
-        if(batch_idx < params.batch_count){
-          if(if_split_phase == 0){
-            // self checksum
-            update_col_v3(params, thread_idx, batch_idx);
-          }
-          else if(if_split_phase == 1){
+      // int chk_SM = 132 - matrix_SM * batch_step;
+      // int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_SM));
+      // for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+      //   batch_idx = (real_smid - (matrix_SM * batch_step)) + b_iter * chk_SM;
+      //   if(batch_idx < params.batch_count){
+      //     if(if_split_phase == 0){
+      //       // self checksum
+      //       update_col_v3(params, thread_idx, batch_idx);
+      //     }
+      //     else if(if_split_phase == 1){
             
-          }
-        }
-      } 
+      //     }
+      //   }
+      // } 
       // if(thread_idx==0) printf("iter: %d, checksum: smid: %d, init_batch_idx: %d, batch_step: %d, batch_idx: %d\n", b_iter, real_smid, init_batch_idx, batch_step, batch_idx);
-    }
+    // }
 
-    #if 1
-    if(if_split_phase == 0){
-      // check checksum
-      cooperative_groups::this_grid().sync();
+    // #if 0
+    // if(if_split_phase == 0){
+    //   // check checksum
+    //   cooperative_groups::this_grid().sync();
 
-      if(real_smid < (matrix_SM * batch_step)){
-        int check_req_SM = params.grid_tiled_shape.n();
-        int check_step = ((int)(floor((double)matrix_SM / (double)check_req_SM))) * batch_step;
-        int check_iter = (int)(ceil((double)params.batch_count / (double)check_step));
-        int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
+    //   if(real_smid < (matrix_SM * batch_step)){
+    //     int check_req_SM = params.grid_tiled_shape.n();
+    //     int check_step = ((int)(floor((double)matrix_SM / (double)check_req_SM))) * batch_step;
+    //     int check_iter = (int)(ceil((double)params.batch_count / (double)check_step));
+    //     int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
         
-        for(int i = 0; i < check_iter; i += 1){
-          int checked_batch_idx = checked_init_batch_idx + i * check_step;
-          if(checked_batch_idx < params.batch_count){
-            int row_idx = thread_idx + smid * blockDim.x;
-            if(row_idx < params.problem_size.n()){
-              check_phase_v2(params, checked_batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
-            }
-          }
-        }
-      }
-    }
-    #endif
+    //     for(int i = 0; i < check_iter; i += 1){
+    //       int checked_batch_idx = checked_init_batch_idx + i * check_step;
+    //       if(checked_batch_idx < params.batch_count){
+    //         int row_idx = thread_idx + smid * blockDim.x;
+    //         if(row_idx < params.problem_size.n()){
+    //           check_phase_v2(params, checked_batch_idx, thread_idx, row_idx, SM_check_res, matrix_SM, batch_step);
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
+    // #endif
     // if(threadIdx.x == 0) printf("init_batch: %d\n", temp);
   }
 };

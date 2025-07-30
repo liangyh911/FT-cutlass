@@ -103,6 +103,7 @@ nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuh
 
 nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o blout.exe
 
+ncu -f -o batch32 --set full ./bout.exe --batch=256 --m=1024 --n=1024 --k=128 --split=0 --iterations=1
 */
 
 // Command line options parsing
@@ -213,10 +214,6 @@ using ElementInputB = float;                        // <- data type of elements 
 using ElementOutput = float;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
-// Matrix A, Row Major for Matrix B and Row Major for Matrix C
-using LayoutInputA = cutlass::layout::RowMajor;
-using LayoutInputB = cutlass::layout::RowMajor;
-using LayoutOutput = cutlass::layout::RowMajor;
 
 // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
 using MMAOp = cutlass::arch::OpClassTensorOp;
@@ -312,6 +309,9 @@ cudaError_t cutlass_strided_batched_sgemm(
   // status = gemm_op.initialize(arguments, workspace.get());
   // CUTLASS_CHECK(status);
 
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
   cutlass::Status status = gemm_op({
     {m, n, k},
     {A, lda}, 
@@ -324,7 +324,9 @@ cudaError_t cutlass_strided_batched_sgemm(
     batch_stride_C,
     {alpha, beta},
     batch_count},
-    if_split_phase, partition);
+    if_split_phase, partition,
+    stream
+  );
 
   if (status != cutlass::Status::kSuccess) {
     return cudaErrorUnknown;

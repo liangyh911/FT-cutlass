@@ -425,14 +425,23 @@ public:
 
     dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
-    dim3 new_grid(12, 11, 1);
+    dim3 grid_gemm(132,1,1);
+
+    dim3 grid_updatechk(132,1,1);
+    // dim3 block_updatechk(params_.problem_size.n(),1,1);
+    dim3 block_updatechk(2, 512, 1);
+    
+    cudaStream_t stream_colchk;
+    // cudaStreamCreate(&stream_main);
+    cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
     int iterations = 1;
+    
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    float t_compute = 0;
+    float t_gemm = 0, t_chksum = 0;
 
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
@@ -460,25 +469,46 @@ public:
 
     cutlass::arch::synclog_setup();
 
-    // cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
-    // cutlass::Kernel_Batched<GemmKernel><<<new_grid, block, smem_size, stream>>>(params_);
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
+    // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream_main>>>(params_, if_split_phase, SM_check_res, partion);
+    if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 0, stream_colchk>>>(params_);
 
     cudaDeviceSynchronize();
-    if(deBug){
-      cudaEventRecord(start, stream);
-    }
+    // if(deBug){
+    //   cudaEventRecord(start, stream);
+    // }
+
+    float sum_gemm = 0, sum_chksum = 0.f;
 
     for(int i = 0; i < iterations; i++){
-      cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
+      if(deBug){
+        cudaEventRecord(start, stream);
+      }   
+      cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
+      // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream_main>>>(params_, if_split_phase, SM_check_res, partion);
+      if(deBug){
+        cudaEventRecord(stop, stream);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&t_gemm, start, stop);
+        sum_gemm += t_gemm;
+      }
+
+      if(deBug && if_split_phase == 0){
+        cudaEventRecord(start, stream_colchk);
+      }
+      if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 0, stream_colchk>>>(params_);
+      if(deBug && if_split_phase == 0){
+        cudaEventRecord(stop, stream_colchk);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&t_chksum, start, stop);
+
+        sum_chksum += t_chksum;
+      }
+
+      cudaDeviceSynchronize();
     }
 
-    if(deBug){
-      cudaEventRecord(stop, stream);
-      cudaEventSynchronize(stop);
-      cudaEventElapsedTime(&t_compute, start, stop);
-
-      printf("compute kernel time: %f\n", t_compute/iterations);
-    }
+    printf("gemm kernel time: %f, update kernel time: %f\n", sum_gemm/iterations, sum_chksum/iterations);
 
     cudaFree(SM_check_res);
 
