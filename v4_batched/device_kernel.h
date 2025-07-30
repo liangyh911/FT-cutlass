@@ -135,67 +135,77 @@ void update_checksum(typename Operator::Params params){
   //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
   // }
 
-  int thread_idx = threadIdx.x;
+  extern __shared__ float SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
   int M = params.problem_size.m();
   int K = params.problem_size.k();
   int N = params.problem_size.n();
 
   int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_SM));
 
+  int local_smid = (real_smid - matrix_SM);
+  int col_idx = threadIdx.x;
+
+  int mk = M * K;
+  int mn = M * N;
+  int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+
+  // #pragma unroll 64
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-    int batch_idx = (real_smid - matrix_SM) + b_iter * chk_SM;
+    int batch_idx = local_smid + b_iter * chk_SM;
     if(batch_idx < params.batch_count){
       // if(threadIdx.x == 0) {
       //   printf("smid: %d, batch idx: %d,\n", real_smid, batch_idx);
       // }
+      
+      // if(col_idx < N){
+        // for(int m = 0; m < 2; m++){
+          float accum1 = 0.f;
+          float accum2 = 0.f;
+          
+          int idx_a_1 = (batch_idx * params.stride_A) + mk;
+          int idx_a_2 = (batch_idx * params.stride_A) + m1k;
 
-      int iter = (int)(ceil((double)N / (double)blockDim.y));
-      for(int i = 0; i < iter; i++){
-        int col_idx = (i * blockDim.y) + threadIdx.y;
-        // int row_idx = threadIdx.x;
-        if(col_idx < N){
-          float accum = 0.f;
-          int idx_a = (batch_idx * params.stride_A) + ((M + thread_idx) * K);
           int idx_b = (batch_idx * params.stride_B) + col_idx;
-          int idx_chk = (batch_idx * params.stride_D) + (M + thread_idx) * N + col_idx;
-        
-          for(int k = 0; k < K; k++){
-            float a = *(params.ref_A.data() + idx_a + k);
-            float b = *(params.ref_B.data() + idx_b + k * N);
-            accum += a * b;
+
+          int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
+          int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
+
+          // load checksum to share memroy
+          __syncthreads();
+          if(col_idx < (2 * K)){
+            SharedMem[col_idx] = *(params.ref_A.data() + idx_a_1 + col_idx);
+            // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
           }
-          *(params.ref_D.data() + idx_chk) = accum;
-        }
-      }
+          __syncthreads();
+          
+          #pragma unroll 128
+          for(int k = 0; k < K; k++){
+            // float a1 = *(params.ref_A.data() + idx_a_1 + k);
+            // float a2 = *(params.ref_A.data() + idx_a_2 + k);
+
+            float a1 = SharedMem[k];
+            float a2 = SharedMem[k + K];
+
+            // if(a1 != SharedMem[k] || a2 != SharedMem[k + K]){
+            //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, a1, a2, SharedMem[k], SharedMem[k + K]);
+            // }
+
+            float b = *(params.ref_B.data() + idx_b + k * N);
+            accum1 += a1 * b;
+
+            // float b2 = *(params.ref_B.data() + idx_b + k * N);
+            accum2 += a2 * b;
+
+          }
+          *(params.ref_D.data() + idx_chk_1) = accum1;
+          *(params.ref_D.data() + idx_chk_2) = accum2;
+        // }
+      // }
     }
   } 
-
-  
-  // for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-  //   int batch_idx = (real_smid - matrix_SM) + b_iter * chk_SM;
-  //   if(batch_idx < params.batch_count){
-  //     // if(threadIdx.x == 0) {
-  //     //   printf("smid: %d, batch idx: %d,\n", real_smid, batch_idx);
-  //     // }
-
-  //     int col_idx = thread_idx;
-  //     if(col_idx < N){
-  //       for(int m = 0; m < 2; m++){
-  //         float accum = 0.f;
-  //         int idx_a = (batch_idx * params.stride_A) + ((M + m) * K);
-  //         int idx_b = (batch_idx * params.stride_B) + col_idx;
-  //         int idx_chk = (batch_idx * params.stride_D) + (M + m) * N + col_idx;
-        
-  //         for(int k = 0; k < K; k++){
-  //           float a = *(params.ref_A.data() + idx_a + k);
-  //           float b = *(params.ref_B.data() + idx_b + k * N);
-  //           accum += a * b;
-  //         }
-  //         *(params.ref_D.data() + idx_chk) = accum;
-  //       }
-  //     }
-  //   }
-  // } 
 }
 
 /// Generic CUTLASS kernel template.

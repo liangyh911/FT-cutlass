@@ -429,14 +429,14 @@ public:
 
     dim3 grid_updatechk(132,1,1);
     // dim3 block_updatechk(params_.problem_size.n(),1,1);
-    dim3 block_updatechk(2, 512, 1);
+    dim3 block_updatechk(1024,1, 1);
     
     cudaStream_t stream_colchk;
     // cudaStreamCreate(&stream_main);
     cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
-    int iterations = 1;
+    int iterations = 500;
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -455,12 +455,14 @@ public:
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
 
     // printf("share memory size: %d\n", smem_size);
+    
     if (smem_size >= (48 << 10)) {
       result = cudaFuncSetAttribute(Kernel<GemmKernel>,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                                     smem_size);
 
       if (result != cudaSuccess) {
+        printf("error\n");
         return Status::kErrorInternal;
       }
     }
@@ -471,7 +473,7 @@ public:
 
     cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
     // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream_main>>>(params_, if_split_phase, SM_check_res, partion);
-    if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 0, stream_colchk>>>(params_);
+    if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 2*params_.problem_size.k()*sizeof(float), stream_colchk>>>(params_);
 
     cudaDeviceSynchronize();
     // if(deBug){
@@ -496,7 +498,7 @@ public:
       if(deBug && if_split_phase == 0){
         cudaEventRecord(start, stream_colchk);
       }
-      if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 0, stream_colchk>>>(params_);
+      if(if_split_phase == 0) cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, 2*params_.problem_size.k()*sizeof(float), stream_colchk>>>(params_);
       if(deBug && if_split_phase == 0){
         cudaEventRecord(stop, stream_colchk);
         cudaEventSynchronize(stop);
