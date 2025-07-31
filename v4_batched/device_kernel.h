@@ -101,7 +101,7 @@ void Kernel_Batched(typename Operator::Params params) {
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int partion
+            int if_split_phase, int *SM_check_res, int partion, int matrix_SM
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -112,7 +112,7 @@ void Kernel(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, partion
+  op(params, *shared_storage, if_split_phase, SM_check_res, partion, matrix_SM
     // all_start, compute, finding, recompute, compare, checking
   );
   
@@ -121,12 +121,12 @@ void Kernel(typename Operator::Params params,
 
 template <typename Operator>
 CUTLASS_GLOBAL
-void update_checksum(typename Operator::Params params){
+void update_checksum(typename Operator::Params params, int matrix_SM){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
-  // return gemm SM
-  int matrix_SM = 128;
+  // return gemm SM (96)
+  // int matrix_SM = 128;
   int chk_SM = 132 - matrix_SM;
 
   if(real_smid < matrix_SM) return;
@@ -152,58 +152,57 @@ void update_checksum(typename Operator::Params params){
   int m1k =(M + 1) * K;
   int m1n = (M + 1) * N;
 
-  // #pragma unroll 64
+  int load_iter = (int)(ceil((double)(2 * K)/ (double)blockDim.x));
+
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     int batch_idx = local_smid + b_iter * chk_SM;
     if(batch_idx < params.batch_count){
       // if(threadIdx.x == 0) {
       //   printf("smid: %d, batch idx: %d,\n", real_smid, batch_idx);
       // }
+    
+      float accum1 = 0.f;
+      float accum2 = 0.f;
       
-      // if(col_idx < N){
-        // for(int m = 0; m < 2; m++){
-          float accum1 = 0.f;
-          float accum2 = 0.f;
-          
-          int idx_a_1 = (batch_idx * params.stride_A) + mk;
-          int idx_a_2 = (batch_idx * params.stride_A) + m1k;
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      // int idx_a_2 = (batch_idx * params.stride_A) + m1k;
 
-          int idx_b = (batch_idx * params.stride_B) + col_idx;
+      int idx_b = (batch_idx * params.stride_B) + col_idx;
 
-          int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
-          int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
+      int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
 
-          // load checksum to share memroy
-          __syncthreads();
-          if(col_idx < (2 * K)){
-            SharedMem[col_idx] = *(params.ref_A.data() + idx_a_1 + col_idx);
-            // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
-          }
-          __syncthreads();
-          
-          #pragma unroll 128
-          for(int k = 0; k < K; k++){
-            // float a1 = *(params.ref_A.data() + idx_a_1 + k);
-            // float a2 = *(params.ref_A.data() + idx_a_2 + k);
+      // load checksum to share memroy
+      __syncthreads();
+      for(int i = 0; i < load_iter; i++){
+        int idx = col_idx + blockDim.x * i;
+        if(idx < (2 * K)){
+          SharedMem[idx] = *(params.ref_A.data() + idx_a_1 + idx);
+          // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
+        }
+      }
+      __syncthreads();
+      
+      #pragma unroll 128
+      for(int k = 0; k < K; k++){
+        // float a1 = *(params.ref_A.data() + idx_a_1 + k);
+        // float a2 = *(params.ref_A.data() + idx_a_2 + k);
 
-            float a1 = SharedMem[k];
-            float a2 = SharedMem[k + K];
+        float a1 = SharedMem[k];
+        float a2 = SharedMem[k + K];
 
-            // if(a1 != SharedMem[k] || a2 != SharedMem[k + K]){
-            //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, a1, a2, SharedMem[k], SharedMem[k + K]);
-            // }
-
-            float b = *(params.ref_B.data() + idx_b + k * N);
-            accum1 += a1 * b;
-
-            // float b2 = *(params.ref_B.data() + idx_b + k * N);
-            accum2 += a2 * b;
-
-          }
-          *(params.ref_D.data() + idx_chk_1) = accum1;
-          *(params.ref_D.data() + idx_chk_2) = accum2;
+        // if(a1 != SharedMem[k] || a2 != SharedMem[k + K]){
+        //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, a1, a2, SharedMem[k], SharedMem[k + K]);
         // }
-      // }
+
+        float b = *(params.ref_B.data() + idx_b + k * N);
+        accum1 += a1 * b;
+
+        // float b2 = *(params.ref_B.data() + idx_b + k * N);
+        accum2 += a2 * b;
+      }
+      *(params.ref_D.data() + idx_chk_1) = accum1;
+      *(params.ref_D.data() + idx_chk_2) = accum2;
     }
   } 
 }

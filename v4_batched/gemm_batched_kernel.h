@@ -459,14 +459,14 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int partion) {
+                    int if_split_phase, int *SM_check_res, int partion, int nSM) {
 
     // get SM id
     unsigned int real_smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
     
-    int nSM = 128;
+    // int nSM = 128;
     // return update checksum SM
     if(real_smid > (nSM - 1)) return;
     // if(threadIdx.x == 0) {
