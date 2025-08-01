@@ -575,9 +575,9 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
         // n = n, k = k, ldb = k * batch_count, 
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
-        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
+        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
         
-        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
+        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
       }
     }
@@ -647,18 +647,18 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
     result = strided_batched_gemm_nn_reference(m, options.problem_size.n(), k, alpha, ref_A, lda, batch_stride_A, ref_B, ldb, batch_stride_B, ref_C, ldc, batch_stride_C,
       beta, batch_count);
 
-    // bool res = valid(m, options.problem_size.n(), k, result_C, ref_C, ldc, batch_stride_C, batch_count);
-    // if(res){
-    //   printf("self-validate not error\n");
-    // }
-    // else{
-    //   printf("self-validate error detected\n");
-    // }
+    bool res = valid(m, options.problem_size.n(), k, result_C, ref_C, ldc, batch_stride_C, batch_count);
+    if(res){
+      printf("self-validate not error\n");
+    }
+    else{
+      printf("self-validate error detected\n");
+    }
 
-    // if (result != 0){
-    //   std::cerr << "reference result = " << result << std::endl;
-    //   return result;
-    // }
+    if (result != 0){
+      std::cerr << "reference result = " << result << std::endl;
+      return result;
+    }
   }
 
   // printf("ref C:\n");

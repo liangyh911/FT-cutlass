@@ -142,20 +142,26 @@ void update_checksum(typename Operator::Params params, int matrix_SM){
   int K = params.problem_size.k();
   int N = params.problem_size.n();
 
-  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_SM));
-
-  int local_smid = (real_smid - matrix_SM);
-  int col_idx = threadIdx.x;
-
   int mk = M * K;
   int mn = M * N;
-  int m1k =(M + 1) * K;
+  // int m1k =(M + 1) * K;
   int m1n = (M + 1) * N;
 
   int load_iter = (int)(ceil((double)(2 * K)/ (double)blockDim.x));
 
+  int TB_per_batch = 1;
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+
+  int local_smid = (real_smid - matrix_SM);
+  int col_idx = threadIdx.x;
+
+  // int init_batch = (local_smid * TB_per_batch) + (threadIdx.x / N);
+  // int local_col_idx = threadIdx.x % N;
+
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-    int batch_idx = local_smid + b_iter * chk_SM;
+    int batch_idx = local_smid + b_iter * chk_step;
+    // int batch_idx = init_batch + b_iter * chk_step; 
     if(batch_idx < params.batch_count){
       // if(threadIdx.x == 0) {
       //   printf("smid: %d, batch idx: %d,\n", real_smid, batch_idx);
@@ -205,6 +211,172 @@ void update_checksum(typename Operator::Params params, int matrix_SM){
       *(params.ref_D.data() + idx_chk_2) = accum2;
     }
   } 
+}
+
+template<typename Operator>
+CUTLASS_DEVICE
+void check_phase_v3(typename Operator::Params params, int batch_idx, int col_idx, int *SM_check_res, int matrix_SM, int batch_step, int &diff, int &loc){
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  float E = 1;
+  // int loc = -1;
+  float MAX = 0;
+  // int diff = 0;
+
+  // recompute checksum (no weighted, weighted)
+  float dA_col_r1 = 0.f;
+  float dA_col_r2 = 0.f;
+  
+  int start_idx = (params.stride_D * batch_idx) + col_idx;
+  
+  #pragma unroll 128
+  for(int r = 0; r < M; r++){
+    float element = *(params.ref_D.data() + (start_idx + r * N));
+    
+    dA_col_r1 += element;
+    dA_col_r2 += (float)(r+1) * element;
+  }
+
+  // detect error
+  float dA_col_1 = *(params.ref_D.data() + (start_idx + (M*N)));
+  float dA_col_2 = *(params.ref_D.data() + (start_idx + (M+1)*N));
+
+  float d1 = (float)(dA_col_1 - dA_col_r1);
+  float d2 = (float)(dA_col_2 - dA_col_r2);
+  float abs_d1 = fabs(d1);
+
+  // printf("tid: %d, batch_idx: %d, row_idx: %d, updated: (%f, %f), recomputed: (%f, %f)\n", thread_idx, batch_idx, row_idx, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
+  
+  if(abs_d1 > E){
+    if(!std::isinf(d2)){
+      loc = round(d2 / d1) - 1;
+      printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f)\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
+      diff = 1;
+    }
+    else{
+      MAX = 0;
+      int counter = 0;
+      for(int i = 0; i < N; i++) {
+        if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
+          MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
+          loc = i;
+        }
+        if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+          counter++;
+          if(counter > 1){
+            printf("[col check]col chksum error, more than one large number. (d1 = %.6f, d2 = %.6f)\n",(float)d1, (float)d2);
+            return;
+          }
+        }
+      }
+      printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+      diff = 1;        
+    }
+    return;
+  }
+  // abs == inf
+  if(std::isinf(abs_d1)){
+    MAX = 0;
+    int64_t counter = 0;
+    for(int i = 0; i < N; i++) {
+      if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
+        MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
+        loc = i;
+      }
+      if(std::isinf(*(params.ref_D.data() + start_idx + i * N)) || fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+        counter++;
+        if(counter > 1){
+          printf("[col check]Multi INFs or Large Number detected in one column.(d1 = %.6f, d2 = %.6f, iter = %d)\n", (float)d1, (float)d2, i);
+          return;
+        }
+      }
+    }
+    if(counter == 0){
+      printf("[col chk]No INF or Large Number found.\n");
+      return;
+    }
+    printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+    diff = 1;
+    return;
+  }
+  // abs == nan
+  if(std::isnan(abs_d1)){
+    int64_t counter = 0;
+    for(int i = 0; i < N; i++) {
+      if (std::isnan(*(params.ref_D.data() + start_idx + i * N))) {
+        loc = i;
+        counter++;
+      }
+      if(std::isinf(*(params.ref_D.data() + start_idx + i * N))){
+        counter++;
+      }
+      if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+        counter++;
+      }
+      if(counter > 1){
+        printf("[col check]Multi INF, NAN or Large Number detected in one column. (iter = %d)\n", i);
+        return;
+      }
+    }
+    printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+    diff = 1;
+    return;
+  }
+}
+
+
+template <typename Operator>
+CUTLASS_GLOBAL
+void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res){
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+
+  // return update SM
+  if(real_smid > (matrix_SM - 1)){
+    return;
+  }
+
+  // 
+  int TB_per_batch = 1;
+  int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n() / TB_per_batch;
+  int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
+  int check_iter = (int)(ceil((double)params.batch_count / (double)batch_step / (double)SM_per_batch));
+
+  int local_smid = real_smid % SM_per_batch;
+  int init_batch_idx = real_smid / SM_per_batch;
+  
+  int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (local_smid / TB_per_batch) * batch_step;
+  
+  int col_idx = threadIdx.x;
+  int check_step = SM_per_batch * batch_step;
+
+  // if(threadIdx.x == 0) printf("real smid: %d, local smid: %d, tid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d\n", real_smid, local_smid, threadIdx.x, check_iter, init_batch_idx, checked_init_batch_idx);
+
+  for(int i = 0; i < check_iter; i += 1){
+    int checked_batch_idx = checked_init_batch_idx + i * check_step;
+    if(checked_batch_idx < params.batch_count){
+        int diff = 0, loc = -1;
+      // if(row_idx < params.problem_size.n()){
+        cutlass::check_phase_v3<Operator>(params, checked_batch_idx, col_idx, SM_check_res, matrix_SM, batch_step, diff, loc);
+        // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
+      // }
+        if(diff != 0){
+          // Locate corrupted SM
+          int error_n_offset = col_idx / 256;
+          int error_m_offset = loc / 128;
+          int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
+          int error_smid = error_local_smid + ((init_batch_idx + 1) % batch_step) * SM_per_batch;
+
+          printf("Error detected at SM %d by checker SM %d\n", error_smid, real_smid);
+      
+          // record results
+          // Atomic sum
+          atomicAdd((SM_check_res + error_smid), diff);
+        }
+        __syncthreads();
+    }
+  }
 }
 
 /// Generic CUTLASS kernel template.
