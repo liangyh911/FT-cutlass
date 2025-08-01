@@ -647,12 +647,23 @@ struct GemmBatched {
         int check_step = ((int)(floor((double)matrix_SM / (double)check_req_SM))) * batch_step;
         int check_iter = (int)(ceil((double)params.batch_count / (double)check_step));
         int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
+
+        int last_iter_batch = params.batch_count % batch_step;
         
         for(int i = 0; i < check_iter; i += 1){
-          // if((last_iter_batch != 0) && (i == check_iter - 1)){
-          //   checked_init_batch_idx = ((init_batch_idx + 1) % last_iter_batch) + (smid / check_req_SM) * last_iter_batch;
-          // }
+          if((last_iter_batch != 0) && (i == check_iter - 1)){            
+            if (init_batch_idx > last_iter_batch){
+              return;
+            }
+            else if(checked_init_batch_idx == last_iter_batch){
+              checked_init_batch_idx = (smid / check_req_SM) * batch_step;
+              // checked_init_batch_idx = ((init_batch_idx + 1) % last_iter_batch) + (smid / check_req_SM) * last_iter_batch;
+            }
+          }
           int checked_batch_idx = checked_init_batch_idx + i * check_step;
+
+          // if(threadIdx.x == 0 && i == check_iter - 1) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
+
         
           if(checked_batch_idx < params.batch_count){
             // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
