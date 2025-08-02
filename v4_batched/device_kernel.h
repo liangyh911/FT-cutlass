@@ -171,7 +171,7 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
     int batch_idx = init_batch + b_iter * chk_step; 
     if(batch_idx < params.batch_count){
       // if(threadIdx.x == 0) {
-        // printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, init_batch: %d, batch idx: %d,\n", b_iter, batch_per_TB,real_smid, threadIdx.x, init_batch, batch_idx);
+        // printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_batch: %d, batch idx: %d,\n", b_iter, batch_per_TB, real_smid, threadIdx.x, thread_group_idx, init_batch, batch_idx);
       // }
     
       float accum1 = 0.f;
@@ -183,7 +183,7 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
       int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
       int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
 
-      // __syncthreads();
+      // load checksum to share memroy
       // for(int i = 0; i < load_iter; i++){
       //   int idx = col_idx + blockDim.x * i;
       //   if(idx < checksum_stride){
@@ -191,26 +191,25 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
       //     // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
       //   }
       // }
-      // __syncthreads();
 
       // load checksum to share memroy
-      __syncthreads();
       if(thread_group_idx < TB_per_batch){
         for(int i = 0; i < load_iter; i++){
-          // int idx = col_idx + local_col_dim * i;
-          int idx = col_idx + blockDim.x * i;
+          int idx = col_idx + local_col_dim * i;
           if(idx < checksum_stride){
             SharedMem[idx + shared_offset] = *(params.ref_A.data() + idx_a_1 + idx);
             // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
           }
         }
-      }
+      }      
       __syncthreads();
       
       // if(col_idx < N){
       if(thread_group_idx < TB_per_batch){
         #pragma unroll 128
         for(int k = 0; k < K; k++){
+          // float x = *(params.ref_A.data() + idx_a_1 + k);
+          // float y = *(params.ref_A.data() + idx_a_2 + k);
 
           // float a1 = SharedMem[k];
           // float a2 = SharedMem[k + K];
@@ -218,8 +217,8 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
           float a1 = SharedMem[k + shared_offset];
           float a2 = SharedMem[k + K + shared_offset];
 
-          // if(a1 != SharedMem[k] || a2 != SharedMem[k + K]){
-          //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, a1, a2, SharedMem[k], SharedMem[k + K]);
+          // if(x != a1 || y != a2){
+          //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, x, y, a1, a2);
           // }
 
           float b = *(params.ref_B.data() + idx_b + k * N);
@@ -230,6 +229,7 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
         *(params.ref_D.data() + idx_chk_1) = accum1;
         *(params.ref_D.data() + idx_chk_2) = accum2;
       }
+      __syncthreads();
     }
   } 
 }
