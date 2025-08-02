@@ -148,19 +148,23 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
   int m1n = (M + 1) * N;
   
   int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  // int TB_per_batch = 1;
+
   int chk_step = chk_SM * TB_per_batch;
   int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+  int checksum_stride = 2 * K;
 
-  int local_smid = (real_smid - matrix_SM);
   // int col_idx = threadIdx.x;
+  // int load_iter = (int)(ceil((double)(checksum_stride)/ (double)blockDim.x));
 
-  int thread_group_idx =  (threadIdx.x / N);
+  int thread_group_idx = threadIdx.x / N;
   int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
   int col_idx = threadIdx.x % N;
   int local_col_dim = blockDim.x / batch_per_TB;
 
-  int load_iter = (int)(ceil((double)(2 * K)/ (double)local_col_dim));
-  int shared_offset = thread_group_idx * 2 * K;
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)local_col_dim));
+  int shared_offset = thread_group_idx * checksum_stride;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     // int batch_idx = local_smid + b_iter * chk_step;
@@ -179,13 +183,23 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
       int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
       int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
 
+      // __syncthreads();
+      // for(int i = 0; i < load_iter; i++){
+      //   int idx = col_idx + blockDim.x * i;
+      //   if(idx < checksum_stride){
+      //     SharedMem[idx] = *(params.ref_A.data() + idx_a_1 + idx);
+      //     // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
+      //   }
+      // }
+      // __syncthreads();
+
       // load checksum to share memroy
       __syncthreads();
       if(thread_group_idx < TB_per_batch){
         for(int i = 0; i < load_iter; i++){
-          int idx = col_idx + local_col_dim * i;
-          // int idx = local_col_idx + i * local_col_dim;
-          if(idx < (2 * K)){
+          // int idx = col_idx + local_col_dim * i;
+          int idx = col_idx + blockDim.x * i;
+          if(idx < checksum_stride){
             SharedMem[idx + shared_offset] = *(params.ref_A.data() + idx_a_1 + idx);
             // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
           }
@@ -193,23 +207,24 @@ void update_checksum(typename Operator::Params params, int matrix_SM, int batch_
       }
       __syncthreads();
       
+      // if(col_idx < N){
       if(thread_group_idx < TB_per_batch){
         #pragma unroll 128
         for(int k = 0; k < K; k++){
-          // float a1 = *(params.ref_A.data() + idx_a_1 + k);
-          // float a2 = *(params.ref_A.data() + idx_a_2 + k);
+
+          // float a1 = SharedMem[k];
+          // float a2 = SharedMem[k + K];
   
           float a1 = SharedMem[k + shared_offset];
           float a2 = SharedMem[k + K + shared_offset];
-  
+
           // if(a1 != SharedMem[k] || a2 != SharedMem[k + K]){
           //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, a1, a2, SharedMem[k], SharedMem[k + K]);
           // }
-  
+
           float b = *(params.ref_B.data() + idx_b + k * N);
+          
           accum1 += a1 * b;
-  
-          // float b2 = *(params.ref_B.data() + idx_b + k * N);
           accum2 += a2 * b;
         }
         *(params.ref_D.data() + idx_chk_1) = accum1;

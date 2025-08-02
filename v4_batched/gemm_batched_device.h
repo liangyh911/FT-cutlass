@@ -435,7 +435,7 @@ public:
     cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
-    int iterations = 0;
+    int iterations = 1;
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
