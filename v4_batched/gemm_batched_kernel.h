@@ -493,7 +493,7 @@ struct GemmBatched {
     // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.problem_size.m(), params.problem_size.n());
     
     int checksumblk_per_col = 0;
-    int matrix_SM = SM_per_batch;
+    // int matrix_SM = SM_per_batch;
     int matrix_shape_m = params.grid_tiled_shape.m();
 
     // Compute threadblock location
@@ -644,7 +644,7 @@ struct GemmBatched {
       // cooperative_groups::this_grid().sync();
       // if(real_smid < (matrix_SM * batch_step)){
         int check_req_SM = params.grid_tiled_shape.n();
-        int check_step = ((int)(floor((double)matrix_SM / (double)check_req_SM))) * batch_step;
+        int check_step = ((int)(floor((double)SM_per_batch / (double)check_req_SM))) * batch_step;
         int check_iter = (int)(ceil((double)params.batch_count / (double)check_step));
         int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
 
@@ -671,7 +671,7 @@ struct GemmBatched {
             int diff = 0, loc = -1;
             int col_idx = thread_idx + smid * blockDim.x;
             if(col_idx < params.problem_size.n()){
-              check_phase_v2(params, checked_batch_idx, thread_idx, col_idx, SM_check_res, matrix_SM, batch_step, diff, loc);
+              check_phase_v2(params, checked_batch_idx, thread_idx, col_idx, SM_check_res, SM_per_batch, batch_step, diff, loc);
               
               if(diff != 0){
                 // Locate corrupted SM
