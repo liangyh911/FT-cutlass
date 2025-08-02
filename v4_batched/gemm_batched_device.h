@@ -435,7 +435,7 @@ public:
     cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
-    int iterations = 0;
+    int iterations = 500;
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -453,7 +453,7 @@ public:
 
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
 
-    printf("share memory size: %d\n", smem_size);
+    // printf("share memory size: %d\n", smem_size);
     
     if (smem_size >= (48 << 10)) {
       result = cudaFuncSetAttribute(Kernel<GemmKernel>,
@@ -471,7 +471,7 @@ public:
     int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
     int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
 
-    // 128 96 120
+    // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
     void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion, &matrix_SM};
@@ -485,7 +485,7 @@ public:
     }
     cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
     // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream>>>(params_, if_split_phase, SM_check_res, partion, matrix_SM);
-    if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res);
+    if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
 
     cudaDeviceSynchronize();
     // if(deBug){
@@ -528,7 +528,7 @@ public:
       if(deBug && if_split_phase == 0){
         cudaEventRecord(start, stream);
       }  
-      if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res);
+      if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
       if(deBug && if_split_phase == 0){
         cudaEventRecord(stop, stream);
         cudaEventSynchronize(stop);

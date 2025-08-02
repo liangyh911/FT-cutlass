@@ -542,7 +542,7 @@ void check_phase_v3(typename Operator::Params params, int batch_idx, int col_idx
 
 template <typename Operator>
 CUTLASS_GLOBAL
-void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res){
+void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res, int TB_per_batch){
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
 
@@ -552,7 +552,7 @@ void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res
   }
 
   // 
-  int TB_per_batch = 1;
+  // int TB_per_batch = 1;
   int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n() / TB_per_batch;
   int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
   int check_iter = (int)(ceil((double)params.batch_count / (double)batch_step / (double)SM_per_batch));
@@ -562,7 +562,7 @@ void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res
   
   int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (local_smid / TB_per_batch) * batch_step;
   
-  int col_idx = threadIdx.x;
+  int col_idx = threadIdx.x % params.problem_size.n();
   int check_step = SM_per_batch * batch_step;
 
   // if(threadIdx.x == 0) printf("real smid: %d, local smid: %d, tid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d\n", real_smid, local_smid, threadIdx.x, check_iter, init_batch_idx, checked_init_batch_idx);
