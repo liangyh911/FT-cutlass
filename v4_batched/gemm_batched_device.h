@@ -467,9 +467,10 @@ public:
     }
 
     int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
-    // if(batch_per_TB > 6) batch_per_TB = 6;
-    int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
-    int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
+    // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
+    int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+
+    cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
@@ -479,9 +480,9 @@ public:
     cutlass::arch::synclog_setup();
 
     if(if_split_phase == 0 || if_split_phase == 1) {
-      cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+      // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-      // cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+      cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
     }
     cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
     // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream>>>(params_, if_split_phase, SM_check_res, partion, matrix_SM);
@@ -500,9 +501,9 @@ public:
         cudaEventRecord(start, stream_colchk);
       }
       if(if_split_phase == 0 || if_split_phase == 1) {
-        cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        // cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       }
       if(deBug && (if_split_phase == 0 || if_split_phase == 1)){
         cudaEventRecord(stop, stream_colchk);
