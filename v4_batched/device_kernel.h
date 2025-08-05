@@ -422,8 +422,9 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int bat
         *(params.ref_D.data() + idx_chk_1) = accum1;
         *(params.ref_D.data() + idx_chk_2) = accum2;
       }
-      __syncthreads();
+      // __syncthreads();
     }
+    __syncthreads();
   } 
 }
 
