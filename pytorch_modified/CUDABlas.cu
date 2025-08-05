@@ -1612,8 +1612,137 @@
                          const Dtype *a, int64_t lda, int64_t stridea,                                         
                          const Dtype *b, int64_t ldb, int64_t strideb,                                           
                          at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+   printf("cutlass bgemm\n");
+ 
    // Matrix A, Row Major for Matrix B and Row Major for Matrix C
    using LayoutInputA = cutlass::layout::ColumnMajor;
+   using LayoutInputB = cutlass::layout::ColumnMajor;
+   using LayoutOutput = cutlass::layout::ColumnMajor;
+ 
+   // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
+   using MMAOp = cutlass::arch::OpClassTensorOp;
+ 
+   // This code section describes CUDA SM architecture number
+   using SmArch = cutlass::arch::Sm80;
+ 
+   // This code section describes the tile size a thread block will compute
+   using ShapeMMAThreadBlock =
+       cutlass::gemm::GemmShape<128, 256, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
+   // This code section describes tile size a warp will compute
+   using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
+   // This code section describes the size of MMA op
+   using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+ 
+   // This code section describes how threadblocks are scheduled on GPU
+   using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+ 
+   // This code section describes the epilogue part of the kernel
+   using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+       Dtype,                                     // <- data type of output matrix
+       128 / cutlass::sizeof_bits<Dtype>::value,  // <- the number of elements per vectorized
+                                                         // memory access. For a byte, it's 16
+                                                         // elements. This becomes the vector width of
+                                                         // math instructions in the epilogue too
+       Dtype,                                // <- data type of accumulator
+       Dtype>;  // <- data type for alpha/beta in linear combination function
+ 
+   // Number of pipelines you want to use
+   constexpr int NumStages = 4;
+ 
+   alpha = Dtype(alpha);
+   beta = Dtype(beta);
+   
+   // ldb = ldb * num_batches;
+ 
+   int const count_A = num_batches * lda * k;
+   int const count_B = num_batches * ldb * n;
+   int const count_C = num_batches * ldc * n;
+ 
+   // allocate the device memory
+   Dtype *A, *B, *C;
+   cudaMalloc(&C, (count_A + count_B + count_C) * sizeof(Dtype));
+   A = C + count_C;
+   B = A + count_A;
+   // cudaMalloc((void**)&A, count_A * sizeof(Dtype));
+   // cudaMalloc((void**)&B, count_B * sizeof(Dtype));     
+   // cudaMalloc((void**)&C, count_C * sizeof(Dtype));
+ 
+   // copy matrix A and matrix B
+   Dtype *a_ = const_cast<Dtype*>(a);
+   Dtype *b_ = const_cast<Dtype*>(b);
+   copy_batched_matrix<<<dim3((k+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea);
+   copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb);
+ 
+   // printf("A:\n");
+   // outputChk(A, num_batches, lda, stridea, m, k);
+   // printf("a:\n");
+   // outputChk(a_, num_batches, lda, stridea, m, k);
+ 
+   // printf("B:\n");
+   // outputChk(B, num_batches, ldb, strideb, k, n);
+   // printf("b:\n");
+   // outputChk(b_, num_batches, ldb, strideb, k, n);
+ 
+   // define CUTLASS GEMMBATCHED API
+   using Gemm = cutlass::gemm::device::GemmBatched<
+       Dtype, LayoutInputA,
+       Dtype, LayoutInputB,
+       Dtype, LayoutOutput,
+       Dtype,
+       MMAOp,
+       SmArch,
+       ShapeMMAThreadBlock,
+       ShapeMMAWarp,
+       ShapeMMAOp,
+       EpilogueOp
+       // SwizzleThreadBlock,
+       // NumStages
+   >;
+ 
+   Gemm gemm_op;
+ 
+   cutlass::Status status = gemm_op({
+     {m, n, k},
+     {A, lda}, 
+     stridea,
+     {B, ldb}, 
+     strideb,
+     {C, ldc}, 
+     stridec,
+     {C, ldc}, 
+     stridec,
+     {alpha, beta},
+     num_batches
+   });
+ 
+   if (status != cutlass::Status::kSuccess) {
+     return false;
+   }
+ 
+   cudaDeviceSynchronize();
+ 
+   // Copy Back
+   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec);
+ 
+   // printf("C:\n");
+   // outputChk(C, num_batches, ldc, stridec, m, n);
+   // printf("c:\n");
+   // outputChk(c, num_batches, ldc, stridec, m, n);
+ 
+   cudaFree(C);
+ 
+   return true;
+ }
+ 
+ template <typename Dtype>
+ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
+                         const Dtype *a, int64_t lda, int64_t stridea,                                         
+                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
+                         at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+   printf("cutlass bgemm T\n");
+ 
+   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
+   using LayoutInputA = cutlass::layout::RowMajor;
    using LayoutInputB = cutlass::layout::ColumnMajor;
    using LayoutOutput = cutlass::layout::ColumnMajor;
  
@@ -1740,16 +1869,34 @@
    
    bool state = false;
    if constexpr (std::is_same<Dtype, float>::value) {
-     state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
-                                   a, lda, stridea,                                         
-                                   b, ldb, strideb,                                           
-                                   beta, c, ldc, stridec, num_batches);
+     if(transa == 't'){
+       // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+       state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha,  
+         a, lda, stridea,                                         
+         b, ldb, strideb,                                           
+         beta, c, ldc, stridec, num_batches);
+     }
+     else{
+       // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+       state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
+         a, lda, stridea,                                         
+         b, ldb, strideb,                                           
+         beta, c, ldc, stridec, num_batches);
+     }
    }
    else if constexpr (std::is_same<Dtype, double>::value) {
-     state = cutlass_bgemm<double>(transa, transb, m, n, k, alpha,  
-                                   a, lda, stridea,                                         
-                                   b, ldb, strideb,                                           
-                                   beta, c, ldc, stridec, num_batches);
+     if(transa == 't'){
+       state = cutlass_bgemm_T<double>(transa, transb, m, n, k, alpha,  
+         a, lda, stridea,                                         
+         b, ldb, strideb,                                           
+         beta, c, ldc, stridec, num_batches);
+     }
+     else{
+       state = cutlass_bgemm<double>(transa, transb, m, n, k, alpha,  
+           a, lda, stridea,                                         
+           b, ldb, strideb,                                           
+           beta, c, ldc, stridec, num_batches);
+     }
    } 
    // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
    //   state = cutlass_gemm<cutlass::half_t>(transa, transb, m, n, k, alpha,
@@ -1799,7 +1946,7 @@
  bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
                    const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
                    Dtype *c, int64_t ldc){
-   // printf("cutlass_gemm\n");
+   printf("cutlass_gemm\n");
    // problem size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  
@@ -2008,7 +2155,7 @@
    // printf("transposeA: %s\n", transpose_mat1?"true":"false");
    // printf("transposeB: %s\n", transpose_mat2?"true":"false");
    
-   // printf("cutlass_gemm_and_bias\n");
+   printf("cutlass_gemm_and_bias\n");
    // Problem Size
    cutlass::gemm::GemmCoord problem_size({m, n, k});
  
@@ -2039,29 +2186,6 @@
    Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
    copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), m, k);
    copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
-   // printf("print bias:\n");
-   // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
- 
- 
-   // cutlass::reference::device::TensorFillRandomUniform(
-   //   tensor_a.device_view(),
-   //   1,
-   //   Dtype(4),
-   //   Dtype(-4),
-   //   0);  // <- Fill matrix A on host with uniform-distribution random data
-   // cutlass::reference::device::TensorFillRandomUniform(
-   //     tensor_b.device_view(),
-   //     1,
-   //     Dtype(4),
-   //     Dtype(-4),
-   //     0);  // <- Fill matrix B on host with uniform-distribution random data
-   // cutlass::reference::device::TensorFillRandomUniform(
-   //     tensor_c.device_view(),
-   //     1,
-   //     Dtype(4),
-   //     Dtype(-4),
-   //     0); 
-   // cutlass::reference::device::TensorFill(tensor_d.device_view());
  
    // printf("print A:\n");
    // outputChk(tensor_a.device_data(), 1, mat1_ld, m*k, m, k);
@@ -2071,20 +2195,8 @@
    // outputChk(tensor_b.device_data(), 1, mat2_ld, k*n, k, n);
    // outputChk(mat2_ptr_, 1, mat2_ld, k*n, k, n);
  
- 
    // printf("print bias:\n");
    // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
- 
-   // tensor_a.device_data() = mat1_ptr_;
-   // tensor_b.device_data() = mat2_ptr_;
-   // tensor_c.device_data() = bias_matrix;
-   // tensor_d.device_data() = result_ptr;
-   
-   // // Copy data from host to GPU
-   // tensor_a.sync_device();
-   // tensor_b.sync_device();
-   // tensor_c.sync_device();
-   // tensor_d.sync_device();
  
    // Initialize alpha and beta for dot product computation
    Dtype alpha = Dtype(1);
