@@ -37,8 +37,8 @@
 #include <cutlass/detail/helper_macros.hpp> // CUTLASS_HOST_DEVICE
 #include <cutlass/platform/platform.h> // uint64_t
 #include <cooperative_groups.h>
-#include <cmath>
-#include "cutlass/gemm_ring_queue.h"
+// #include <cmath>
+// #include "cutlass/gemm_ring_queue.h"
 
 using namespace cooperative_groups;
 
@@ -80,17 +80,13 @@ template <typename  T>                                                          
 //   }
 // }
 
-__global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, int *d_tail, int cap) {
-  d_queues->buffer = d_buffer;
-  d_queues->head = d_head;
-  d_queues->tail = d_tail;
-  d_queues->capacity = cap;
-}
-
 /// Generic CUTLASS kernel template of Batched GEMM.
 template <typename Operator>
 CUTLASS_GLOBAL
-void Kernel_Batched(typename Operator::Params params) {
+void Kernel_Batched(typename Operator::Params params, 
+            int if_split_phase, int *SM_check_res, int partion, int matrix_SM
+            // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
+          ) {  
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
@@ -99,7 +95,10 @@ void Kernel_Batched(typename Operator::Params params) {
 
   Operator op;
 
-  op(params, *shared_storage);
+  op(params, *shared_storage, if_split_phase, SM_check_res, partion, matrix_SM
+    // all_start, compute, finding, recompute, compare, checking
+  );
+  
   cutlass::arch::synclog_print();
 }
 
@@ -122,209 +121,487 @@ void Kernel(typename Operator::Params params,
   op(params, *shared_storage, if_split_phase, SM_check_res, partion
     // all_start, compute, finding, recompute, compare, checking
   );
+  
   cutlass::arch::synclog_print();
 }
 
-__device__ int reduce_sum(thread_group g, int *temp, int val){
-  int lane = g.thread_rank();
-
-  // Each iteration halves the number of active threads
-  // Each thread adds its partial sum[i] to sum[lane+i]
-  for (int i = g.size() / 2; i > 0; i /= 2)
-  {
-      temp[lane] = val;
-      g.sync(); // wait for all threads to store
-      if(lane<i) val += temp[lane + i];
-      g.sync(); // wait for all threads to load
-  }
-  return val; // note: only thread 0 will return full sum
-}
-
-// Check between SM
 template <typename Operator>
 CUTLASS_GLOBAL
-void check_between_SM(typename Operator::Params params, uint8_t *Signature_Array, 
-                        int *Lock_Signature, int *final_sum, int num_blk_per_group,
-                        int *d_all_start_for_split, int *d_finding, int *d_recompute, int *d_compare, int *d_checking, int *d_SM_JOBS){
-  int thread_idx = threadIdx.x;
-  int block_idx = blockIdx.x + gridDim.x * blockIdx.y;
+void update_checksum(typename Operator::Params params, int matrix_SM, int batch_per_TB){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+  int chk_SM = 132 - matrix_SM;
 
-  __shared__ int next_matrix_block_idx, next_chk_block_idx, flag;
-  int tmp_matrix_blk, tmp_chk_blk, tmp_flag;
-  unsigned int smid;
-  asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  extern __shared__ float SharedMem[];
   
-  __syncthreads();
-  if (thread_idx == 0 && block_idx == 0){
-    *(d_all_start_for_split) = clock();
-    // printf("block idx: %d, block idx x: %d \n", block_idx, blockIdx.x);
-    if (blockIdx.x != (params.grid_tiled_shape.m() - 1)){
-      *(d_SM_JOBS+smid) = 1;
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
 
-      unsigned int next_matrix_smid, next_chk_smid;
-      uint8_t matrix_block_idx = block_idx;
-      uint8_t chk_block_idx;
-
-      // int num_blk_per_group = 2;      
-      int new_blk_idx = block_idx - blockIdx.y;
-      int group_idx = new_blk_idx / num_blk_per_group;
-
-      int num_group = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() / num_blk_per_group;
-      int remaining_blk = (params.grid_tiled_shape.m() - 1) * params.grid_tiled_shape.n() % num_blk_per_group;
-      int previous_blk_size = num_blk_per_group;
-      if(remaining_blk == 1){
-        if(group_idx == (num_group-1)){
-          num_blk_per_group++;
-        }
-        if(group_idx == num_group){
-          group_idx--;
-          num_blk_per_group++;
-        }
-      }
-      else if(remaining_blk > 1){
-        if(group_idx == num_group){
-          num_blk_per_group = remaining_blk;
-        }
-      }
-
-      int local_blk_idx = new_blk_idx % previous_blk_size;
-      int next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
-      int next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
-      int new_offset_n = next_global_blk_idx / (params.grid_tiled_shape.m() - 1);
-      matrix_block_idx = next_global_blk_idx + new_offset_n;
-
-      if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
-        matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-      }
-      int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-      chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-      while(true){
-        if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
-          next_matrix_smid = *(Signature_Array + matrix_block_idx);
-          next_chk_smid = *(Signature_Array + chk_block_idx);
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
   
-          tmp_matrix_blk = matrix_block_idx;
-          tmp_chk_blk = chk_block_idx;
-          break;
-        }
-      }
+  // int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  int TB_per_batch = 1;
 
-      // int next_local_blk_idx = local_blk_idx;
-      // bool need_lock = true;
-      // while (need_lock) {
-      //   // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-      //   next_local_blk_idx = (next_local_blk_idx + 1) % num_blk_per_group;
-      //   int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
-      //   matrix_block_idx = next_global_blk_idx + blockIdx.y;
-        
-      //   // lock for matrix SM selection
-      //   if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
-      //     // get the corresponding chksum SM blk index
-      //     int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-      //     chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-      //     // lock for the chksum SM
-      //     // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
-      //       if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
-      //           *(Signature_Array + matrix_block_idx) != 255 && 
-      //           *(Signature_Array + chk_block_idx) != 255 &&
-      //           *(Signature_Array + chk_block_idx) != smid) {
-              
-      //         next_matrix_smid = *(Signature_Array + matrix_block_idx);
-      //         next_chk_smid = *(Signature_Array + chk_block_idx);
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+  int checksum_stride = 2 * K;
 
-      //         tmp_matrix_blk = matrix_block_idx;
-      //         tmp_chk_blk = chk_block_idx;
+  int col_idx = threadIdx.x;
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)blockDim.x));
 
-      //         *(Signature_Array + matrix_block_idx) = 255;
-      //         need_lock = false;
-      //       }
-      //       // Release the lock
-      //       // atomicExch((Lock_Signature + chk_block_idx), 0);
-      //       // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
-      //     // }
-      //     atomicExch((Lock_Signature + matrix_block_idx), 0);
-      //   }
+  // int thread_group_idx = threadIdx.x / N;
+  // int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  // int col_idx = threadIdx.x % N;
+  // int local_col_dim = blockDim.x / batch_per_TB;
+
+  // int load_iter = (int)(ceil((double)(checksum_stride)/ (double)local_col_dim));
+  // int shared_offset = thread_group_idx * checksum_stride;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = local_smid + b_iter * chk_step;
+    // int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < params.batch_count){
+      // if(threadIdx.x == 0) {
+        // printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_batch: %d, batch idx: %d,\n", b_iter, batch_per_TB, real_smid, threadIdx.x, thread_group_idx, init_batch, batch_idx);
       // }
+    
+      float accum1 = 0.f;
+      float accum2 = 0.f;
+      
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      // int idx_a_2 = (batch_idx * params.stride_A) + m1k;
+      int idx_b = (batch_idx * params.stride_B) + col_idx;
 
-      // Check chksum smid == matrix smid
-      if(next_chk_smid == next_matrix_smid){
-        tmp_flag = 0;
-        printf("Recompute chksum using current SM\n");
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
+      int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
+
+      // load checksum to share memroy
+      for(int i = 0; i < load_iter; i++){
+        int idx = col_idx + blockDim.x * i;
+        if(idx < checksum_stride){
+          SharedMem[idx] = *(params.ref_A.data() + idx_a_1 + idx);
+          // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
+        }
       }
-      // SM ids are not the same
-      else{
-        tmp_flag = 1;
-        // printf("Check\n");
-        // printf("Check. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
-        //         block_idx, blockIdx.x, blockIdx.y, smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+
+      // load checksum to share memroy
+      // if(thread_group_idx < TB_per_batch){
+      //   for(int i = 0; i < load_iter; i++){
+      //     int idx = col_idx + local_col_dim * i;
+      //     if(idx < checksum_stride){
+      //       SharedMem[idx + shared_offset] = *(params.ref_A.data() + idx_a_1 + idx);
+      //       // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
+      //     }
+      //   }
+      // }      
+      __syncthreads();
+      
+      if(col_idx < N){
+      // if(thread_group_idx < TB_per_batch){
+        #pragma unroll 128
+        for(int k = 0; k < K; k++){
+          // float x = *(params.ref_A.data() + idx_a_1 + k);
+          // float y = *(params.ref_A.data() + idx_a_2 + k);
+
+          float a1 = SharedMem[k];
+          float a2 = SharedMem[k + K];
+  
+          // float a1 = SharedMem[k + shared_offset];
+          // float a2 = SharedMem[k + K + shared_offset];
+
+          // if(x != a1 || y != a2){
+          //   printf("--batch_idx: %d, col_idx: %d, k: %d, global: (%f, %f), shared: (%f, %f)\n", batch_idx, col_idx, k, x, y, a1, a2);
+          // }
+
+          float b = *(params.ref_B.data() + idx_b + k * N);
+          
+          accum1 += a1 * b;
+          accum2 += a2 * b;
+        }
+        *(params.ref_D.data() + idx_chk_1) = accum1;
+        *(params.ref_D.data() + idx_chk_2) = accum2;
       }
+      __syncthreads();
+    }
+  } 
+}
+
+template <typename Operator>
+CUTLASS_GLOBAL
+void update_checksum_v2(typename Operator::Params params, int matrix_SM, int batch_per_TB){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+  int chk_SM = 132 - matrix_SM;
+
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  extern __shared__ float SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+  int checksum_stride = 2 * K;
+
+  int thread_group_idx = threadIdx.x / N;
+  int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  int col_idx = threadIdx.x % N;
+  int local_col_dim = blockDim.x / batch_per_TB;
+
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)local_col_dim));
+  int shared_offset = thread_group_idx * checksum_stride;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < params.batch_count){
+      // if(threadIdx.x == 0) {
+        // printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_batch: %d, batch idx: %d,\n", b_iter, batch_per_TB, real_smid, threadIdx.x, thread_group_idx, init_batch, batch_idx);
+      // }
+    
+      float accum1 = 0.f;
+      float accum2 = 0.f;
+      
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      // int idx_a_2 = (batch_idx * params.stride_A) + m1k;
+      int idx_b = (batch_idx * params.stride_B) + col_idx;
+
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + col_idx;
+      int idx_chk_2 = (batch_idx * params.stride_D) + m1n + col_idx;
+
+      // load checksum to share memroy
+      if(thread_group_idx < TB_per_batch){
+        for(int i = 0; i < load_iter; i++){
+          int idx = col_idx + local_col_dim * i;
+          if(idx < checksum_stride){
+            SharedMem[idx + shared_offset] = *(params.ref_A.data() + idx_a_1 + idx);
+            // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, col_idx, *(params.ref_A.data() + idx_a_1 + col_idx), SharedMem[col_idx]);
+          }
+        }
+      }      
+      __syncthreads();
+      
+      if(thread_group_idx < TB_per_batch){
+        #pragma unroll 128
+        for(int k = 0; k < K; k++){
+          float a1 = SharedMem[k + shared_offset];
+          float a2 = SharedMem[k + K + shared_offset];
+
+          float b = *(params.ref_B.data() + idx_b + k * N);
+          
+          accum1 += a1 * b;
+          accum2 += a2 * b;
+        }
+        *(params.ref_D.data() + idx_chk_1) = accum1;
+        *(params.ref_D.data() + idx_chk_2) = accum2;
+      }
+      __syncthreads();
+    }
+  } 
+}
+
+template <typename Operator>
+CUTLASS_GLOBAL
+void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  if(real_smid < matrix_SM) return;
+  
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+  int chk_SM = 132 - matrix_SM;
+  int tid = threadIdx.x;
+
+  extern __shared__ float SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  // int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  // int TB_per_batch = 1;
+
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+  int checksum_stride = 2 * K;
+
+  int col_idx = tid;
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)blockDim.x));
+  
+  int thread_group_idx = tid / N;
+  int local_col_idx = tid % N;
+  // int local_col_dim = blockDim.x / batch_per_TB;
+
+  int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+
+  int shared_offset = thread_group_idx * checksum_stride;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    // load checksum to share memroy
+    int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    for(int t = 0; t < TB_per_batch; t++){
+      int load_batch_idx = load_init_batch_idx + t;
+      if(load_batch_idx < params.batch_count){
+        int load_offset = t * checksum_stride;
+        int idx_a = (load_batch_idx * params.stride_A) + mk;
+        for(int i = 0; i < load_iter; i++){
+          int idx = col_idx + blockDim.x * i;
+          if(idx < checksum_stride){
+            SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
+          }
+        }
+      }
+      // if(load_batch_idx < params.batch_count && col_idx < K){
+      //   int load_offset = t * checksum_stride;
+      //   int idx_a = (load_batch_idx * params.stride_A) + mk;
+      //   int idx = col_idx + K;
+      //   SharedMem[col_idx + load_offset] = *(params.ref_A.data() + idx_a + col_idx);
+      //   SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
+      // }
+    }
+    __syncthreads();
+    
+    // update checksum
+    int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < params.batch_count && thread_group_idx < TB_per_batch){
+      float accum1 = 0.f;
+      float accum2 = 0.f;
+      
+      int idx_b = (batch_idx * params.stride_B) + local_col_idx;
+
+      int offset_D = batch_idx * params.stride_D;
+      int idx_chk_1 = (offset_D + mn) + local_col_idx;
+      int idx_chk_2 = (offset_D + m1n) + local_col_idx;
+      
+      int weighted_offset = K + shared_offset;
+      
+      #pragma unroll 128
+      for(int k = 0; k < K; k++){  
+        float a1 = SharedMem[k + shared_offset];
+        float a2 = SharedMem[k + weighted_offset];
+
+        float b = *(params.ref_B.data() + idx_b + k * N);
+        
+        accum1 += a1 * b;
+        accum2 += a2 * b;
+      }
+      *(params.ref_D.data() + idx_chk_1) = accum1;
+      *(params.ref_D.data() + idx_chk_2) = accum2;
+    }
+    __syncthreads();
+  } 
+}
+
+template<typename Operator>
+CUTLASS_DEVICE
+void check_phase_v3(typename Operator::Params params, int batch_idx, int col_idx, int *SM_check_res, int matrix_SM, int batch_step, int &diff, int &loc){
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  float E = 1;
+  // int loc = -1;
+  float MAX = 0;
+  // int diff = 0;
+
+  // recompute checksum (no weighted, weighted)
+  float dA_col_r1 = 0.f;
+  float dA_col_r2 = 0.f;
+  
+  int start_idx = (params.stride_D * batch_idx) + col_idx;
+  
+  #pragma unroll 128
+  for(int r = 0; r < M; r++){
+    float element = *(params.ref_D.data() + (start_idx + r * N));
+    
+    dA_col_r1 += element;
+    dA_col_r2 += (float)(r+1) * element;
+  }
+
+  // detect error
+  float dA_col_1 = *(params.ref_D.data() + (start_idx + (M*N)));
+  float dA_col_2 = *(params.ref_D.data() + (start_idx + (M+1)*N));
+
+  float d1 = (float)(dA_col_1 - dA_col_r1);
+  float d2 = (float)(dA_col_2 - dA_col_r2);
+  float abs_d1 = fabs(d1);
+
+  // printf("tid: %d, batch_idx: %d, row_idx: %d, updated: (%f, %f), recomputed: (%f, %f)\n", thread_idx, batch_idx, row_idx, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
+  
+  if(abs_d1 > E){
+    if(!std::isinf(d2)){
+      loc = round(d2 / d1) - 1;
+      printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f)\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
+      diff = 1;
     }
     else{
-      *(d_SM_JOBS+smid) = 2;
-    }
-    next_matrix_block_idx = tmp_matrix_blk;
-    next_chk_block_idx = tmp_chk_blk;
-    flag = tmp_flag;
-  }
-  __syncthreads();
-  if(thread_idx == 0 && block_idx == 0){
-    *(d_finding) = clock();
-  }
-
-  // begin chkeck
-  if(flag == 1){
-    int MatrixColBlkOffset = ((next_matrix_block_idx + 1) / params.grid_tiled_shape.m());
-    int MatrixRowBlkOffset = ((next_matrix_block_idx + 1) % params.grid_tiled_shape.m() - 1);
-    int matrix_start_idx = (MatrixColBlkOffset * 128) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-
-    int ChkColBlkOffset = ((next_chk_block_idx + 1) / params.grid_tiled_shape.m()) - 1;
-    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - 1);
-    int chk_start_idx = (ChkColBlkOffset * 128) + (ChkRowBlkOffset * 128 + 2 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-    
-    float recomputed_chksum = 0;
-    int diff = 0;
-    
-    #pragma unroll
-    for(int r = 0; r < 128; r++){
-      int idx = matrix_start_idx + r * params.problem_size.n();
-      recomputed_chksum += *(params.ref_D.data() + idx);
-    }
-    __syncthreads();
-    if(thread_idx == 0 && block_idx == 0){
-      *(d_recompute) = clock();
-    }
-    
-    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
-      diff = 1;
-      printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
-    }
-    __syncthreads();
-    if(thread_idx == 0 && block_idx == 0){
-      *(d_compare) = clock();
-    }
-
-    // Cooperative Groups Reduce
-    __shared__ int temp[128];
-    auto g = this_thread_block();
-    int block_sum = reduce_sum(g, temp, diff);
-
-    if(g.thread_rank() == 0){
-      atomicAdd((final_sum + block_idx), block_sum);
-      if(*(final_sum + block_idx) != 0){
-        printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
+      MAX = 0;
+      int counter = 0;
+      for(int i = 0; i < N; i++) {
+        if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
+          MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
+          loc = i;
+        }
+        if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+          counter++;
+          if(counter > 1){
+            printf("[col check]col chksum error, more than one large number. (d1 = %.6f, d2 = %.6f)\n",(float)d1, (float)d2);
+            return;
+          }
+        }
       }
-      // else{
-      //   printf("No difference detected at SM %d. Reduced Sum: %d\n", smid, *(final_sum + block_idx));
-      // }
+      printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+      diff = 1;        
     }
+    return;
   }
-  __syncthreads();
-  if(thread_idx == 0 && block_idx == 0){
-    *(d_checking) = clock();
+  // abs == inf
+  if(std::isinf(abs_d1)){
+    MAX = 0;
+    int64_t counter = 0;
+    for(int i = 0; i < N; i++) {
+      if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
+        MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
+        loc = i;
+      }
+      if(std::isinf(*(params.ref_D.data() + start_idx + i * N)) || fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+        counter++;
+        if(counter > 1){
+          printf("[col check]Multi INFs or Large Number detected in one column.(d1 = %.6f, d2 = %.6f, iter = %d)\n", (float)d1, (float)d2, i);
+          return;
+        }
+      }
+    }
+    if(counter == 0){
+      printf("[col chk]No INF or Large Number found.\n");
+      return;
+    }
+    printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+    diff = 1;
+    return;
+  }
+  // abs == nan
+  if(std::isnan(abs_d1)){
+    int64_t counter = 0;
+    for(int i = 0; i < N; i++) {
+      if (std::isnan(*(params.ref_D.data() + start_idx + i * N))) {
+        loc = i;
+        counter++;
+      }
+      if(std::isinf(*(params.ref_D.data() + start_idx + i * N))){
+        counter++;
+      }
+      if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
+        counter++;
+      }
+      if(counter > 1){
+        printf("[col check]Multi INF, NAN or Large Number detected in one column. (iter = %d)\n", i);
+        return;
+      }
+    }
+    printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
+    diff = 1;
+    return;
   }
 }
 
+
+template <typename Operator>
+CUTLASS_GLOBAL
+void check_SM(typename Operator::Params params, int matrix_SM, int *SM_check_res, int TB_per_batch){
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+
+  // return update SM
+  if(real_smid > (matrix_SM - 1)){
+    return;
+  }
+
+  // 
+  // int TB_per_batch = 1;
+  int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n() / TB_per_batch;
+  int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
+  int check_iter = (int)(ceil((double)params.batch_count / (double)batch_step / (double)SM_per_batch));
+
+  int local_smid = real_smid % SM_per_batch;
+  int init_batch_idx = real_smid / SM_per_batch;
+  
+  int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (local_smid / TB_per_batch) * batch_step;
+  
+  int col_idx = threadIdx.x % params.problem_size.n();
+  int check_step = SM_per_batch * batch_step;
+
+  // if(threadIdx.x == 0) printf("real smid: %d, local smid: %d, tid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d\n", real_smid, local_smid, threadIdx.x, check_iter, init_batch_idx, checked_init_batch_idx);
+
+  for(int i = 0; i < check_iter; i += 1){
+    int checked_batch_idx = checked_init_batch_idx + i * check_step;
+    if(checked_batch_idx < params.batch_count){
+        int diff = 0, loc = -1;
+      // if(row_idx < params.problem_size.n()){
+        cutlass::check_phase_v3<Operator>(params, checked_batch_idx, col_idx, SM_check_res, matrix_SM, batch_step, diff, loc);
+        // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
+      // }
+        if(diff != 0){
+          // Locate corrupted SM
+          int error_n_offset = col_idx / 256;
+          int error_m_offset = loc / 128;
+          int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
+          int error_smid = error_local_smid + ((init_batch_idx + 1) % batch_step) * SM_per_batch;
+
+          printf("Error detected at SM %d by checker SM %d\n", error_smid, real_smid);
+      
+          // record results
+          // Atomic sum
+          atomicAdd((SM_check_res + error_smid), diff);
+        }
+        __syncthreads();
+    }
+  }
+}
 
 /// Generic CUTLASS kernel template.
 template <typename Operator>

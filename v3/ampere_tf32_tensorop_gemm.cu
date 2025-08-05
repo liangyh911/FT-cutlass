@@ -64,6 +64,9 @@ ncu -f -o m_4096 --set full ./out.exe --m=8192 --n=4096 --k=4096 --split=0 --ite
 
 #include "helper.h"
 
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Result structure
@@ -142,12 +145,18 @@ struct Options {
     cmd.get_cmd_line_argument("iterations", iterations);
     cmd.get_cmd_line_argument("split", if_split_phase);
 
-    // cmd.get_cmd_line_argument("partition", partition);
-    partition = problem_size.m() / 128;
+    // // cmd.get_cmd_line_argument("partition", partition);
+    // partition = problem_size.m() / 128;
+    // // add checksum size
+    // if(if_split_phase == 1 || if_split_phase == 0){
+    //   problem_size.m() += partition * 1;
+    // }
 
+    // cmd.get_cmd_line_argument("partition", partition);
+    partition = problem_size.n() / 128;
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
-      problem_size.m() += partition * 1;
+      problem_size.n() += partition * 1;
     }
   }
 
@@ -198,8 +207,8 @@ using ElementOutput = float;                        // <- data type of elements 
 // The code section below describes matrix layout of input and output matrices. Column Major for
 // Matrix A, Row Major for Matrix B and Row Major for Matrix C
 using LayoutInputA = cutlass::layout::RowMajor;
-using LayoutInputB = cutlass::layout::RowMajor;
-using LayoutOutput = cutlass::layout::RowMajor;
+using LayoutInputB = cutlass::layout::ColumnMajor;
+using LayoutOutput = cutlass::layout::ColumnMajor;
 
 // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
 using MMAOp = cutlass::arch::OpClassTensorOp;
@@ -257,7 +266,7 @@ void encode_col_checksum(Element *A, int k, int n, int partition){
     chk_vector[c] = (float)1;
     // chk_vector[c + k] = (float)(c+1);
   }
-  // encode chksum
+  // encode chksum - row major
   for(int p = 0; p < partition; p++){
     for(int r = 0; r < 1; r++){
       for(int c = 0; c < n; c++){
@@ -277,11 +286,43 @@ void encode_col_checksum(Element *A, int k, int n, int partition){
   free(chk_vector);
 }
 
+template <typename Element>
+void encode_row_checksum(Element *A, int m, int k, int partition, int lda){
+  int n = 1;
+  int k_per_partion = k / partition;
+
+  // init checksum vector
+  float *chk_vector;
+  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * 1);
+  for(int r = 0; r < k_per_partion; r++){
+    chk_vector[r] = 1.f;
+    // chk_vector[c + k] = (float)(c+1);
+  }
+  // encode row chksum - column major
+  for(int p = 0; p < partition; p++){
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = 0.0f;
+        for(int i = 0; i < k_per_partion; i++){
+          float a = A[r + (i + k_per_partion * p) * lda];
+          float b = chk_vector[i];
+          sum += a * b;
+        }
+        // int idx = (k + p) + (c * lda) + (b_idx * stride);
+        int idx = lda * (k + p) + r;
+        A[idx] = sum;
+      }
+    }
+  }
+  free(chk_vector);
+}
+
 
 int run(Options &options) {
 
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = options.problem_size;
+  // cutlass::gemm::GemmCoord problem_size2({1,1,1});
 
   // Initialize tensors using CUTLASS helper functions
   cutlass::HostTensor<ElementInputA, LayoutInputA> tensor_a(
@@ -298,115 +339,83 @@ int run(Options &options) {
                            // reference kernel
 
   // Fill input and output matrices on host using CUTLASS helper functions
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_a.host_view(),
-  //     1,
-  //     ElementInputA(4),
-  //     ElementInputA(-4),
-  //     0);  // <- Fill matrix A on host with uniform-distribution random data
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_b.host_view(),
-  //     1,
-  //     ElementInputB(4),
-  //     ElementInputB(-4),
-  //     0);  // <- Fill matrix B on host with uniform-distribution random data
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_c.host_view(),
-  //     1,
-  //     ElementOutput(4),
-  //     ElementOutput(-4),
-  //     0);  // <- Fill matrix C on host with uniform-distribution random data
-  
+
+  int kRange = 8;
+  // if(options.if_split_phase==1 || options.if_split_phase==0){
+  //   int m = 1;
+  //   int k = problem_size.m() - 1 * options.partition;
+  //   int n = problem_size.k();
+  //   // printf("begin init A %d %d, %d\n", options.partition, k, n);
+  //   for(int r = 0; r < k; r++){
+  //     for(int c = 0; c < n; c++){
+  //       int idx = r * n + c;
+  //       *(tensor_a.host_data()+idx) = (float)(idx % kRange);
+  //       // *(tensor_a.host_data()+idx) = (float)1;
+  //     }
+  //   }
+  //   encode_col_checksum<ElementInputA>(tensor_a.host_data(), k, n, options.partition);
+
+  //   n = problem_size.n();
+  //   for(int r = 0; r < k; r++){
+  //     for(int c = 0; c < n; c++){
+  //       int idx = r * n + c;
+  //       // *(tensor_c.host_data()+idx) = (float)rand()/RAND_MAX;
+  //       *(tensor_c.host_data()+idx) = (float)1;
+  //     }
+  //   }
+  //   encode_col_checksum<ElementOutput>(tensor_c.host_data(), k, n, options.partition);
+  // }
+  // else{
+  //   for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
+  //     *(tensor_a.host_data()+idx) = (float)1;
+  //   }
+  //   cutlass::reference::host::TensorFill(tensor_c.host_view()); 
+  // }
+  // for(int idx = 0; idx < (problem_size.k()*problem_size.n()); idx++){
+  //   // *(tensor_b.host_data()+idx) = (float)1;
+  //   *(tensor_b.host_data()+idx) = (float)(idx % kRange);
+  // }
+
   if(options.if_split_phase==1 || options.if_split_phase==0){
-    int m = 1;
-    int k = problem_size.m() - 1 * options.partition;
-    int n = problem_size.k();
-    // printf("begin init A %d %d, %d\n", options.partition, k, n);
-    for(int r = 0; r < k; r++){
-      for(int c = 0; c < n; c++){
-        int idx = r * n + c;
-        // *(tensor_a.host_data()+idx) = (float)rand()/RAND_MAX;
-        *(tensor_a.host_data()+idx) = (float)1;
+    for(int c = 0; c < (problem_size.n() - 1 * options.partition); c++){
+      for(int r = 0; r < problem_size.k(); r++){
+        int idx = c * problem_size.k() + r;
+        *(tensor_b.host_data()+idx) = (float)(idx % kRange);
+        // *(tensor_a.host_data()+idx) = (float)1;
       }
     }
-    // printf("init A\n");
-    // float *chk_vector;
-    // chk_vector = (float*)malloc(sizeof(float)* k * 1);
-    // for(int c = 0; c < k; c++){
-    //   chk_vector[c] = (float)1;
-    //   // chk_vector[c + k] = (float)(c+1);
-    // }
-    // // printf("init check vector\n");
-    // // encode chksum
-    // for(int p = 0; p < options.partition; p++){
-    //   for(int r = 0; r < 1; r++){
-    //     for(int c = 0; c < n; c++){
-    //         float sum = 0.0;
-    //         for(int i = 0; i < (k/options.partition); i++){
-    //             float a = chk_vector[r * k + i];
-    //             float b = *(tensor_a.host_data() + (c + (i+(k/options.partition)*p) * n));
-    //             sum += (a * b);
-    //         }
-    //         // printf("%f, ", sum);
-    //         int idx = (k * n) + (r * n + c) + p * (1 * n);
-    //         *(tensor_a.host_data() + idx) = sum;
-    //     }
-    //     // printf("\n");
-    //   }
-    // }
-    encode_col_checksum<ElementInputA>(tensor_a.host_data(), k, n, options.partition);
+    encode_row_checksum<ElementInputB>(tensor_b.host_data(), problem_size.k(), (problem_size.n() - 1 * options.partition), options.partition,  problem_size.k());
 
-    n = problem_size.n();
-    for(int r = 0; r < k; r++){
-      for(int c = 0; c < n; c++){
-        int idx = r * n + c;
+    for(int c = 0; c < (problem_size.n() - 1 * options.partition); c++){
+      for(int r = 0; r < problem_size.m(); r++){
+        int idx = c * problem_size.m() + r;
         // *(tensor_c.host_data()+idx) = (float)rand()/RAND_MAX;
         *(tensor_c.host_data()+idx) = (float)1;
       }
     }
-    encode_col_checksum<ElementOutput>(tensor_c.host_data(), k, n, options.partition);
-
-    // printf("encode chksum\n");
-    // printf("[ \n");
-    // for(int r = 0; r < problem_size.m(); r++){
-    //   for(int c = 0; c < problem_size.k(); c++){
-    //     printf("%f", tensor_a.host_data()[r * problem_size.k() + c]);
-    //     printf(", ");
-    //   }
-    //   printf("\n");
-    // }
-    // printf("]\n");
+    encode_row_checksum<ElementInputB>(tensor_c.host_data(), problem_size.m(), (problem_size.n() - 1 * options.partition), options.partition, problem_size.m());
   }
   else{
-    for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
-      *(tensor_a.host_data()+idx) = (float)1;
+    for(int c = 0; c < problem_size.n(); c++){
+      for(int r = 0; r < problem_size.k(); r++){
+        int idx = c * problem_size.k() + r;
+        *(tensor_b.host_data()+idx) = (float)(idx % kRange);
+        // *(tensor_a.host_data()+idx) = (float)1;
+      }
     }
     cutlass::reference::host::TensorFill(tensor_c.host_view()); 
   }
-
-  for(int idx = 0; idx < (problem_size.k()*problem_size.n()); idx++){
-    *(tensor_b.host_data()+idx) = (float)1;
-    // *(tensor_b.host_data()+idx) = (float)rand()/RAND_MAX;
+  for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
+    // *(tensor_b.host_data()+idx) = (float)1;
+    *(tensor_a.host_data()+idx) = (float)(idx % kRange);
   }
-  
-  // int ele = 0;
-  // for(int c = 0; c < problem_size.k(); c++){
-  //   for(int r = 0; r < problem_size.m(); r++){
-  //     int idx = c + r*problem_size.k();
-  //     *(tensor_a.host_data()+idx) = (float)ele;
-  //     *(tensor_b.host_data()+idx) = (float)ele;
-  //     ele += 1;
-  //   }
-  // }
-  
-  // cutlass::reference::host::TensorFillSequential(tensor_a.host_view(), ElementInputA(0));
-  // cutlass::reference::host::TensorFillSequential(tensor_b.host_view(), ElementInputB(0));
-  // cutlass::reference::host::TensorFill(tensor_c.host_view());
   
   cutlass::reference::host::TensorFill(
       tensor_d.host_view());  // <- fill matrix D on host with zeros
   cutlass::reference::host::TensorFill(
       tensor_ref_d.host_view());  // <- fill matrix D for reference on host with zeros
+  
+  printf("finish init matrix\n");
 
   // printf("A: %f\n", *(tensor_a.host_data()+1));
 

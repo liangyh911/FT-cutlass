@@ -598,7 +598,7 @@ public:
     //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
 
     cudaLaunchCooperativeKernel((void*)cutlass::Kernel<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
-
+    
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     cudaDeviceSynchronize();
@@ -909,14 +909,14 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
 
-    return underlying_operator_.run(stream);
+    return underlying_operator_.run(if_split_phase, partion, stream);
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(cudaStream_t stream = nullptr) {
-    return run(stream);
+  Status operator()(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, partion, stream);
   }
 
   /// Runs the kernel using initialized state.
