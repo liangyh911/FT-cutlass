@@ -467,9 +467,11 @@ public:
 
     int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
     // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
+    // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
     int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
-
     cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+    // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;

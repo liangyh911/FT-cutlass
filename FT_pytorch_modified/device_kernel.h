@@ -400,6 +400,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     // load checksum to share memroy
     int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    // int load_init_batch_idx = init_batch + b_iter * chk_step;
     for(int t = 0; t < TB_per_batch; t++){
       int load_batch_idx = load_init_batch_idx + t;
       if(load_batch_idx < params.batch_count){
@@ -423,7 +424,13 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
     __syncthreads();
     
     // update checksum
-    int batch_idx = init_batch + b_iter * chk_step; 
+    int batch_idx = init_batch + b_iter * chk_step;
+    
+    if(threadIdx.x == 0) {
+      printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_load_bach: %d, init_batch: %d, batch idx: %d, \n", 
+              b_iter, TB_per_batch, real_smid, threadIdx.x, thread_group_idx, load_init_batch_idx, init_batch, batch_idx);
+    }
+    
     if(batch_idx < params.batch_count && thread_group_idx < TB_per_batch){
       float accum1 = 0.f;
       float accum2 = 0.f;
@@ -440,8 +447,12 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
       for(int k = 0; k < K; k++){  
         float a1 = SharedMem[k + shared_offset];
         float a2 = SharedMem[k + weighted_offset];
-
+        // load B in col-major
         float b = *(params.ref_B.data() + idx_b + k * N);
+
+        // load B in row-major
+        // int idx_b = (batch_idx * params.stride_B) + local_col_idx * K;
+        // float b = *(params.ref_B.data()+ k);
         
         accum1 += a1 * b;
         accum2 += a2 * b;
