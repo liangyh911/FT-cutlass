@@ -501,7 +501,12 @@ public:
       if(if_split_phase == 0 || if_split_phase == 1) {
         // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, transb);
+        if(transb == 't'){
+          cutlass::update_checksum_v3_T<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, transb);
+        }
+        else{
+          cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, transb);
+        }
       }
       if(deBug && (if_split_phase == 0 || if_split_phase == 1)){
         cudaEventRecord(stop, stream_colchk);

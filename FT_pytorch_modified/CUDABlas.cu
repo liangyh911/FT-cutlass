@@ -1963,7 +1963,6 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   }
 
   cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-  free(chk_vector);
   
   if constexpr (std::is_same<Dtype, float>::value) {
     cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
@@ -1971,8 +1970,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                                       d_chk_vector, n, 0, &beta,
                                       (B+(k*n)), ldb, strideb_check,
                                       num_batches);
-  }                                  
-  cudaFree(d_chk_vector);
+  }
 
   // printf("B after:\n");
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
@@ -2027,6 +2025,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // outputChk(c, num_batches, ldc, stridec, m, n);
 
   cudaFree(C);
+  free(chk_vector);                                  
+  cudaFree(d_chk_vector);
 
   return true;
 }
