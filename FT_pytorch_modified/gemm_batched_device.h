@@ -418,7 +418,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, char transb, cudaStream_t stream = nullptr) {
 
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -468,6 +468,7 @@ public:
     int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
     // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
     // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
+    
     int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
     cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
@@ -500,7 +501,7 @@ public:
       if(if_split_phase == 0 || if_split_phase == 1) {
         // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        cutlass::update_checksum_v3<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, transb);
       }
       if(deBug && (if_split_phase == 0 || if_split_phase == 1)){
         cudaEventRecord(stop, stream_colchk);
@@ -523,17 +524,16 @@ public:
         sum_gemm += t_gemm;
       }
 
-      if(deBug && if_split_phase == 0){
-        cudaEventRecord(start, stream);
-      }  
-      if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
-      if(deBug && if_split_phase == 0){
-        cudaEventRecord(stop, stream);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&t_check, start, stop);
-        sum_check += t_check;
-      }
-
+      // if(deBug && if_split_phase == 0){
+      //   cudaEventRecord(start, stream);
+      // }  
+      // if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
+      // if(deBug && if_split_phase == 0){
+      //   cudaEventRecord(stop, stream);
+      //   cudaEventSynchronize(stop);
+      //   cudaEventElapsedTime(&t_check, start, stop);
+      //   sum_check += t_check;
+      // }
       cudaDeviceSynchronize();
     }
 
@@ -782,8 +782,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, partion, stream);
+  Status run(int if_split_phase, int partion, char transb, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, partion, transb, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -794,14 +794,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, int partion, 
+    int if_split_phase, int partion, char transb,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, partion, stream);
+      status = run(if_split_phase, partion, transb, stream);
     }
 
     return status;

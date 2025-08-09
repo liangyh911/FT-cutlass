@@ -1717,7 +1717,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   
   // ldb = ldb * num_batches;
 
-  printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
 
   // ABFT size
   int64_t n1 = n + 2;
@@ -1755,13 +1755,12 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
 
   // encode checksum
-  cudaStream_t stream_main, stream_rowchk;
+  cudaStream_t stream_main;
   cudaStreamCreate(&stream_main);
-  cudaStreamCreate(&stream_rowchk);
 
-  cublasHandle_t handle_rowchk;
-  cublasCreate(&handle_rowchk);
-  cublasSetStream(handle_rowchk, stream_main);
+  cublasHandle_t handle_main;
+  cublasCreate(&handle_main);
+  cublasSetStream(handle_main, stream_main);
 
   Dtype *chk_vector, *d_chk_vector;
   size_t size = sizeof(Dtype)* n * 2;
@@ -1775,7 +1774,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
   
   if constexpr (std::is_same<Dtype, float>::value) {
-    cublasSgemmStridedBatched(handle_rowchk, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+    cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
                                       &alpha, B, ldb, strideb_check,
                                       d_chk_vector, n, 0, &beta,
                                       (B+(k*n)), ldb, strideb_check,
@@ -1786,12 +1785,12 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
 
   // ref
-  Dtype *ref_C, *ref_A, *ref_B;
-  ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
-  cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
-  ref_A = ref_C + count_C;
-  ref_B = ref_A + count_A;
-  strided_batched_gemm_nn_reference<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
+  // Dtype *ref_C, *ref_A, *ref_B;
+  // ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
+  // cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // ref_A = ref_C + count_C;
+  // ref_B = ref_A + count_A;
+  // strided_batched_gemm_nn_reference<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
 
   // define CUTLASS GEMMBATCHED API
   using Gemm = cutlass::gemm::device::GemmBatched<
@@ -1825,7 +1824,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
       {alpha, beta},
       num_batches
     },
-    if_split_phase, 1, stream_main
+    if_split_phase, 1, transa, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -1834,18 +1833,18 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
 
   cudaDeviceSynchronize();
 
-  Dtype *result_C;
-  result_C = (Dtype *)malloc(count_C * sizeof(Dtype)); 
-  cudaMemcpy(result_C, C, count_C * sizeof(Dtype), cudaMemcpyDeviceToHost);
-  bool res = valid(m, n1, k, result_C, ref_C, ldc, stridec_check, num_batches);
-  if(res){
-      printf("self-validate not error\n");
-  }
-  else{
-    printf("self-validate error detected\n");
-  }
-  free(result_C);
-  free(ref_C);
+  // Dtype *result_C;
+  // result_C = (Dtype *)malloc(count_C * sizeof(Dtype)); 
+  // cudaMemcpy(result_C, C, count_C * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // bool res = valid(m, n1, k, result_C, ref_C, ldc, stridec_check, num_batches);
+  // if(res){
+  //     printf("self-validate not error\n");
+  // }
+  // else{
+  //   printf("self-validate error detected\n");
+  // }
+  // free(result_C);
+  // free(ref_C);
 
   // Copy Back
   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec_check, stridec);
@@ -1910,13 +1909,15 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // ldb = ldb * num_batches;
 
   // ABFT size
-  int n1 = n + 2;
-  int strideb_check = ldb * n1;
-  int stridec_check = ldc * n1;
+  int64_t n1 = n + 2;
+  int64_t strideb_check = ldb * n1;
+  int64_t stridec_check = ldc * n1;
 
-  int const count_A = num_batches * lda * k;
+  int const count_A = num_batches * lda * m;
   int const count_B = num_batches * ldb * n1;
   int const count_C = num_batches * ldc * n1;
+
+  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
 
   // allocate the device memory
   Dtype *A, *B, *C;
@@ -1930,7 +1931,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // copy matrix A and matrix B
   Dtype *a_ = const_cast<Dtype*>(a);
   Dtype *b_ = const_cast<Dtype*>(b);
-  copy_batched_matrix<<<dim3((k+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea, stridea);
+  copy_batched_matrix<<<dim3((m+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea, stridea);
   copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb, strideb_check);
 
   // printf("A:\n");
@@ -1945,13 +1946,12 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
   
   // encode checksum
-  cudaStream_t stream_main, stream_rowchk;
+  cudaStream_t stream_main;
   cudaStreamCreate(&stream_main);
-  cudaStreamCreate(&stream_rowchk);
 
-  cublasHandle_t handle_rowchk;
-  cublasCreate(&handle_rowchk);
-  cublasSetStream(handle_rowchk, stream_main);
+  cublasHandle_t handle_main;
+  cublasCreate(&handle_main);
+  cublasSetStream(handle_main, stream_main);
 
   Dtype *chk_vector, *d_chk_vector;
   size_t size = sizeof(Dtype)* n * 2;
@@ -1966,7 +1966,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   free(chk_vector);
   
   if constexpr (std::is_same<Dtype, float>::value) {
-    cublasSgemmStridedBatched(handle_rowchk, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+    cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
                                       &alpha, B, ldb, strideb_check,
                                       d_chk_vector, n, 0, &beta,
                                       (B+(k*n)), ldb, strideb_check,
@@ -2009,7 +2009,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       {alpha, beta},
       num_batches
     },
-    if_split_phase, 1, stream_main
+    if_split_phase, 1, transa, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -2151,6 +2151,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // copy data
   Dtype *a_ = const_cast<Dtype*>(a);
   Dtype *b_ = const_cast<Dtype*>(b);
+  // issue loading A?
   copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a_, tensor_a.device_data(), m, k);
   copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(b_, tensor_b.device_data(), k, n);
   

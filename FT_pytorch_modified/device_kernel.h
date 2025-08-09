@@ -285,7 +285,7 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
   // int m1k =(M + 1) * K;
   int m1n = (M + 1) * N;
   
-  int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  int TB_per_batch = batch_per_TB;
 
   int chk_step = chk_SM * TB_per_batch;
   int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
@@ -350,7 +350,7 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
 
 template <typename Operator>
 CUTLASS_GLOBAL
-void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch){
+void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, char transb){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -393,14 +393,14 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   int local_col_idx = tid % N;
   // int local_col_dim = blockDim.x / batch_per_TB;
 
-  int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  int start_bid = local_smid * TB_per_batch;
+  int init_batch = start_bid + thread_group_idx;
 
   int shared_offset = thread_group_idx * checksum_stride;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-    // load checksum to share memroy
-    int load_init_batch_idx = local_smid + b_iter * chk_step; 
-    // int load_init_batch_idx = init_batch + b_iter * chk_step;
+    // load checksum to share memroy (exist issue)
+    int load_init_batch_idx = start_bid + b_iter * chk_step; 
     for(int t = 0; t < TB_per_batch; t++){
       int load_batch_idx = load_init_batch_idx + t;
       if(load_batch_idx < params.batch_count){
@@ -425,17 +425,25 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
     
     // update checksum
     int batch_idx = init_batch + b_iter * chk_step;
-    
-    if(threadIdx.x == 0) {
-      printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_load_bach: %d, init_batch: %d, batch idx: %d, \n", 
-              b_iter, TB_per_batch, real_smid, threadIdx.x, thread_group_idx, load_init_batch_idx, init_batch, batch_idx);
-    }
-    
-    if(batch_idx < params.batch_count && thread_group_idx < TB_per_batch){
+    // if(threadIdx.x == 0) {
+    //   printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, thread_group_idx: %d, init_load_bach: %d, init_batch: %d, batch idx: %d, \n", 
+    //           b_iter, TB_per_batch, real_smid, threadIdx.x, thread_group_idx, load_init_batch_idx, init_batch, batch_idx);
+    // }
+    if(batch_idx < params.batch_count 
+      // && thread_group_idx < TB_per_batch
+    ){
       float accum1 = 0.f;
       float accum2 = 0.f;
       
-      int idx_b = (batch_idx * params.stride_B) + local_col_idx;
+      int idx_b;
+      if(transb == 't'){
+        // load B in column-major
+        idx_b = (batch_idx * params.stride_B) + local_col_idx * K;
+      }
+      else{
+        // load B in row-major
+        idx_b = (batch_idx * params.stride_B) + local_col_idx;
+      }
 
       int offset_D = batch_idx * params.stride_D;
       int idx_chk_1 = (offset_D + mn) + local_col_idx;
@@ -447,12 +455,16 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
       for(int k = 0; k < K; k++){  
         float a1 = SharedMem[k + shared_offset];
         float a2 = SharedMem[k + weighted_offset];
-        // load B in col-major
-        float b = *(params.ref_B.data() + idx_b + k * N);
-
-        // load B in row-major
-        // int idx_b = (batch_idx * params.stride_B) + local_col_idx * K;
-        // float b = *(params.ref_B.data()+ k);
+        
+        float b = 0.f;
+        if(transb == 't'){
+          // load B in column-major
+          b = *(params.ref_B.data()+ idx_b + k);
+        }
+        else{
+          // load B in row-major
+          b = *(params.ref_B.data() + idx_b + k * N);
+        }
         
         accum1 += a1 * b;
         accum2 += a2 * b;
