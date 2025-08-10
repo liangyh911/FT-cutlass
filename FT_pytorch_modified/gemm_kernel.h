@@ -262,11 +262,6 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     int next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
     int new_offset_n = (next_global_blk_idx / (params.grid_tiled_shape.m() - checksumblk_per_col)) * checksumblk_per_col;
     tmp_matrix_blk = next_global_blk_idx + new_offset_n;
-
-    // if(iter==348){
-    //   printf("1 Check %dth. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix block: (%d), next chk block: (%d)\n", 
-    //           iter, block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
-    // }
     
     // if ((tmp_matrix_blk + 1) % (params.grid_tiled_shape.m()-(checksumblk_per_col-1)) == 0){
     //   tmp_matrix_blk = (tmp_matrix_blk + checksumblk_per_col) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
@@ -278,9 +273,9 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     tmp_chk_blk = get_corresponding_chk_idx(params.grid_tiled_shape.m(), tmp_matrix_blk, threadblock_tile_offset_m, (params.grid_tiled_shape.m() - checksumblk_per_col));
     tmp_flag = 1;
 
-    // if(iter==348){
-      // printf("Check %dth. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix block: (%d), next chk block: (%d)\n", 
-      //         iter, block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
+    // if(iter==8){
+    //   printf("1 Check %dth. matrix_SM: %d, block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix block: (%d), next chk block: (%d)\n", 
+    //           iter, matrix_SM, block_idx, threadblock_tile_offset_m, threadblock_tile_offset_n, smid, tmp_matrix_blk, tmp_chk_blk);
     // }
 
   }
@@ -375,7 +370,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //   *(recompute + iter) = clock();
     // }
     
-    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)10){
       diff = 1;
       printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
                 iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
@@ -438,7 +433,9 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     int matrix_next_blk_offset_n = (matrix_SM / matrix_shape_m);
     int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
-    int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
+    int matrix_block_count = matrix_shape_m * params.grid_tiled_shape.n();
+    int SM_iter = (int)ceil((double)((matrix_block_count) / (double)matrix_SM));
+    // int last_iter_SM_count = matrix_block_count % matrix_SM;
               
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -451,6 +448,12 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //   params.grid_tiled_shape.n() <= threadblock_tile_offset.n()) {
 
     //   return;
+    // }
+
+    // if(threadIdx.x == 0){
+    //   printf("matrix_SM: %d, last_iter_SM_count: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
+    //         matrix_SM, last_iter_SM_count, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
+
     // }
 
     for(int iter = 0; iter < SM_iter; iter++){
@@ -568,7 +571,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     // asm volatile("mov.u32 %0,%tid.x;" : "=r"(tid));
     // printf("SM id: %d, tid: %d, thread_idx;%d\n", smid, tid, thread_idx);
     
-    // printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
+    // if(thread_idx==0) printf("M: %d, N: %d, K: %d \n", params.problem_size.m(), problem_size_k, params.problem_size.n());
 
     // __syncthreads();
     // if(thread_idx == 0 && smid == 0){
@@ -825,10 +828,22 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
               ti++;
             }
             // cooperative_groups::this_grid().sync();
-            if(beyond_bound){
+            // if(beyond_bound){
+            //   return;
+            // }
+            if(next_matrix_block_idx >= matrix_block_count){
               return;
             }
             // check current iteration
+            // if(smid == (last_iter_SM_count-1)){
+            //     if(thread_idx == 0){
+            //       int last_local_blk = next_matrix_block_idx - (next_matrix_block_idx / params.grid_tiled_shape.m()) * checksumblk_per_col - last_iter_SM_count;
+            //       next_matrix_block_idx = last_local_blk + (last_local_blk / (params.grid_tiled_shape.m() - checksumblk_per_col)) * checksumblk_per_col;
+            //       int last_threadblock_tile_offset_m = next_matrix_block_idx % params.grid_tiled_shape.m();
+            //       next_chk_block_idx = get_corresponding_chk_idx(params.grid_tiled_shape.m(), next_matrix_block_idx, last_threadblock_tile_offset_m, (params.grid_tiled_shape.m() - checksumblk_per_col));
+            //     }
+            //     __syncthreads();
+            // }
             curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, thread_idx);
             // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
             check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
