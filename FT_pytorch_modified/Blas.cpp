@@ -47,6 +47,14 @@
 #include <ATen/ops/vdot_native.h>
 #endif
 
+#include <iostream>
+#include <cstdio>
+#include <string>
+#include <fstream>
+#include <cstdlib>
+#include <filesystem>
+namespace fs = std::filesystem;
+
 namespace at::native {
 
 namespace {
@@ -449,6 +457,12 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
 
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!args.result->is_conj());
 
+  const char* homeDir = nullptr;
+  homeDir = getenv("HOME");
+  if (homeDir == nullptr) {
+    std::cerr << "Could not get home directory" << std::endl;
+  } 
+
   if (useLtInterface) {
 #if defined(USE_ROCM)
     bool okay = true;
@@ -540,24 +554,74 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
               activation_epilogue);
         }
         else {
-          // nn.Linear() with bias
-          // okay = at::cuda::blas::gemm_and_bias<scalar_t>(
-            okay = at::cuda::blas::cutlass_gemm_and_bias_launcher<scalar_t>(
-              args.transa == 't',
-              args.transb == 't',
-              args.m,
-              args.n,
-              args.k,
-              alpha.to<at::opmath_type<scalar_t>>(),
-              args.mata->const_data_ptr<scalar_t>(),
-              args.lda,
-              args.matb->const_data_ptr<scalar_t>(),
-              args.ldb,
-              self.const_data_ptr<scalar_t>(),
-              args.result->data_ptr<scalar_t>(),
-              args.result_ld,
-              activation_epilogue
-          );
+          fs::path homePath(homeDir);
+          fs::path destinationFile = "control/cutlass.txt";
+          fs::path fullPath = homePath / destinationFile;
+          std::ifstream myfile(fullPath);
+
+          if (!myfile.is_open()){
+            // std::cout << "cannot open file: " << fullPath << std::endl;
+            okay = at::cuda::blas::gemm_and_bias<scalar_t>(
+                args.transa == 't',
+                args.transb == 't',
+                args.m,
+                args.n,
+                args.k,
+                alpha.to<at::opmath_type<scalar_t>>(),
+                args.mata->const_data_ptr<scalar_t>(),
+                args.lda,
+                args.matb->const_data_ptr<scalar_t>(),
+                args.ldb,
+                self.const_data_ptr<scalar_t>(),
+                args.result->data_ptr<scalar_t>(),
+                args.result_ld,
+                activation_epilogue
+            );
+          }
+          else{
+            char flag;
+            myfile.get(flag);
+            myfile.close();
+            
+            if(flag == 't'){
+              // nn.Linear() with bias
+              // okay = at::cuda::blas::gemm_and_bias<scalar_t>(
+                okay = at::cuda::blas::cutlass_gemm_and_bias_launcher<scalar_t>(
+                  args.transa == 't',
+                  args.transb == 't',
+                  args.m,
+                  args.n,
+                  args.k,
+                  alpha.to<at::opmath_type<scalar_t>>(),
+                  args.mata->const_data_ptr<scalar_t>(),
+                  args.lda,
+                  args.matb->const_data_ptr<scalar_t>(),
+                  args.ldb,
+                  self.const_data_ptr<scalar_t>(),
+                  args.result->data_ptr<scalar_t>(),
+                  args.result_ld,
+                  activation_epilogue
+              );
+            }
+            else{
+              okay = at::cuda::blas::gemm_and_bias<scalar_t>(
+                  args.transa == 't',
+                  args.transb == 't',
+                  args.m,
+                  args.n,
+                  args.k,
+                  alpha.to<at::opmath_type<scalar_t>>(),
+                  args.mata->const_data_ptr<scalar_t>(),
+                  args.lda,
+                  args.matb->const_data_ptr<scalar_t>(),
+                  args.ldb,
+                  self.const_data_ptr<scalar_t>(),
+                  args.result->data_ptr<scalar_t>(),
+                  args.result_ld,
+                  activation_epilogue
+              );
+            }
+          }  
       }});
     }
     if (!okay) {
@@ -607,9 +671,14 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           const scalar_t* mat1_ptr = args.mata->const_data_ptr<scalar_t>();
           const scalar_t* mat2_ptr = args.matb->const_data_ptr<scalar_t>();
           scalar_t* result_ptr = args.result->mutable_data_ptr<scalar_t>();
-          // nn.Linear() without bias
-          // at::cuda::blas::gemm<scalar_t>(
-          at::cuda::blas::cutlass_gemm_launcher<scalar_t>(
+          
+          fs::path homePath(homeDir);
+          fs::path destinationFile = "control/cutlass.txt";
+          fs::path fullPath = homePath / destinationFile;
+          std::ifstream myfile(fullPath);
+
+          if (!myfile.is_open()){
+            at::cuda::blas::gemm<scalar_t>(
               args.transa,
               args.transb,
               args.m,
@@ -623,6 +692,47 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
               beta_val,
               result_ptr,
               args.result_ld);
+          }
+          else{
+            char flag;
+            myfile.get(flag);
+            myfile.close();
+
+            if(flag == 't'){
+              // nn.Linear() without bias
+              at::cuda::blas::cutlass_gemm_launcher<scalar_t>(
+                  args.transa,
+                  args.transb,
+                  args.m,
+                  args.n,
+                  args.k,
+                  alpha_val,
+                  mat1_ptr,
+                  args.lda,
+                  mat2_ptr,
+                  args.ldb,
+                  beta_val,
+                  result_ptr,
+                  args.result_ld);
+
+            }
+            else{
+              at::cuda::blas::gemm<scalar_t>(
+                args.transa,
+                args.transb,
+                args.m,
+                args.n,
+                args.k,
+                alpha_val,
+                mat1_ptr,
+                args.lda,
+                mat2_ptr,
+                args.ldb,
+                beta_val,
+                result_ptr,
+                args.result_ld);
+            }
+          }
         });
     }
     switch (activation) {
@@ -744,6 +854,13 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
       const auto transa = transpose_batch1 ? batch1_->is_conj() ? 'c' : 't' : 'n';
       const auto transb = transpose_batch2 ? batch2_->is_conj() ? 'c' : 't' : 'n';
       scalar_t* result_ptr = result_->mutable_data_ptr<scalar_t>();
+
+      const char* homeDir = nullptr;
+      homeDir = getenv("HOME");
+      if (homeDir == nullptr) {
+          std::cerr << "Could not get home directory" << std::endl;
+      } 
+
       // If batch is 1 call gemm rather than bgemm
       if (num_batches == 1) {
         at::cuda::blas::gemm<scalar_t>(
@@ -756,17 +873,53 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
             result_ptr, ldc);
       } else {
         // torch.matmul()
-        // at::cuda::blas::bgemm<scalar_t>(
-        at::cuda::blas::cutlass_bgemm_launcher<scalar_t>(
-          transa, transb,
-          m, n, k,
-          alpha_val,
-          batch1_ptr, lda, batch1_->strides()[0],
-          batch2_ptr, ldb, batch2_->strides()[0],
-          beta_val,
-          result_ptr, ldc, result_->strides()[0],
-          num_batches
-        );
+        fs::path homePath(homeDir);
+        fs::path destinationFile = "control/cutlass.txt";
+        fs::path fullPath = homePath / destinationFile;
+        std::ifstream myfile(fullPath);
+
+        if (!myfile.is_open()){
+          at::cuda::blas::bgemm<scalar_t>(
+            transa, transb,
+            m, n, k,
+            alpha_val,
+            batch1_ptr, lda, batch1_->strides()[0],
+            batch2_ptr, ldb, batch2_->strides()[0],
+            beta_val,
+            result_ptr, ldc, result_->strides()[0],
+            num_batches
+          );
+        }
+        else{
+          char flag;
+          myfile.get(flag);
+          myfile.close();
+
+          if(flag == 't'){
+            at::cuda::blas::cutlass_bgemm_launcher<scalar_t>(
+              transa, transb,
+              m, n, k,
+              alpha_val,
+              batch1_ptr, lda, batch1_->strides()[0],
+              batch2_ptr, ldb, batch2_->strides()[0],
+              beta_val,
+              result_ptr, ldc, result_->strides()[0],
+              num_batches
+            );
+          }
+          else{
+            at::cuda::blas::bgemm<scalar_t>(
+              transa, transb,
+              m, n, k,
+              alpha_val,
+              batch1_ptr, lda, batch1_->strides()[0],
+              batch2_ptr, ldb, batch2_->strides()[0],
+              beta_val,
+              result_ptr, ldc, result_->strides()[0],
+              num_batches
+            );
+          }
+        }
       }
     });
   }
