@@ -375,7 +375,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     //   *(recompute + iter) = clock();
     // }
     
-    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)10){
       diff = 1;
       printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
                 iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
@@ -439,6 +439,7 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
     int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
+    int matrix_block_count = matrix_shape_m * params.grid_tiled_shape.n();
               
     // Compute threadblock location
     ThreadblockSwizzle threadblock_swizzle;
@@ -825,7 +826,10 @@ __device__ void SM_based_schedule(Params const &params, int threadblock_tile_off
               ti++;
             }
             // cooperative_groups::this_grid().sync();
-            if(beyond_bound){
+            // if(beyond_bound){
+            //   return;
+            // }
+            if(next_matrix_block_idx >= matrix_block_count){
               return;
             }
             // check current iteration
