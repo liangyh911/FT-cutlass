@@ -621,6 +621,8 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   int const n = (options.if_split_phase == 1 || options.if_split_phase == 0) ? (options.problem_size.n() - 2 * options.partition) : options.problem_size.n();
 
+  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d \n", m, n, k, lda, ldb, ldc);
+
   // run cutlass
   for(int i = 0; i < options.iterations; i++){
     result = cutlass_strided_batched_sgemm(

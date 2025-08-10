@@ -378,12 +378,14 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   // int local_col_dim = blockDim.x / batch_per_TB;
 
   int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  int start_bid = local_smid * TB_per_batch;
 
   int shared_offset = thread_group_idx * checksum_stride;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     // load checksum to share memroy
-    int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    // int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    int load_init_batch_idx = start_bid + b_iter * chk_step; 
     for(int t = 0; t < TB_per_batch; t++){
       int load_batch_idx = load_init_batch_idx + t;
       if(load_batch_idx < params.batch_count){
@@ -443,7 +445,7 @@ void check_phase_v3(typename Operator::Params params, int batch_idx, int col_idx
   int M = params.problem_size.m();
   int K = params.problem_size.k();
   int N = params.problem_size.n();
-  float E = 1;
+  float E = 10;
   // int loc = -1;
   float MAX = 0;
   // int diff = 0;

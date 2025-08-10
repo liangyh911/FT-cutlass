@@ -449,6 +449,8 @@ public:
 
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
 
+    // printf("m: %d, n: %d, k: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k());
+
     cudaError_t result;
 
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
