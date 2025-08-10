@@ -1931,7 +1931,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // copy matrix A and matrix B
   Dtype *a_ = const_cast<Dtype*>(a);
   Dtype *b_ = const_cast<Dtype*>(b);
-  copy_batched_matrix<<<dim3((m+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea, stridea);
+  copy_batched_matrix<<<dim3((m+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, k, m, stridea, stridea);
   copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb, strideb_check);
 
   // printf("A:\n");
@@ -2152,7 +2152,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   Dtype *a_ = const_cast<Dtype*>(a);
   Dtype *b_ = const_cast<Dtype*>(b);
   // issue loading A?
-  copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a_, tensor_a.device_data(), m, k);
+  copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a_, tensor_a.device_data(), k, m);
   copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(b_, tensor_b.device_data(), k, n);
   
   // printf("B_before\n");
@@ -2409,7 +2409,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // copy data
   Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
   Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
-  copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), m, k);
+  copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), k, m);
   copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
 
   // printf("print A:\n");
