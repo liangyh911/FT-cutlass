@@ -350,7 +350,7 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
 
 template <typename Operator>
 CUTLASS_GLOBAL
-void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, char transb){
+void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -464,7 +464,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
 
 template <typename Operator>
 CUTLASS_GLOBAL
-void update_checksum_v3_T(typename Operator::Params params, int matrix_SM, int TB_per_batch, char transb){
+void update_checksum_v3_T(typename Operator::Params params, int matrix_SM, int TB_per_batch){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -575,6 +575,144 @@ void update_checksum_v3_T(typename Operator::Params params, int matrix_SM, int T
     __syncthreads();
   } 
 }
+
+template <typename Operator, int tiled_K>
+CUTLASS_GLOBAL
+void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int batch_per_TB){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  int chk_SM = 132 - matrix_SM;
+
+  int tid = threadIdx.x;
+  int blockdim = blockDim.x;
+
+  extern __shared__ float SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  int checksum_stride = 2 * K;
+
+  // shared memory for A
+  float* As = SharedMem;  
+  // shared memory for B
+  float* Bs = As + checksum_stride; 
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  // int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  int TB_per_batch = 1;
+
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+
+  int loadA_iter = (int)(ceil((double)(checksum_stride)/ (double)blockdim));
+
+  int loadB_step = (int)(ceil((double)(blockdim)/ (double)tiled_K));
+  int loadB_iter = (int)(ceil((double)(tiled_K * N)/ (double)blockdim));
+
+  int tiled_iter = (int)(ceil((double)(K)/ (double)tiled_K));
+
+  // int tiledB_col = tid / tiled_K;
+  // int tiledB_row = tid % tiled_K;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = local_smid + b_iter * chk_step;
+    // int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < params.batch_count){          
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      int stride_b = (batch_idx * params.stride_B);
+
+      // load checksum to share memroy
+      // for(int i = 0; i < loadA_iter; i++){
+      //   int idx = tid + blockdim * i;
+      //   if(idx < checksum_stride){
+      //     As[idx] = *(params.ref_A.data() + idx_a_1 + idx);
+      //     // printf("batch_idx: %d, col_idx: %d, global: (%f), shared: (%f)\n", batch_idx, tid, *(params.ref_A.data() + idx_a_1 + tid), SharedMem[tid]);
+      //   }
+      // }
+      if(tid < checksum_stride){
+        As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      }
+      __syncthreads();
+
+      float accum1 = 0.f;
+      float accum2 = 0.f;
+
+      // for(int tile_row = 0; tile_row < K; tile_row += tiled_K){
+      for(int tile_i = 0; tile_i < tiled_iter; tile_i++){
+        // if(threadIdx.x == 0) {
+        //   printf("%d, batch_per_TB: %d, smid: %d, thread_idx: %d, batch idx: %d, tiled_N: %d, loadB_step: %d, tile_col: %d\n", 
+        //           b_iter, batch_per_TB, real_smid, threadIdx.x, batch_idx, tiled_N, loadB_step, tile_col);
+        // }
+
+        // load tiled B to shared memory
+        // for(int col_offset = 0; col_offset < N; col_offset += loadB_step){
+        //   int c_idx = (tiledB_col + col_offset);
+        //   int idx_b = stride_b + (tiledB_row + tile_row) + c_idx * K;
+        //   int idx_smem = tiledB_row + c_idx * tiled_K;
+        //   Bs[idx_smem] = *(params.ref_B.data()+ idx_b);
+        // }
+
+        for(int i = 0; i < loadB_iter; i++){
+          int shared_idx = tid + i * blockdim;
+          int shared_row = shared_idx % tiled_K;
+          int shared_col = shared_idx / tiled_K;
+
+          int B_row = shared_row + tiled_K * tile_i;
+          int B_col = shared_col;
+
+          if(B_row < K && B_col < N){
+             Bs[shared_idx] = *(params.ref_B.data()+ stride_b + B_row + B_col * K);
+          }
+        }
+        __syncthreads();
+        
+        // if(tid < N){
+        int k_b = tid * tiled_K;
+        #pragma unroll tiled_K
+        for(int k = 0; k < tiled_K; k++){
+          // int k_a = k + tile_row;
+          int k_a = k + tile_i * tiled_K;
+          if(k_a < K){
+            float a1 = As[k_a];
+            float a2 = As[k_a + K];
+
+            float b = Bs[k + k_b];
+            // float b = 1;
+            
+            accum1 += a1 * b;
+            accum2 += a2 * b;
+          }
+        }
+        // }
+        __syncthreads();
+      }
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + (tid);
+      int idx_chk_2 = (batch_idx * params.stride_D + m1n) + (tid);
+
+      *(params.ref_D.data() + idx_chk_1) = accum1;
+      *(params.ref_D.data() + idx_chk_2) = accum2;
+    }
+    // __syncthreads();
+  } 
+}
+
 
 template<typename Operator>
 CUTLASS_DEVICE
