@@ -348,7 +348,7 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
   } 
 }
 
-template <typename Operator>
+template <typename Operator, typename Dtype>
 CUTLASS_GLOBAL
 void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch){
   // get SM id
@@ -366,7 +366,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   int chk_SM = 132 - matrix_SM;
   int tid = threadIdx.x;
 
-  extern __shared__ float SharedMem[];
+  extern __shared__ Dtype SharedMem[];
   
   // int thread_idx = threadIdx.x;
   int M = params.problem_size.m();
@@ -432,8 +432,8 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
     if(batch_idx < params.batch_count 
       // && thread_group_idx < TB_per_batch
     ){
-      float accum1 = 0.f;
-      float accum2 = 0.f;
+      Dtype accum1 = 0.f;
+      Dtype accum2 = 0.f;
       
       // load B in row-major
       int idx_b = (batch_idx * params.stride_B) + local_col_idx;
@@ -446,11 +446,11 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
       
       #pragma unroll 128
       for(int k = 0; k < K; k++){  
-        float a1 = SharedMem[k + shared_offset];
-        float a2 = SharedMem[k + weighted_offset];
+        Dtype a1 = SharedMem[k + shared_offset];
+        Dtype a2 = SharedMem[k + weighted_offset];
         
         // load B in row-major
-        float b = *(params.ref_B.data() + idx_b + k * N);
+        Dtype b = *(params.ref_B.data() + idx_b + k * N);
 
         accum1 += a1 * b;
         accum2 += a2 * b;
@@ -576,7 +576,7 @@ void update_checksum_v3_T(typename Operator::Params params, int matrix_SM, int T
   } 
 }
 
-template <typename Operator, int tiled_K>
+template <typename Operator, int tiled_K, typename Dtype>
 CUTLASS_GLOBAL
 void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int batch_per_TB){
   // get SM id
@@ -596,7 +596,7 @@ void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int b
   int tid = threadIdx.x;
   int blockdim = blockDim.x;
 
-  extern __shared__ float SharedMem[];
+  extern __shared__ Dtype SharedMem[];
   
   // int thread_idx = threadIdx.x;
   int M = params.problem_size.m();
@@ -605,9 +605,9 @@ void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int b
   int checksum_stride = 2 * K;
 
   // shared memory for A
-  float* As = SharedMem;  
+  Dtype* As = SharedMem;  
   // shared memory for B
-  float* Bs = As + checksum_stride; 
+  Dtype* Bs = As + checksum_stride; 
 
   int mk = M * K;
   int mn = M * N;
@@ -651,8 +651,8 @@ void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int b
       }
       __syncthreads();
 
-      float accum1 = 0.f;
-      float accum2 = 0.f;
+      Dtype accum1 = 0.f;
+      Dtype accum2 = 0.f;
 
       // for(int tile_row = 0; tile_row < K; tile_row += tiled_K){
       for(int tile_i = 0; tile_i < tiled_iter; tile_i++){
@@ -690,10 +690,10 @@ void update_checksum_v4_T(typename Operator::Params params, int matrix_SM, int b
           // int k_a = k + tile_row;
           int k_a = k + tile_i * tiled_K;
           if(k_a < K){
-            float a1 = As[k_a];
-            float a2 = As[k_a + K];
+            Dtype a1 = As[k_a];
+            Dtype a2 = As[k_a + K];
 
-            float b = Bs[k + k_b];
+            Dtype b = Bs[k + k_b];
             // float b = 1;
             
             accum1 += a1 * b;

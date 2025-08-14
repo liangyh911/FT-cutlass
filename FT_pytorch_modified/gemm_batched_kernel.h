@@ -351,7 +351,7 @@ struct GemmBatched {
     #pragma unroll 128
     for(int r = 0; r < M; r++){
       int idx = start_idx + r * N;
-      float element = *(params.ref_D.data() + idx);
+      float element = (float)*(params.ref_D.data() + idx);
       
       dA_col_r1 += element;
       dA_col_r2 += (float)(r+1) * element;
@@ -641,6 +641,7 @@ struct GemmBatched {
     #if 1
     if(if_split_phase == 1){
       // check checksum
+      // using Dtype = typename decltype(params.ref_D)::Element;
       // cooperative_groups::this_grid().sync();
       // if(real_smid < (matrix_SM * batch_step)){
         int check_req_SM = params.grid_tiled_shape.n();

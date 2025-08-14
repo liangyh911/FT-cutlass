@@ -28,6 +28,13 @@
 #include "cutlass/gemm/device/gemm_batched.h"
 
 #include <math.h>
+#include <iostream>
+#include <cstdio>
+#include <string>
+#include <fstream>
+#include <cstdlib>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 #ifdef USE_ROCM
 #include <hipblaslt/hipblaslt-ext.hpp>
@@ -1610,6 +1617,16 @@ __global__ void copy_batched_matrix(Dtype *src, Dtype *dst, int64_t rows, int64_
   }
 }
 
+void recordTime(std::string FP, float time, bool DEBUG){
+  std::ofstream outFile(FP, std::ios::app);
+  if(!outFile){
+    std::cerr << "Failed to open the file for appending." << std::endl;
+    return;
+  }
+  outFile << time << std::endl;
+  if(DEBUG) printf("Data appended to the file successfully.\n");
+}
+
 template<typename T> 
 cudaError_t strided_batched_gemm_nn_reference(
   int m,
@@ -1674,8 +1691,23 @@ template <typename Dtype>
 bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
                         const Dtype *a, int64_t lda, int64_t stridea,                                         
                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
+                        bool DEBUG){
   printf("cutlass bgemm\n");
+
+  // Preparing time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  fs::path destinationFile, fullPath;
+  float t1;
+
+  const char* homeDir = nullptr;
+  homeDir = getenv("HOME");
+  fs::path homePath(homeDir);
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::ColumnMajor;
@@ -1811,6 +1843,17 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   Gemm gemm_op;
 
   int if_split_phase = 1;
+
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
+
   cutlass::Status status = gemm_op({
       {m, n, k},
       {A, lda}, 
@@ -1832,6 +1875,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   }
 
   cudaDeviceSynchronize();
+
+  if (DEBUG){
+    cudaEventRecord(abft_prepare_start, 0);
+  }
 
   // Dtype *result_C;
   // result_C = (Dtype *)malloc(count_C * sizeof(Dtype)); 
@@ -1858,6 +1905,16 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   cudaFree(d_chk_vector);
   free(chk_vector);
 
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
+
   return true;
 }
 
@@ -1865,7 +1922,8 @@ template <typename Dtype>
 bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
                         const Dtype *a, int64_t lda, int64_t stridea,                                         
                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
+                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
+                        bool DEBUG){
   printf("cutlass bgemm T\n");
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
@@ -2038,38 +2096,55 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
                             at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches){
   
   bool state = false;
+  char flag;
+  bool DEBUG = true;
+  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fullPath = homePath / destinationFile;
+  std::ifstream DebugFile(destinationFile);
+  if (DebugFile.is_open()){
+    DebugFile.get(flag);
+    if(flag == 'f'){
+      DEBUG = false;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("DEBUG: Cannot open file, using default setting.\n");
+  }
+  DebugFile.close();
+
   if constexpr (std::is_same<Dtype, float>::value) {
     if(transa == 't'){
       // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
       state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha,  
         a, lda, stridea,                                         
         b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches);
+        beta, c, ldc, stridec, num_batches, DEBUG);
     }
     else{
       // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
       state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
         a, lda, stridea,                                         
         b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches);
+        beta, c, ldc, stridec, num_batches, DEBUG);
     }
   }
-  // else if constexpr (std::is_same<Dtype, double>::value) {
+  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
   //   if(transa == 't'){
-  //     state = cutlass_bgemm_T<double>(transa, transb, m, n, k, alpha,  
+  //     state = cutlass_bgemm_T<c10::Half>(transa, transb, m, n, k, alpha,  
   //       a, lda, stridea,                                         
   //       b, ldb, strideb,                                           
   //       beta, c, ldc, stridec, num_batches);
   //   }
   //   else{
-  //     state = cutlass_bgemm<double>(transa, transb, m, n, k, alpha,  
+  //     state = cutlass_bgemm<c10::Half>(transa, transb, m, n, k, alpha,  
   //         a, lda, stridea,                                         
   //         b, ldb, strideb,                                           
   //         beta, c, ldc, stridec, num_batches);
   //   }
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
-  //   state = cutlass_gemm<cutlass::half_t>(transa, transb, m, n, k, alpha,
+  // else if constexpr (std::is_same<Dtype, double>::value) {
+  //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
   //                                           a, lda, b, ldb, beta,
   //                                           c, ldc);
   // } 
@@ -2115,8 +2190,22 @@ template bool cutlass_bgemm_launcher<c10::complex<float>>(char transa, char tran
 template <typename Dtype>
 bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
                   const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
-                  Dtype *c, int64_t ldc){
+                  Dtype *c, int64_t ldc, bool DEBUG){
   printf("cutlass_gemm\n");
+  
+  // Preparing time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  fs::path destinationFile, fullPath;
+  float t1;
+
+  const char* homeDir = nullptr;
+  homeDir = getenv("HOME");
+  fs::path homePath(homeDir);
   
   // ABFT problem size
   int partition = n / 128;
@@ -2270,15 +2359,30 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   status = gemm_op.initialize(arguments, workspace.get());
   CUTLASS_CHECK(status);
   
+  
+  int if_split_phase = 0;
+
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
+
   // Launch initialized CUTLASS kernel
   // printf("launch\n");
-  int if_split_phase = 0;
-  status = gemm_op(if_split_phase, partition);
+  status = gemm_op(if_split_phase, partition, DEBUG);
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
   cudaDeviceSynchronize();
-  
+
+  if (DEBUG){
+    cudaEventRecord(abft_prepare_start, 0);
+  }
   // Copy results back
   // printf("copy back\n");
   copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), c, m, n);
@@ -2286,10 +2390,16 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
   
-  // // Copy output data from CUTLASS and reference kernel to host for comparison
-  // tensor_d.sync_host();
-
   return true;
 }
 
@@ -2297,12 +2407,29 @@ template <typename Dtype>
 bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
                             const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
                             Dtype *c, int64_t ldc){
-  
   bool state = false;
+  bool DEBUG = true;
+  char flag;
+
+  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fullPath = homePath / destinationFile;
+  std::ifstream DebugFile(destinationFile);
+  if (DebugFile.is_open()){
+    DebugFile.get(flag);
+    if(flag == 'f'){
+      DEBUG = false;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("DEBUG: Cannot open file, using default setting.\n");
+  }
+  DebugFile.close();
+
   if constexpr (std::is_same<Dtype, float>::value) {
     state = cutlass_gemm<float>(transa, transb, m, n, k, alpha,
                                 a, lda, b, ldb, beta,
-                                c, ldc);
+                                c, ldc, DEBUG);
   }
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
@@ -2368,7 +2495,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
     const Dtype* bias,
     Dtype* result_ptr,
     int64_t result_ld,
-    GEMMAndBiasActivationEpilogue activation){
+    GEMMAndBiasActivationEpilogue activation, bool DEBUG){
   
   // printf("m: %d, n: %d, k: %d\n", m, n, k);
   // printf("lda: %d, ldb: %d, ldc: %d\n", mat1_ld, mat2_ld, result_ld);
@@ -2376,6 +2503,21 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // printf("transposeB: %s\n", transpose_mat2?"true":"false");
   
   printf("cutlass_gemm_and_bias\n");
+
+  // Preparing time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  fs::path destinationFile, fullPath;
+  float t1;
+
+  const char* homeDir = nullptr;
+  homeDir = getenv("HOME");
+  fs::path homePath(homeDir);
+
   // ABFT problem size
   int partition = n / 128;
   int n1 = n + 1 * partition;
@@ -2553,10 +2695,20 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   status = gemm_op.initialize(arguments, workspace.get());
   CUTLASS_CHECK(status);
   
+  int if_split_phase = 0;
+
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
   // Launch initialized CUTLASS kernel
   // printf("launch\n");
-  int if_split_phase = 0;
-  status = gemm_op(if_split_phase, partition);
+  status = gemm_op(if_split_phase, partition, DEBUG);
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
@@ -2564,14 +2716,24 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   
   // Copy results back
   // printf("copy back\n");
+  if (DEBUG){
+    cudaEventRecord(abft_prepare_start, 0);
+  }
   copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), result_ptr, m, n);
   // result_ptr = tensor_d.device_data();
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
-  // outputChk(result_ptr, 1, result_ld, m*n, m, n);
-  
-  // // Copy output data from CUTLASS and reference kernel to host for comparison
-  // tensor_d.sync_host();
+  // outputChk(result_ptr, 1, result_ld, m*n, m, n); 
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
+
 
   return true;
 }
@@ -2593,12 +2755,29 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
     GEMMAndBiasActivationEpilogue activation){
   
   bool state = false;
+  char flag;
+  bool DEBUG = true;
+  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fullPath = homePath / destinationFile;
+  std::ifstream DebugFile(destinationFile);
+  if (DebugFile.is_open()){
+    DebugFile.get(flag);
+    if(flag == 'f'){
+      DEBUG = false;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("DEBUG: Cannot open file, using default setting.\n");
+  }
+  DebugFile.close();
+
   if constexpr (std::is_same<Dtype, float>::value) {
     state = cutlass_gemm_and_bias<float>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
       mat1_ptr, mat1_ld,
       mat2_ptr, mat2_ld,
       bias, result_ptr,result_ld,
-      activation);
+      activation, DEBUG);
   }
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
