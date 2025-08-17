@@ -50,6 +50,11 @@
 // #include "cutlass/gemm_ring_queue.h"
 #include <cmath>
 
+#include <string>
+#include <fstream>
+#include <filesystem>
+namespace fs = std::filesystem;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -484,71 +489,31 @@ public:
     return Status::kSuccess;
   }
 
+  void recordTime(std::string FP, float time, bool DEBUG){
+    std::ofstream outFile(FP, std::ios::app);
+    if(!outFile){
+      std::cerr << "Failed to open the file for appending." << std::endl;
+      return;
+    }
+    outFile << time << std::endl;
+    if(DEBUG) printf("Data appended to the file successfully.\n");
+  }
+
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
 
-    // // SM based schedule
-    // int checksumblk_per_col = 0;
-    // if(if_split_phase == 0){
-    //   // if able ABFT
-    //   checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
-    // }
-    // int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
-    // if(max_col > params_.grid_tiled_shape.n()){
-    //   max_col = params_.grid_tiled_shape.n();
-    // }
-    // int remaining_SM = (int)(max_col * checksumblk_per_col);
-    // int matrix_SM = (int)(132 - remaining_SM);
-
-    // int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
-    // int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
-    // int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
-    // // iteration based on GeMM not (GeMM + chksum)
-    // int SM_iter = (int)ceil((double)(((params_.grid_tiled_shape.m() - checksumblk_per_col) * params_.grid_tiled_shape.n())/(double)matrix_SM));
-
-    // // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
-    // int *SM_schedule;
-    // cudaMalloc((void **)&SM_schedule, sizeof(int) * 7);
-    // cudaMemcpy(SM_schedule, &matrix_SM, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 1), &remaining_SM, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 2), &checksumblk_per_col, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 3), &matrix_next_blk_offset_m, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 4), &matrix_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 5), &checksum_next_blk_offset_n, sizeof(int), cudaMemcpyHostToDevice);
-    // cudaMemcpy((SM_schedule + 6), &SM_iter, sizeof(int), cudaMemcpyHostToDevice);
-
-    // printf("matrix_SM: %d, remaining_SM: %d, checksum_SM_row: %d, max_col: %d, matrix_next_offset_m: %d, matrix_next_offset_n: %d, checksum_next_offset_m: %d, SM_iter: %d\n", 
-    //         matrix_SM, remaining_SM, checksumblk_per_col, max_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, checksum_next_blk_offset_n, SM_iter);
-
-
-    // Profile using clock
-    // size_t size = (100+1) * sizeof(int);
-    // cudaMalloc((void**)&d_all_start, size);
-    // cudaMemset(d_all_start, 0, size);
-
-    // cudaMalloc((void**)&d_compute, size);
-    // cudaMemset(d_compute, 0, size);
-
-    // cudaMalloc((void**)&d_finding, size);
-    // cudaMemset(d_finding, 0, size);
-
-    // cudaMalloc((void**)&d_recompute, size);
-    // cudaMemset(d_recompute, 0, size);
-
-    // cudaMalloc((void**)&d_compare, size);
-    // cudaMemset(d_compare, 0, size);
-
-    // cudaMalloc((void**)&d_checking, size);
-    // cudaMemset(d_checking, 0, size);
-
-    // cudaMalloc((void**)&d_all_start_for_split, size);
-    // cudaMemset(d_all_start_for_split, 0, size);
-
-    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
-
-    // allocate chksum signature
-    // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
-    // cudaMemset(ChkSum_Signature_A_Col, 255, size);
+    // Preparing time
+    cudaEvent_t abft_prepare_start, abft_prepare_end;
+    if (DEBUG){
+      cudaEventCreate(&abft_prepare_start,0);
+      cudaEventCreate(&abft_prepare_end,0);
+      cudaEventRecord(abft_prepare_start, 0);
+    }
+    fs::path destinationFile, fullPath;
+    float t1;
+    const char* homeDir = nullptr;
+    homeDir = getenv("HOME");
+    fs::path homePath(homeDir);
 
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -592,6 +557,16 @@ public:
 
     cutlass::arch::synclog_setup();
 
+    if(DEBUG){
+      cudaEventRecord(abft_prepare_end, 0);
+      cudaEventSynchronize(abft_prepare_end);
+      cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+      // printf("myABFT Prepare Time: %f \n", t1);
+      destinationFile = "records/time/preparation.txt";
+      fullPath = homePath / destinationFile;
+      recordTime(fullPath, t1, DEBUG);
+    }
+
     // cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
     //                                                                 Lock_Signature, final_sum, if_split_phase, 
     //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
@@ -617,62 +592,17 @@ public:
       cudaEventRecord(stop, stream);
       cudaEventSynchronize(stop);
       cudaEventElapsedTime(&t_compute, start, stop);
-    }
-    result = cudaGetLastError();
-
-    // if(if_split_phase == 1){
-    //   // int num_blk_per_group = 2;
-    //   int num_blk_per_group = (params_.grid_tiled_shape.m() - 1) * params_.grid_tiled_shape.n();
-    //   // for(int i = 0; i < 2; i++){
-    //     if(deBug){
-    //       cudaEventRecord(start, stream);
-    //     }
-    //     cutlass::check_between_SM<GemmKernel><<<new_grid, block, 0, stream>>>(params_, Signature_Array, 
-    //                                                                       Lock_Signature, final_sum, num_blk_per_group,
-    //                                                                       d_all_start_for_split, d_finding, d_recompute, d_compare, d_checking, d_SM_JOBS);
-    //     if(deBug){
-    //       cudaEventRecord(stop, stream);
-    //       cudaEventSynchronize(stop);
-    //       cudaEventElapsedTime(&t_check, start, stop);
-    //       // t_check = t_check + tmp;
-    //       // tmp = 0;
-    //     }
-    //     // cudaMemset(Signature_Array, 255, block_num * sizeof(uint8_t));
-    //     // cudaMemset(Lock_Signature, 0, block_num * sizeof(int));
-    //     // cudaMemset(final_sum, 0, block_num*sizeof(int));
-    //     // cudaDeviceSynchronize();
-    //   // }
-    // }
-
-    // size = (100+1) * sizeof(int);
-    // cudaMemcpy(all_start, d_all_start, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(compute, d_compute, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(finding, d_finding, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(recompute, d_recompute, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(compare, d_compare, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
-
-    // cudaFree(d_all_start);
-    // cudaFree(d_checking);
-    // cudaFree(d_compute);
-    // cudaFree(d_finding);
-    // cudaFree(d_recompute);
-    // cudaFree(d_compare);
-    // cudaFree(d_all_start_for_split);
-
-    cudaFree(SM_check_res_1);
-    
-    if(deBug){
       printf("compute kernel time: %f\n", t_compute/iterations);
     }
-
+    
+    result = cudaGetLastError();
+    cudaFree(SM_check_res_1);
     return result == cudaSuccess ? Status::kSuccess : Status::kErrorInternal;
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, partion, stream);
+  Status operator()(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, partion, DEBUG, stream);
   }
  
   /// Runs the kernel using initialized state.
@@ -909,14 +839,14 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
 
-    return underlying_operator_.run(if_split_phase, partion, stream);
+    return underlying_operator_.run(if_split_phase, partion, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, partion, stream);
+  Status operator()(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, partion, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
