@@ -489,22 +489,29 @@ public:
 
     // // SM based schedule
     // int checksumblk_per_col = 0;
-    // if(if_split_phase == 0){
+    // if(if_split_phase == 0 || if_split_phase == 1){
     //   // if able ABFT
-    //   checksumblk_per_col = (int)(ceil((double)((params_.grid_tiled_shape.m()) / (double)(128))));
+    //   // checksumblk_per_col = (int)(ceil((double)((params.grid_tiled_shape.m()) / (double)(128))));
+    //   checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
     // }
-    // int max_col = (int)ceil((double)132 / (double)(params_.grid_tiled_shape.m() - checksumblk_per_col));
+    
+    // int matrix_shape_m = params_.grid_tiled_shape.m() - checksumblk_per_col;
+    // int matrix_shape_n = params_.grid_tiled_shape.n();
+
+    // int max_col = (int)ceil((double)132 / (double)(matrix_shape_m));
     // if(max_col > params_.grid_tiled_shape.n()){
     //   max_col = params_.grid_tiled_shape.n();
     // }
+
     // int remaining_SM = (int)(max_col * checksumblk_per_col);
     // int matrix_SM = (int)(132 - remaining_SM);
 
-    // int matrix_next_blk_offset_m = matrix_SM % (params_.grid_tiled_shape.m() - checksumblk_per_col);
-    // int matrix_next_blk_offset_n = (matrix_SM / (params_.grid_tiled_shape.m() - checksumblk_per_col));
+    // int matrix_next_blk_offset_m = matrix_SM % matrix_shape_m;
+    // int matrix_next_blk_offset_n = matrix_SM / matrix_shape_m;
     // int checksum_next_blk_offset_n = (checksumblk_per_col != 0) ? (remaining_SM / checksumblk_per_col) : 0;
     // // iteration based on GeMM not (GeMM + chksum)
-    // int SM_iter = (int)ceil((double)(((params_.grid_tiled_shape.m() - checksumblk_per_col) * params_.grid_tiled_shape.n())/(double)matrix_SM));
+    // int SM_iter = (int)ceil((double)((matrix_shape_m * params_.grid_tiled_shape.n())/(double)matrix_SM));
+    // int matrix_block_count = matrix_shape_m * params_.grid_tiled_shape.n();
 
     // // (num of SM for matrix, num of SM of chk, chk blk row, matrix offset_m, matrix offset_n, chk offset_n)
     // int *SM_schedule;
@@ -573,6 +580,10 @@ public:
 
     // 0-no split; 1-split; 2-only abft
     // int if_split_phase = 0;
+
+    // printf("m: %d, n: %d, k: %d, log: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), params_.swizzle_log_tile);
+
+    // std::cout << std::is_same<LayoutA_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutB_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutC_, cutlass::layout::RowMajor>::value <<std::endl;
 
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
