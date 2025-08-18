@@ -1617,6 +1617,41 @@ __global__ void copy_batched_matrix(Dtype *src, Dtype *dst, int64_t rows, int64_
   }
 }
 
+// template <typename Tsrc, typename Tdst>
+// __device__ inline Tdst half_convert(Tsrc& x);
+
+// template <typename T>
+// __device__ inline T half_convert<T, T>(const T& x) { return x; }
+
+// template <>
+// __device__ inline cutlass::half_t
+// half_convert<c10::Half, cutlass::half_t>(const c10::Half& x) {
+//     const __half hx = *reinterpret_cast<const __half*>(&x);
+//     float f = __half2float(hx);
+//     return cutlass::half_t(f);
+// }
+
+// template <>
+// __device__ inline c10::Half
+// half_convert<cutlass::half_t, c10::Half>(const cutlass::half_t& x) {
+//     float f = static_cast<float>(x);
+//     __half hx = __float2half(f);
+//     return *reinterpret_cast<c10::Half*>(&hx);
+// }
+
+// template <typename SrcDtype, typename DstDtype>
+// __global__ void copy_batched_matrix2(SrcDtype *src, DstDtype *dst, int64_t rows, int64_t cols, int64_t strideSrc, int64_t strideDst){
+//   int col = blockIdx.x * blockDim.x + threadIdx.x;
+//   int row = blockIdx.y * blockDim.y + threadIdx.y;
+//   int batch = blockIdx.z;
+
+//   if (row < rows && col < cols) {
+//     int idx_src = batch * strideSrc + row * cols + col;
+//     int idx_dst = batch * strideDst + row * cols + col;
+//     dst[idx_dst] = half_convert<SrcDtype, DstDtype>(src[idx_src]);
+//   }
+// }
+
 void recordTime(std::string FP, float time, bool DEBUG){
   std::ofstream outFile(FP, std::ios::app);
   if(!outFile){
@@ -1867,7 +1902,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
       {alpha, beta},
       num_batches
     },
-    if_split_phase, 1, transa, stream_main
+    if_split_phase, 1, transa, DEBUG, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -1925,6 +1960,20 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG){
   printf("cutlass bgemm T\n");
+
+  // Preparing time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  fs::path destinationFile, fullPath;
+  float t1;
+
+  const char* homeDir = nullptr;
+  homeDir = getenv("HOME");
+  fs::path homePath(homeDir);
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::RowMajor;
@@ -2011,7 +2060,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   cublasCreate(&handle_main);
   cublasSetStream(handle_main, stream_main);
 
-  Dtype *chk_vector, *d_chk_vector;
+  Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
   size_t size = sizeof(Dtype)* n * 2;
   chk_vector = (Dtype*)malloc(size);
   cudaMalloc((void**)&d_chk_vector, size);
@@ -2019,15 +2068,24 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     chk_vector[r] = (Dtype)1;
     chk_vector[n + r] = (Dtype)(r + 1);
   }
-
   cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+
+  size = sizeof(Dtype) * k * 2 * num_batches;
+  cudaMalloc((void**)&dB_rowchk, size);
   
   if constexpr (std::is_same<Dtype, float>::value) {
+    // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+    //                                   &alpha, B, ldb, strideb_check,
+    //                                   d_chk_vector, n, 0, &beta,
+    //                                   (B+(k*n)), ldb, strideb_check,
+    //                                   num_batches);
     cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
                                       &alpha, B, ldb, strideb_check,
                                       d_chk_vector, n, 0, &beta,
-                                      (B+(k*n)), ldb, strideb_check,
+                                      dB_rowchk, ldb, (k * 2),
                                       num_batches);
+    
+    copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
   }
 
   // printf("B after:\n");
@@ -2052,6 +2110,17 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   Gemm gemm_op;
 
   int if_split_phase = 1;
+
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
+  
   cutlass::Status status = gemm_op({
       {m, n, k},
       {A, lda}, 
@@ -2065,7 +2134,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       {alpha, beta},
       num_batches
     },
-    if_split_phase, 1, transa, stream_main
+    if_split_phase, 1, transa, DEBUG, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -2073,6 +2142,10 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   }
 
   cudaDeviceSynchronize();
+
+  if (DEBUG){
+    cudaEventRecord(abft_prepare_start, 0);
+  }
 
   // Copy Back
   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec_check, stridec);
@@ -2085,6 +2158,16 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   cudaFree(C);
   free(chk_vector);                                  
   cudaFree(d_chk_vector);
+
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    // printf("myABFT Prepare Time: %f \n", t1);
+    destinationFile = "records/time/preparation.txt";
+    fullPath = homePath / destinationFile;
+    recordTime(fullPath, t1, DEBUG);
+  }
 
   return true;
 }
@@ -2114,6 +2197,13 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   DebugFile.close();
 
   if constexpr (std::is_same<Dtype, float>::value) {
+    // c10::Half torch_half = 1;
+    // float f = static_cast<float>(torch_half);
+    // cutlass::half_t cutlass_half = cutlass::half_t(static_cast<float>(f));
+
+    // float x = static_cast<float>(cutlass_half);
+    // torch_half = c10::Half(static_cast<float>(x));
+
     if(transa == 't'){
       // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
       state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha,  

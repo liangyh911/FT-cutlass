@@ -417,8 +417,31 @@ public:
     return Status::kSuccess;
   }
 
+  void recordTime(std::string FP, float time, bool DEBUG){
+    std::ofstream outFile(FP, std::ios::app);
+    if(!outFile){
+      std::cerr << "Failed to open the file for appending." << std::endl;
+      return;
+    }
+    outFile << time << std::endl;
+    if(DEBUG) printf("Data appended to the file successfully.\n");
+  }
+
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, char transb, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+
+    // Preparing time
+    cudaEvent_t abft_prepare_start, abft_prepare_end;
+    if (DEBUG){
+      cudaEventCreate(&abft_prepare_start,0);
+      cudaEventCreate(&abft_prepare_end,0);
+      cudaEventRecord(abft_prepare_start, 0);
+    }
+    fs::path destinationFile, fullPath;
+    float t1;
+    const char* homeDir = nullptr;
+    homeDir = getenv("HOME");
+    fs::path homePath(homeDir);
 
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -490,6 +513,16 @@ public:
     // cudaDeviceSynchronize();
 
     float sum_gemm = 0, sum_chksum = 0.f, sum_check = 0.f;
+
+    if(DEBUG){
+      cudaEventRecord(abft_prepare_end, 0);
+      cudaEventSynchronize(abft_prepare_end);
+      cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+      // printf("myABFT Prepare Time: %f \n", t1);
+      destinationFile = "records/time/preparation.txt";
+      fullPath = homePath / destinationFile;
+      recordTime(fullPath, t1, DEBUG);
+    }
 
     for(int i = 0; i < iterations; i++){
 
@@ -800,8 +833,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, char transb, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, partion, transb, stream);
+  Status run(int if_split_phase, int partion, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, partion, transb, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -812,14 +845,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, int partion, char transb,
+    int if_split_phase, int partion, char transb, bool DEBUG,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, partion, transb, stream);
+      status = run(if_split_phase, partion, transb, DEBUG, stream);
     }
 
     return status;
