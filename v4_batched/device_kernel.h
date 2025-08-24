@@ -730,22 +730,17 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
   // int m1k =(M + 1) * K;
   int m1n = (M + 1) * N;
   
-  // int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
-  // int TB_per_batch = 1;
-
   int chk_step = 132 - matrix_SM;
-  // int chk_step = chk_SM * TB_per_batch;
-  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
   int local_smid = real_smid - matrix_SM;
+  // int chk_step = chk_SM * TB_per_batch;
 
-  // int loadA_iter = (int)(ceil((double)(checksum_stride)/ (double)blockdim));
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  // int loadB_iter = (int)(ceil((double)(semeB_stride)/ (double)blockdim));
+  // int tiled_iter = (int)(ceil((double)(K)/ (double)tiled_K));
 
-  // int loadB_step = (int)(ceil((double)(blockdim)/ (double)tiled_K));
-  int loadB_iter = (int)(ceil((double)(semeB_stride)/ (double)blockdim));
-  int tiled_iter = (int)(ceil((double)(K)/ (double)tiled_K));
-
-  // int tiledB_col = tid / tiled_K;
-  // int tiledB_row = tid % tiled_K;
+  // int chk_iter = params.batch_count / chk_step;
+  int loadB_iter = semeB_stride / blockdim;
+  int tiled_iter = K / tiled_K;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     int batch_idx = local_smid + b_iter * chk_step;
@@ -773,7 +768,7 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
           int shared_row = shared_idx % tiled_K;
           int shared_col = shared_idx / tiled_K;
 
-          int B_row = shared_row + tiled_K * i;
+          int B_row = shared_row + tiled_K * stage;
           int B_col = shared_col;
 
           if(B_row < K && B_col < N){
