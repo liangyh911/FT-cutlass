@@ -99,11 +99,11 @@ matrix B can be seen as
 , where the batch size is 2, N is 3 and K is 2
 The stride (batch_stride_B) between the first element of two batches is k
 
-nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o bout.exe
+nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o boutT.exe
 
-nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o blout.exe
+nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o bloutT.exe
 
-ncu -f -o batch32 --set full ./bout.exe --batch=256 --m=1024 --n=1024 --k=128 --split=0 --iterations=1
+ncu -f -o batchT --set full ./boutT.exe --m=1024 --n=1024 --k=128 --batch=256 --split=0 --iterations=1 --validate=0
 */
 
 // Command line options parsing
@@ -265,7 +265,7 @@ cudaError_t cutlass_strided_batched_sgemm(
   int partition) {
 
   using Gemm = cutlass::gemm::device::GemmBatched<
-    float, cutlass::layout::ColumnMajor,
+    float, cutlass::layout::RowMajor,
     float, cutlass::layout::ColumnMajor,
     float, cutlass::layout::ColumnMajor,
     ElementAccumulator,
@@ -376,9 +376,10 @@ cudaError_t strided_batched_gemm_nn_reference(
       for (int m_idx = 0; m_idx < m; m_idx++) {
         T accum = beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
         for (int k_idx = 0; k_idx < k; k_idx++) {
-          accum += alpha 
-            * A[batch_idx * batch_stride_A + k_idx * lda + m_idx]
-            * B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          // T a = A[batch_idx * batch_stride_A + k_idx * lda + m_idx];
+          T a = A[batch_idx * batch_stride_A + m_idx * lda + k_idx];
+          T b = B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          accum += alpha * a * b;
         }
         C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
       }
@@ -497,18 +498,21 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   int const batch_count = options.batch_count;
 
   // A, B are non-transpose, column major
-  int const lda = m;
+  // int const lda = m;
+  int const lda = k;
   // int const ldb = k * batch_count;
   int const ldb = k;
   int const ldc = m;
 
-  int const count_A = batch_count * lda * k;
+  // int const count_A = batch_count * lda * k;
+  int const count_A = batch_count * lda * m;
   // int const count_B = ldb * n;
   int const count_B = batch_count * ldb * options.problem_size.n();
   int const count_C = batch_count * ldc * options.problem_size.n();
 
   // the memory is batched along K dimension
-  long long int batch_stride_A = static_cast<long long int>(lda) * static_cast<long long int>(k);
+  // long long int batch_stride_A = static_cast<long long int>(lda) * static_cast<long long int>(k);
+  long long int batch_stride_A = static_cast<long long int>(lda) * static_cast<long long int>(m);
   // long long int batch_stride_B = static_cast<long long int>(k);
   long long int batch_stride_B = static_cast<long long int>(ldb) * static_cast<long long int>(options.problem_size.n());
   long long int batch_stride_C = static_cast<long long int>(ldc) * static_cast<long long int>(options.problem_size.n());
@@ -550,19 +554,29 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   int const kRange = 8;
   float const DIV = 1;
 
+  // // fill A
+  // for (int b_idx = 0; b_idx < batch_count; b_idx++) {
+  //   for (int col_idx = 0; col_idx < k; col_idx++) {
+  //     for (int row_idx = 0; row_idx < m; row_idx++) {
+  //       host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange) / DIV;
+  //       // host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
+  //     }
+  //   }
+  //   // if(options.if_split_phase == 1 || options.if_split_phase == 0){
+  //   //   encode_col_checksum(host_A, (m-1*options.partition), k, options.partition, b_idx, batch_stride_A, lda);
+  //   // }
+  // }
+  // // outputChk(host_A, batch_count, lda, batch_stride_A, m, k);
+
   // fill A
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
-    for (int col_idx = 0; col_idx < k; col_idx++) {
-      for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange) / DIV;
-        // host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
+    for (int row_idx = 0; row_idx < m; row_idx++) {
+      for (int col_idx = 0; col_idx < k; col_idx++) {
+        // host_A[col_idx + row_idx * lda + b_idx * lda * m] = static_cast<float>((col_idx + row_idx * lda + b_idx * lda * m) % kRange) / DIV;
+        host_A[col_idx + row_idx * lda + b_idx * lda * m] = 1.f;
       }
     }
-    // if(options.if_split_phase == 1 || options.if_split_phase == 0){
-    //   encode_col_checksum(host_A, (m-1*options.partition), k, options.partition, b_idx, batch_stride_A, lda);
-    // }
   }
-  // outputChk(host_A, batch_count, lda, batch_stride_A, m, k);
   
   // fill B
   int n1 = options.problem_size.n();
@@ -575,8 +589,8 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
         // n = n, k = k, ldb = k * batch_count, 
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
+
         host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
-        
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
       }
@@ -621,7 +635,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   int const n = (options.if_split_phase == 1 || options.if_split_phase == 0) ? (options.problem_size.n() - 2 * options.partition) : options.problem_size.n();
 
-  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d \n", m, n, k, lda, ldb, ldc);
+  printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d \n", m, n, k, lda, ldb, ldc);
 
   // run cutlass
   for(int i = 0; i < options.iterations; i++){
