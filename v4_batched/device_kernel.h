@@ -691,7 +691,7 @@ void update_checksum_v5_T(typename Operator::Params params, int matrix_SM, int *
   } 
 }
 
-template <typename Operator, int tiled_K, int num_stages, int smem_stages, typename Dtype>
+template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 CUTLASS_GLOBAL
 void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
   // get SM id
@@ -734,11 +734,11 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
   int local_smid = real_smid - matrix_SM;
   // int chk_step = chk_SM * TB_per_batch;
 
-  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  // int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
   // int loadB_iter = (int)(ceil((double)(semeB_stride)/ (double)blockdim));
   // int tiled_iter = (int)(ceil((double)(K)/ (double)tiled_K));
 
-  // int chk_iter = params.batch_count / chk_step;
+  int chk_iter = params.batch_count / chk_step;
   int loadB_iter = semeB_stride / blockdim;
   int tiled_iter = K / tiled_K;
 
@@ -762,7 +762,7 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
       for(int stage = 0; stage < num_stages; stage++){
         pipe.producer_acquire();
         // load B to shared memory
-        #pragma unroll
+        // #pragma unroll
         for(int i = 0; i < loadB_iter; i++){
           int shared_idx = tid + i * blockdim;
           int shared_row = shared_idx % tiled_K;
@@ -772,7 +772,7 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
           int B_col = shared_col;
 
           if(B_row < K && B_col < N){
-            Dtype *buf = Bs + (stage % smem_stages) * semeB_stride;
+            Dtype *buf = Bs + stage * semeB_stride;
             cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
             // Dtype b = 1;
             // cuda::memcpy_async(&buf[shared_idx], &b, sizeof(Dtype), pipe);
@@ -787,24 +787,25 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
         cuda::pipeline_consumer_wait_prior<num_stages - 1>(pipe);
         __syncthreads();
 
-        Dtype *buf = Bs + (stage % smem_stages) * semeB_stride;
+        Dtype *buf = Bs + (stage) * semeB_stride;
         int k_b = tid * tiled_K;
+        int k_a_stride = tile_i * tiled_K;
 
         // computation
-        #pragma unroll
+        #pragma unroll tiled_K
         for(int k = 0; k < tiled_K; k++){
           // int k_a = k + tile_row;
-          int k_a = k + tile_i * tiled_K;
-          if(k_a < K){
-            Dtype a1 = As[k_a];
-            Dtype a2 = As[k_a + K];
+          // int k_a = ;
+          // if(k_a < K){
+            Dtype a1 = As[k + k_a_stride];
+            Dtype a2 = As[k + k_a_stride + K];
 
             Dtype b = buf[k + k_b];
             // Dtype b = 1;
             
             accum1 += a1 * b;
             accum2 += a2 * b;
-          }
+          // }
         }
         __syncthreads();
         pipe.consumer_release();
@@ -815,11 +816,11 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
           int shared_row = shared_idx % tiled_K;
           int shared_col = shared_idx / tiled_K;
 
-          int B_row = shared_row + tiled_K * tile_i;
+          int B_row = shared_row + k_a_stride;
           int B_col = shared_col;
 
           if(B_row < K && B_col < N){
-            Dtype *buf = Bs + (stage % smem_stages) * semeB_stride;
+            Dtype *buf = Bs + (stage) * semeB_stride;
             cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
             // Dtype b = 1;
             // cuda::memcpy_async(&buf[shared_idx], &b, sizeof(Dtype), pipe);
