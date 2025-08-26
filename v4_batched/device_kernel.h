@@ -762,22 +762,24 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
       for(int stage = 0; stage < num_stages; stage++){
         pipe.producer_acquire();
         // load B to shared memory
+        Dtype *buf = Bs + stage * semeB_stride;
         // #pragma unroll
         for(int i = 0; i < loadB_iter; i++){
           int shared_idx = tid + i * blockdim;
           int shared_row = shared_idx % tiled_K;
           int shared_col = shared_idx / tiled_K;
-
           int B_row = shared_row + tiled_K * stage;
           int B_col = shared_col;
-
-          if(B_row < K && B_col < N){
-            Dtype *buf = Bs + stage * semeB_stride;
-            cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
-            // Dtype b = 1;
-            // cuda::memcpy_async(&buf[shared_idx], &b, sizeof(Dtype), pipe);
-            // buf[shared_idx] = *(params.ref_B.data()+ stride_b + B_row + B_col * K);
-          }
+          cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
+          
+          // // avoid shared memory bank conflicts
+          // int idx = tid + i * blockdim;
+          // int shared_row = idx / tiled_K;
+          // int shared_col = idx % tiled_K;
+          // // transpose row and col
+          // int B_row = shared_col + tiled_K * stage;
+          // int B_col = shared_row;
+          // cuda::memcpy_async(&buf[shared_row + shared_col * N], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
         }
         pipe.producer_commit();
       }
@@ -801,6 +803,7 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
             Dtype a2 = As[k + k_a_stride + K];
 
             Dtype b = buf[k + k_b];
+            // Dtype b = buf[k * N + tid];
             // Dtype b = 1;
             
             accum1 += a1 * b;
@@ -815,17 +818,17 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
           int shared_idx = tid + i * blockdim;
           int shared_row = shared_idx % tiled_K;
           int shared_col = shared_idx / tiled_K;
-
           int B_row = shared_row + k_a_stride;
           int B_col = shared_col;
-
-          if(B_row < K && B_col < N){
-            Dtype *buf = Bs + (stage) * semeB_stride;
-            cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
-            // Dtype b = 1;
-            // cuda::memcpy_async(&buf[shared_idx], &b, sizeof(Dtype), pipe);
-            // buf[shared_idx] = *(params.ref_B.data()+ stride_b + B_row + B_col * K);
-          }
+          cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
+        
+          // int idx = tid + i * blockdim;
+          // int shared_row = idx / tiled_K;
+          // int shared_col = idx % tiled_K;
+          // // transpose row and col
+          // int B_row = shared_col + tiled_K * tile_i;
+          // int B_col = shared_row;
+          // cuda::memcpy_async(&buf[shared_row + shared_col * N], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipe);
         }
         pipe.producer_commit();
 
@@ -839,6 +842,154 @@ void update_checksum_v6_T(typename Operator::Params params, int matrix_SM){
       *(params.ref_D.data() + idx_chk_2) = accum2;
     }
     // __syncthreads();
+  } 
+}
+
+
+template <typename Operator, int tiled_K, int num_stages, typename Dtype>
+CUTLASS_GLOBAL
+void update_checksum_v7_T(typename Operator::Params params, int matrix_SM){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  int tid = threadIdx.x;
+  int blockdim = blockDim.x;
+
+  extern __shared__ Dtype SharedMem[];
+
+  auto group = cooperative_groups::this_thread_block();
+  constexpr auto scope = cuda::thread_scope_block;
+  __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
+  auto pipeline = cuda::make_pipeline(group, &shared_state);
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  int checksum_stride = 2 * K;
+  int semeB_stride = tiled_K * N;
+
+  // shared memory for A
+  Dtype* As = SharedMem;  
+  // shared memory for B
+  Dtype* Bs = As + checksum_stride;
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  int chk_step = 132 - matrix_SM;
+  int local_smid = real_smid - matrix_SM;
+  // int chk_step = chk_SM * TB_per_batch;
+
+  // int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  // int loadB_iter = (int)(ceil((double)(semeB_stride)/ (double)blockdim));
+  // int tiled_iter = (int)(ceil((double)(K)/ (double)tiled_K));
+
+  int chk_iter = params.batch_count / chk_step;
+  int loadB_iter = semeB_stride / blockdim;
+  int tiled_iter = K / tiled_K;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = local_smid + b_iter * chk_step;
+    if(batch_idx < params.batch_count){          
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      int stride_b = (batch_idx * params.stride_B);
+
+      // load checksum to share memroy
+      if(tid < checksum_stride){
+        As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      }
+      __syncthreads();
+
+      Dtype accum1 = 0.f;
+      Dtype accum2 = 0.f;
+
+      // load first stage
+      pipeline.producer_acquire();
+      for(int i = 0; i < loadB_iter; i++){
+        int shared_idx = tid + i * blockdim;
+        int shared_row = shared_idx % tiled_K;
+        int shared_col = shared_idx / tiled_K;
+
+        int B_row = shared_row;
+        int B_col = shared_col;
+
+        cuda::memcpy_async(&Bs[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
+      }
+      pipeline.producer_commit();
+
+      for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
+        // load second stage
+        pipeline.producer_acquire();
+        for(int i = 0; i < loadB_iter; i++){
+          int shared_idx = tid + i * blockdim;
+          int shared_row = shared_idx % tiled_K;
+          int shared_col = shared_idx / tiled_K;
+
+          int B_row = shared_row + tiled_K * tile_i;
+          int B_col = shared_col;
+
+          Dtype *buf = Bs + (tile_i % num_stages) * semeB_stride;
+          cuda::memcpy_async(&buf[shared_idx], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
+        }
+        pipeline.producer_commit();
+        pipeline.consumer_wait();
+        
+        // computation
+        Dtype *buf = Bs + ((tile_i - 1) % num_stages) * semeB_stride;
+        int k_b = tid * tiled_K;
+        int k_a_stride = (tile_i - 1) * tiled_K;
+        // #pragma unroll tiled_K
+        for(int k = 0; k < tiled_K; k++){
+          Dtype a1 = As[k + k_a_stride];
+          Dtype a2 = As[k + k_a_stride + K];
+
+          Dtype b = buf[k + k_b];
+          // Dtype b = 1;
+          
+          accum1 += a1 * b;
+          accum2 += a2 * b;
+        }
+        pipeline.consumer_release();
+      }
+
+      pipeline.consumer_wait();
+      // computation
+      Dtype *buf = Bs + ((tiled_iter - 1) % num_stages) * semeB_stride;
+      int k_b = tid * tiled_K;
+      int k_a_stride = (tiled_iter - 1) * tiled_K;
+      // #pragma unroll tiled_K
+      for(int k = 0; k < tiled_K; k++){
+        Dtype a1 = As[k + k_a_stride];
+        Dtype a2 = As[k + k_a_stride + K];
+
+        Dtype b = buf[k + k_b];
+        // Dtype b = 1;
+        
+        accum1 += a1 * b;
+        accum2 += a2 * b;
+      }
+      pipeline.consumer_release();
+
+      // 
+      __syncthreads();
+
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + (tid);
+      int idx_chk_2 = (batch_idx * params.stride_D + m1n) + (tid);
+      *(params.ref_D.data() + idx_chk_1) = accum1;
+      *(params.ref_D.data() + idx_chk_2) = accum2;
+    }
   } 
 }
 
