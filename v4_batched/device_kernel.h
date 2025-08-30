@@ -1090,15 +1090,6 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM){
         int B_row = shared_row;
         int B_col = shared_col;
         cuda::memcpy_async(&Bs[shared_row + shared_col * (tiled_K+1)], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
-
-        // // avoid shared memory bank conflicts
-        // int idx = tid + i * blockdim;
-        // int shared_row = idx / tiled_K;
-        // int shared_col = idx % tiled_K;
-        // // transpose row and col
-        // int B_row = shared_col;
-        // int B_col = shared_row;
-        // cuda::memcpy_async(&Bs[shared_row + shared_col * N], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
       }
       pipeline.producer_commit();
 
@@ -1113,15 +1104,6 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM){
           int B_row = shared_row + tiled_K * tile_i;
           int B_col = shared_col;
           cuda::memcpy_async(&buf[shared_row + shared_col * (tiled_K+1)], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
-
-          // // avoid shared memory bank conflicts
-          // int idx = tid + i * blockdim;
-          // int shared_row = idx / tiled_K;
-          // int shared_col = idx % tiled_K;
-          // // transpose row and col
-          // int B_row = shared_col + tiled_K * tile_i;
-          // int B_col = shared_row;
-          // cuda::memcpy_async(&buf[shared_row + shared_col * N], (params.ref_B.data()+ stride_b + B_row + B_col * K), sizeof(Dtype), pipeline);
         }
         pipeline.producer_commit();
         pipeline.consumer_wait();
@@ -1137,7 +1119,6 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM){
           Dtype a2 = As[k + k_a_stride + K];
 
           Dtype b = buf[k + k_b];
-          // Dtype b = buf[k * N + tid];
           // Dtype b = 1;
           
           accum1 += a1 * b;
@@ -1149,7 +1130,7 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM){
       pipeline.consumer_wait();
       // last stage computation
       Dtype *buf = Bs + ((tiled_iter - 1) % num_stages) * stageB_stride;
-      int k_b = tid * (tiled_K+1);
+      int k_b = tid * (tiled_K + 1);
       int k_a_stride = (tiled_iter - 1) * tiled_K;
       
       #pragma unroll tiled_K
@@ -1158,7 +1139,6 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM){
         Dtype a2 = As[k + k_a_stride + K];
 
         Dtype b = buf[k + k_b];
-        // Dtype b = buf[k * N + tid];
         // Dtype b = 1;
         
         accum1 += a1 * b;
