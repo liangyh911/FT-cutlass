@@ -420,7 +420,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, int monitored_batched_count, cudaStream_t stream = nullptr) {
 
     ThreadblockSwizzle threadblock_swizzle;
 
@@ -481,7 +481,7 @@ public:
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion, &matrix_SM};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion, &matrix_SM, &monitored_batched_count};
 
     cutlass::arch::synclog_setup();
 
@@ -508,7 +508,11 @@ public:
 
       update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
       cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-      cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM);
+      cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+
+      // update_smem_size = (2 * params_.problem_size.k() + 32 * (params_.problem_size.n())) * sizeof(ElementA);
+      // cudaFuncSetAttribute(cutlass::update_checksum_v9_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+      // cutlass::update_checksum_v9_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM);
     }
     cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
     // cutlass::Kernel<GemmKernel><<<new_grid, block, smem_size, stream>>>(params_, if_split_phase, SM_check_res, partion, matrix_SM);
@@ -550,7 +554,11 @@ public:
 
         update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
         cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-        cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM);
+        cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+
+        // update_smem_size = (2 * params_.problem_size.k() + 32 * (params_.problem_size.n())) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v9_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // cutlass::update_checksum_v9_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM);
       }
       if(deBug && (if_split_phase == 0 || if_split_phase == 1)){
         cudaEventRecord(stop, stream_colchk);
@@ -833,8 +841,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, partion, stream);
+  Status run(int if_split_phase, int partion, int monitored, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, partion, monitored, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -845,14 +853,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, int partion, 
+    int if_split_phase, int partion, int monitored,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, partion, stream);
+      status = run(if_split_phase, partion, monitored, stream);
     }
 
     return status;

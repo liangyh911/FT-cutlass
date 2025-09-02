@@ -103,7 +103,7 @@ nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuh
 
 nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o bloutT.exe
 
-ncu -f -o batchT --set full ./boutT.exe --m=1024 --n=1024 --k=128 --batch=256 --split=0 --iterations=1 --validate=0
+ncu -f -o batchPipe --set full ./boutT.exe --m=1024 --n=1024 --k=128 --batch=256 --split=1 --iterations=1 --validate=0
 */
 
 // Command line options parsing
@@ -123,6 +123,8 @@ struct Options {
   int if_split_phase;
 
   int validation;
+
+  int monitored;
   
   Options():
     help(false),
@@ -134,7 +136,8 @@ struct Options {
     beta(0),
     partition(),
     if_split_phase(2),
-    validation(0) { }
+    validation(0),
+    monitored(256) { }
 
   // bool valid() {
   //   return true;
@@ -162,6 +165,8 @@ struct Options {
 
     cmd.get_cmd_line_argument("validate", validation);
 
+    cmd.get_cmd_line_argument("monitored", monitored);
+
     // cmd.get_cmd_line_argument("partition", partition);
     partition = 1;
 
@@ -187,7 +192,8 @@ struct Options {
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n"
       << "  --partition=<int>           Number of partition of the matrix.\n\n"
       << "  --split=<int>               0-no split, 1-split, 2-baseline.\n\n"
-      << "  --validate=<int>            0-no validate, 1-validate";
+      << "  --validate=<int>            0-no validate, 1-validate\n\n"
+      << "  --monitored=<int>           Number of ABFT monitored batches.";
 
     out << "\n\nExamples:\n\n"
       << "$ ./examples/14_ampere_tf32_tensorop_gemm/14_ampere_tf32_tensorop_gemm --m=1024 --n=512 --k=1024 \\\n"
@@ -262,7 +268,8 @@ cudaError_t cutlass_strided_batched_sgemm(
   float beta,
   int batch_count,
   int if_split_phase,
-  int partition) {
+  int partition,
+  int monitored) {
 
   using Gemm = cutlass::gemm::device::GemmBatched<
     float, cutlass::layout::RowMajor,
@@ -312,6 +319,8 @@ cudaError_t cutlass_strided_batched_sgemm(
   cudaStream_t stream;
   cudaStreamCreate(&stream);
 
+  printf("monitored batches num: %d\n", monitored);
+
   cutlass::Status status = gemm_op({
     {m, n, k},
     {A, lda}, 
@@ -324,7 +333,7 @@ cudaError_t cutlass_strided_batched_sgemm(
     batch_stride_C,
     {alpha, beta},
     batch_count},
-    if_split_phase, partition,
+    if_split_phase, partition, monitored,
     stream
   );
 
@@ -572,8 +581,8 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int row_idx = 0; row_idx < m; row_idx++) {
       for (int col_idx = 0; col_idx < k; col_idx++) {
-        // host_A[col_idx + row_idx * lda + b_idx * lda * m] = static_cast<float>((col_idx + row_idx * lda + b_idx * lda * m) % kRange) / DIV;
-        host_A[col_idx + row_idx * lda + b_idx * lda * m] = 1.f;
+        host_A[col_idx + row_idx * lda + b_idx * lda * m] = static_cast<float>((col_idx + row_idx * lda + b_idx * lda * m) % kRange) / DIV;
+        // host_A[col_idx + row_idx * lda + b_idx * lda * m] = 1.f;
       }
     }
   }
@@ -635,13 +644,13 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
 
   int const n = (options.if_split_phase == 1 || options.if_split_phase == 0) ? (options.problem_size.n() - 2 * options.partition) : options.problem_size.n();
 
-  printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d \n", m, n, k, lda, ldb, ldc);
+  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d \n", m, n, k, lda, ldb, ldc);
 
   // run cutlass
   for(int i = 0; i < options.iterations; i++){
     result = cutlass_strided_batched_sgemm(
       m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
-      beta, batch_count, options.if_split_phase, options.partition);
+      beta, batch_count, options.if_split_phase, options.partition, options.monitored);
     if (result != cudaSuccess){
       std::cerr << "cutlass result = " << result << std::endl;
       return result;
