@@ -473,7 +473,7 @@ public:
       }
     }
 
-    int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
+    int batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
     // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
     int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
     // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
