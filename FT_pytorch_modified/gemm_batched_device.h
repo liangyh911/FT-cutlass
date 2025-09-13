@@ -491,7 +491,8 @@ public:
     int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
     // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
     // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
-    int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+    // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+    int update_smem_size;
 
     printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
@@ -530,13 +531,14 @@ public:
         // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         if(transb == 't'){
-          update_smem_size = (2 * params_.problem_size.k() + 56 * params_.problem_size.n()) * sizeof(ElementA);
-          cudaFuncSetAttribute(cutlass::update_checksum_v4_T<GemmKernel, 56, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+          update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
+          cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
           
           if(deBug){
             cudaEventRecord(start, stream_colchk);
           }
-          cutlass::update_checksum_v4_T<GemmKernel, 56, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+          int monitored_batched_count = params_.batch_count;
+          cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
           if(deBug){
             cudaEventRecord(stop, stream_colchk);
             cudaEventSynchronize(stop);
