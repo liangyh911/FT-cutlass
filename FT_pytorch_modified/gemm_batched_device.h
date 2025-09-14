@@ -428,7 +428,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
 
     // Preparing time
     cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -457,7 +457,7 @@ public:
     cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
-    int iterations = 1;
+    // int iterations = 1;
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -499,7 +499,7 @@ public:
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &partion, &matrix_SM};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM};
 
     cutlass::arch::synclog_setup();
 
@@ -513,7 +513,7 @@ public:
     // if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
     // cudaDeviceSynchronize();
 
-    float sum_gemm = 0, sum_chksum = 0.f, sum_check = 0.f;
+    // float sum_gemm = 0, sum_chksum = 0.f, sum_check = 0.f;
 
     if(DEBUG){
       cudaEventRecord(abft_prepare_end, 0);
@@ -525,72 +525,73 @@ public:
       recordTime(fullPath, t1, DEBUG);
     }
 
-    for(int i = 0; i < iterations; i++){
+    // for(int i = 0; i < iterations; i++){
 
-      if(if_split_phase == 0 || if_split_phase == 1) {
-        // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        if(transb == 't'){
-          update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
-          cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-          
-          if(deBug){
-            cudaEventRecord(start, stream_colchk);
-          }
-          int monitored_batched_count = params_.batch_count;
-          cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
-          if(deBug){
-            cudaEventRecord(stop, stream_colchk);
-            cudaEventSynchronize(stop);
-            cudaEventElapsedTime(&t_chksum, start, stop);
-
-            sum_chksum += t_chksum;
-          }
+    if(if_split_phase == 0 || if_split_phase == 1) {
+      // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+      // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+      if(transb == 't'){
+        update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        
+        if(deBug){
+          cudaEventRecord(start, stream_colchk);
         }
-        else{
-          cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        int monitored_batched_count = params_.batch_count;
+        cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+        if(deBug){
+          cudaEventRecord(stop, stream_colchk);
+          cudaEventSynchronize(stop);
+          cudaEventElapsedTime(&t_chksum, start, stop);
 
-          if(deBug){
-            cudaEventRecord(start, stream_colchk);
-          }
-          cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-          if(deBug){
-            cudaEventRecord(stop, stream_colchk);
-            cudaEventSynchronize(stop);
-            cudaEventElapsedTime(&t_chksum, start, stop);
-
-            sum_chksum += t_chksum;
-          }
+          // sum_chksum += t_chksum;
         }
       }
+      else{
+        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+        cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
-      if(deBug){
-        cudaEventRecord(start, stream);
-      }   
-      cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
-      // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream_main>>>(params_, if_split_phase, SM_check_res, partion);
-      // if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res);
-      if(deBug){
-        cudaEventRecord(stop, stream);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&t_gemm, start, stop);
-        sum_gemm += t_gemm;
+        if(deBug){
+          cudaEventRecord(start, stream_colchk);
+        }
+        cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        if(deBug){
+          cudaEventRecord(stop, stream_colchk);
+          cudaEventSynchronize(stop);
+          cudaEventElapsedTime(&t_chksum, start, stop);
+
+          // sum_chksum += t_chksum;
+        }
       }
-
-      // if(deBug && if_split_phase == 0){
-      //   cudaEventRecord(start, stream);
-      // }  
-      // if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
-      // if(deBug && if_split_phase == 0){
-      //   cudaEventRecord(stop, stream);
-      //   cudaEventSynchronize(stop);
-      //   cudaEventElapsedTime(&t_check, start, stop);
-      //   sum_check += t_check;
-      // }
-      cudaDeviceSynchronize();
     }
 
-    if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", sum_gemm/iterations, sum_chksum/iterations, sum_check/iterations);
+    if(deBug){
+      cudaEventRecord(start, stream);
+    }   
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Batched<GemmKernel>, grid_gemm, block, kernelArgs, smem_size, stream);
+    // cutlass::Kernel<GemmKernel><<<grid_gemm, block, smem_size, stream_main>>>(params_, if_split_phase, SM_check_res, partion);
+    // if(if_split_phase == 0) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res);
+    if(deBug){
+      cudaEventRecord(stop, stream);
+      cudaEventSynchronize(stop);
+      cudaEventElapsedTime(&t_gemm, start, stop);
+      // sum_gemm += t_gemm;
+    }
+
+    // if(deBug && if_split_phase == 1){
+    //   cudaEventRecord(start, stream);
+    // }  
+    // if(if_split_phase == 1) cutlass::check_SM<GemmKernel><<<grid_gemm, block_updatechk, 0, stream>>>(params_, matrix_SM, SM_check_res, batch_per_TB);
+    // if(deBug && if_split_phase == 1){
+    //   cudaEventRecord(stop, stream);
+    //   cudaEventSynchronize(stop);
+    //   cudaEventElapsedTime(&t_check, start, stop);
+    //   sum_check += t_check;
+    // }
+    cudaDeviceSynchronize();
+    // }
+
+    if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 
     cudaFree(SM_check_res);
 
@@ -835,8 +836,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, partion, transb, DEBUG, stream);
+  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, transb, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -847,14 +848,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, int partion, char transb, bool DEBUG,
+    int if_split_phase, char transb, bool DEBUG,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, partion, transb, DEBUG, stream);
+      status = run(if_split_phase, transb, DEBUG, stream);
     }
 
     return status;

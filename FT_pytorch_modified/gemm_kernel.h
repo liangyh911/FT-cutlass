@@ -380,7 +380,7 @@ struct Gemm {
     #pragma unroll
     for(int r = 0; r < 128; r++){
       int idx = matrix_start_idx + r * N;
-      recomputed_chksum += *(params.ref_D.data() + idx);
+      recomputed_chksum += (float)*(params.ref_D.data() + idx);
       // float temp = params.ref_D.data(idx);
     }
     
@@ -389,7 +389,7 @@ struct Gemm {
     //   *(recompute + iter) = clock();
     // }
     
-    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)10){
+    if(fabs(recomputed_chksum - (float)(*(params.ref_D.data() + chk_start_idx))) > (float)10){
       diff = 1;
       // printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
       //           iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));

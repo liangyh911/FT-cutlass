@@ -461,7 +461,7 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int partion, int nSM) {
+                    int if_split_phase, int *SM_check_res, int nSM) {
 
     // get SM id
     unsigned int real_smid;
@@ -639,7 +639,7 @@ struct GemmBatched {
     // }
 
     #if 1
-    if(if_split_phase == 1){
+    if(if_split_phase == 0){
       // check checksum
       // using Dtype = typename decltype(params.ref_D)::Element;
       // cooperative_groups::this_grid().sync();
@@ -664,7 +664,6 @@ struct GemmBatched {
           int checked_batch_idx = checked_init_batch_idx + i * check_step;
 
           // if(threadIdx.x == 0 && i == check_iter - 1) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
-
         
           if(checked_batch_idx < params.batch_count){
             // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);

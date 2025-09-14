@@ -543,7 +543,7 @@ public:
     cudaMemset(SM_check_res_1, 0, 132 * sizeof(int));
 
     bool deBug = true;
-    int iterations = 1;
+    // int iterations = 1;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -580,19 +580,19 @@ public:
     if(deBug){
       cudaEventRecord(start, stream);
     }
-    for(int i = 0; i < iterations; i++){
+    // for(int i = 0; i < iterations; i++){
       // cutlass::Kernel<GemmKernel><<<new_grid, block, (smem_size), stream>>>(params_, Signature_Array, 
       //                                                                 Lock_Signature, final_sum, if_split_phase, 
       //                                                                 d_queues, d_SM_JOBS, SM_schedule, SM_check_res,
       //                                                                 d_all_start, d_compute, d_finding, d_recompute, d_compare, d_checking);
       
-      cudaLaunchCooperativeKernel((void*)cutlass::Kernel_GEMM<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
-    }
+    cudaLaunchCooperativeKernel((void*)cutlass::Kernel_GEMM<GemmKernel>, new_grid, block, kernelArgs, smem_size, stream);
+    // }
     if(deBug){
       cudaEventRecord(stop, stream);
       cudaEventSynchronize(stop);
       cudaEventElapsedTime(&t_compute, start, stop);
-      printf("compute kernel time: %f\n", t_compute/iterations);
+      printf("compute kernel time: %f\n", t_compute);
     }
     
     result = cudaGetLastError();

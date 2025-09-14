@@ -101,7 +101,7 @@ void Kernel(typename Operator::Params params) {
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_Batched(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int partion, int matrix_SM
+            int if_split_phase, int *SM_check_res, int matrix_SM
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -112,7 +112,7 @@ void Kernel_Batched(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, partion, matrix_SM
+  op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM
     // all_start, compute, finding, recompute, compare, checking
   );
   
@@ -400,6 +400,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   int shared_offset = thread_group_idx * checksum_stride;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    
     // load checksum to share memroy
     int load_init_batch_idx = start_bid + b_iter * chk_step; 
     for(int t = 0; t < TB_per_batch; t++){
