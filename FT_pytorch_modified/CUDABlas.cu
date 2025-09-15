@@ -2507,6 +2507,10 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
+  tensor_a.reset();
+  tensor_b.reset();
+  tensor_d.reset();
+
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
@@ -2868,6 +2872,12 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n); 
+
+  tensor_a.reset();
+  tensor_b.reset();
+  tensor_c.reset();
+  tensor_d.reset();
+
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);

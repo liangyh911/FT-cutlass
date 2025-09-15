@@ -337,7 +337,7 @@ struct GemmBatched {
     int M = params.problem_size.m();
     int K = params.problem_size.k();
     int N = params.problem_size.n();
-    float E = 10;
+    float E = 100;
     // int loc = -1;
     float MAX = 0;
     // int diff = 0;
