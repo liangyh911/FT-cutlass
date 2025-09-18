@@ -539,6 +539,7 @@ public:
     // 0-no split; 1-split; 2-only abft
     // int if_split_phase = 0;
     
+    // int *SM_check_res_1;
     cudaMalloc((void**)&SM_check_res_1, 132 * sizeof(int));
     cudaMemset(SM_check_res_1, 0, 132 * sizeof(int));
 
@@ -851,7 +852,8 @@ public:
 
   /// Runs the kernel using initialized state.
   Status operator()(
-    Arguments const &args, 
+    Arguments const &args,
+    // int if_split_phase, int partion, bool DEBUG, 
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     

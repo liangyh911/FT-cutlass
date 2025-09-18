@@ -1819,11 +1819,14 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   cudaStream_t stream_main;
   cudaStreamCreate(&stream_main);
 
-  cublasHandle_t handle_main;
-  cublasCreate(&handle_main);
-  cublasSetStream(handle_main, stream_main);
+  // cublasHandle_t handle_main;
+  // cublasCreate(&handle_main);
+  // cublasSetStream(handle_main, stream_main);
 
   if(if_split_phase == 0){
+    cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
+    cublasSetStream(handle_main, stream_main);
+
     Dtype *chk_vector, *d_chk_vector;
     size_t size = sizeof(Dtype)* n * 2;
     chk_vector = (Dtype*)malloc(size);
@@ -1908,9 +1911,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     return false;
   }
 
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
 
   if (DEBUG){
+    // cudaDeviceSynchronize();
     cudaEventRecord(abft_prepare_start, 0);
   }
 
@@ -1936,6 +1940,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   // outputChk(c, num_batches, ldc, stridec, m, n);
 
   cudaFree(C);
+  cudaStreamDestroy(stream_main);
 
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
@@ -1945,6 +1950,8 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     destinationFile = "records/time/preparation.txt";
     fullPath = homePath / destinationFile;
     recordTime(fullPath, t1, DEBUG);
+    // cudaEventDestroy(abft_prepare_start);
+    // cudaEventDestroy(abft_prepare_end);
   }
 
   return true;
@@ -2055,11 +2062,14 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   cudaStream_t stream_main;
   cudaStreamCreate(&stream_main);
   
-  cublasHandle_t handle_main;
-  cublasCreate(&handle_main);
-  cublasSetStream(handle_main, stream_main);
+  // cublasHandle_t handle_main;
+  // cublasCreate(&handle_main);
+  // cublasSetStream(handle_main, stream_main);
 
   if(if_split_phase == 0){
+    cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
+    cublasSetStream(handle_main, stream_main);
+
     Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
     size_t size = sizeof(Dtype)* n * 2;
     chk_vector = (Dtype*)malloc(size);
@@ -2090,6 +2100,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
 
     free(chk_vector);                                  
     cudaFree(d_chk_vector);
+    cudaFree(dB_rowchk);
   }
 
   // printf("B after:\n");
@@ -2145,9 +2156,10 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     return false;
   }
 
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
 
   if (DEBUG){
+    // cudaDeviceSynchronize();
     cudaEventRecord(abft_prepare_start, 0);
   }
 
@@ -2160,6 +2172,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // outputChk(c, num_batches, ldc, stridec, m, n);
 
   cudaFree(C);
+  cudaStreamDestroy(stream_main);
 
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
@@ -2169,6 +2182,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     destinationFile = "records/time/preparation.txt";
     fullPath = homePath / destinationFile;
     recordTime(fullPath, t1, DEBUG);
+    // cudaEventDestroy(abft_prepare_start);
+    // cudaEventDestroy(abft_prepare_end);
   }
 
   return true;
@@ -2363,15 +2378,21 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // outputChk(tensor_b.device_data(), 1, ldb, k*n, k, n);
 
   // encode checksum
-  cudaStream_t stream_main, stream_rowchk;
-  cudaStreamCreate(&stream_main);
-  cudaStreamCreate(&stream_rowchk);
+  // cudaStream_t stream_main, stream_rowchk;
+  // cudaStreamCreate(&stream_main);
+  // cudaStreamCreate(&stream_rowchk);
 
-  cublasHandle_t handle_rowchk;
-  cublasCreate(&handle_rowchk);
-  cublasSetStream(handle_rowchk, stream_rowchk);
+  // cublasHandle_t handle_rowchk;
+  // cublasCreate(&handle_rowchk);
+  // cublasSetStream(handle_rowchk, stream_rowchk);
+
+  cudaStream_t stream_main;
+  cudaStreamCreate(&stream_main);
   
   if(if_split_phase == 0){
+    cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
+    cublasSetStream(handle_main, stream_main);
+
     int nb = n / partition;
     Dtype *chk_vector, *d_chk_vector;
     size_t size = sizeof(Dtype)* nb * 1;
@@ -2384,7 +2405,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
     free(chk_vector);
     
     if constexpr (std::is_same<Dtype, float>::value) {
-      cublasSgemmStridedBatched(handle_rowchk, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
                                         &alpha, tensor_b.device_data(), ldb, k*nb,
                                         d_chk_vector, nb, 0, &beta,
                                         (tensor_b.device_data()+(k*n)), ldb, k,
@@ -2468,12 +2489,12 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
 
   // Check the problem size is supported or not 
   // printf("impl\n");
-  cutlass::Status status = gemm_op.can_implement(arguments);
-  CUTLASS_CHECK(status);
+  // cutlass::Status status = gemm_op.can_implement(arguments);
+  // CUTLASS_CHECK(status);
 
   // Initialize CUTLASS kernel with arguments and workspace pointer
   // printf("init\n");
-  status = gemm_op.initialize(arguments, workspace.get());
+  cutlass::Status status = gemm_op.initialize(arguments, workspace.get());
   CUTLASS_CHECK(status);
   
   
@@ -2495,7 +2516,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
 
   if (DEBUG){
     cudaEventRecord(abft_prepare_start, 0);
@@ -2507,9 +2528,10 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
-  tensor_a.reset();
-  tensor_b.reset();
-  tensor_d.reset();
+  // tensor_a.reset();
+  // tensor_b.reset();
+  // tensor_d.reset();
+  cudaStreamDestroy(stream_main);
 
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
@@ -2715,18 +2737,30 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   Dtype encode_beta = Dtype(0);
 
   // encode checksum
-  cudaStream_t stream_main, stream_rowchk, stream_biaschk;
-  cudaStreamCreate(&stream_main);
-  cudaStreamCreate(&stream_rowchk);
-  cudaStreamCreate(&stream_biaschk);
+  // cudaStream_t stream_main, stream_rowchk, stream_biaschk;
+  // cudaStreamCreate(&stream_main);
+  // cudaStreamCreate(&stream_rowchk);
+  // cudaStreamCreate(&stream_biaschk);
 
-  cublasHandle_t handle_rowchk, handle_biaschk;
-  cublasCreate(&handle_rowchk);
-  cublasSetStream(handle_rowchk, stream_rowchk);
-  cublasCreate(&handle_biaschk);
-  cublasSetStream(handle_biaschk, stream_biaschk);
+  // cublasHandle_t handle_rowchk, handle_biaschk;
+  // cublasCreate(&handle_rowchk);
+  // cublasSetStream(handle_rowchk, stream_rowchk);
+  // cublasCreate(&handle_biaschk);
+  // cublasSetStream(handle_biaschk, stream_biaschk);
+
+  cudaStream_t stream_main;
+  cudaStreamCreate(&stream_main);
 
   if(if_split_phase == 0){
+    cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
+    cublasSetStream(handle_main, stream_main);
+
+    cudaStream_t stream_biaschk;
+    cudaStreamCreate(&stream_biaschk);
+    cublasHandle_t handle_biaschk;
+    cublasCreate(&handle_biaschk);
+    cublasSetStream(handle_biaschk, stream_biaschk);
+
     int nb = n / partition;
     Dtype *chk_vector, *d_chk_vector;
     size_t size = sizeof(Dtype)* nb * 1;
@@ -2741,7 +2775,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
     // printf("-----------\n");
     
     if constexpr (std::is_same<Dtype, float>::value) {
-      cublasSgemmStridedBatched(handle_rowchk, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
                                         &alpha, tensor_b.device_data(), mat2_ld, k*nb,
                                         d_chk_vector, nb, 0, &encode_beta,
                                         (tensor_b.device_data()+(k*n)), mat2_ld, k,
@@ -2754,6 +2788,8 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                         partition);
     }                                  
     cudaFree(d_chk_vector);
+
+    cudaStreamDestroy(stream_biaschk);
   }
   
   // printf("B_after\n");
@@ -2860,7 +2896,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
   
   // Copy results back
   // printf("copy back\n");
@@ -2873,10 +2909,12 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n); 
 
-  tensor_a.reset();
-  tensor_b.reset();
-  tensor_c.reset();
-  tensor_d.reset();
+  // tensor_a.reset();
+  // tensor_b.reset();
+  // tensor_c.reset();
+  // tensor_d.reset();
+
+  cudaStreamDestroy(stream_main);
 
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);

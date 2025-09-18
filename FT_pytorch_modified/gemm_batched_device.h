@@ -464,6 +464,7 @@ public:
     cudaEventCreate(&stop);
     float t_gemm = 0, t_chksum = 0, t_check = 0;
 
+    // int *SM_check_res;
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
 
@@ -494,7 +495,7 @@ public:
     // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
     int update_smem_size;
 
-    printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
+    // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
