@@ -572,7 +572,7 @@ public:
     cudaMalloc((void**)&SM_check_res_1, 132 * sizeof(int));
     cudaMemset(SM_check_res_1, 0, 132 * sizeof(int));
 
-    bool deBug = true;
+    bool deBug = false;
     // int iterations = 1;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);

@@ -647,7 +647,7 @@ struct GemmBatched {
           int thread_tiled_m = threadblock_tile_offset_m;
           int thread_tiled_n = threadblock_tile_offset_n;
           int M = (if_split_phase == 0) ? (params.problem_size.m()+2) : params.problem_size.m();
-          int bit = 30;
+          int bit = 20;
           
           for(int i = thread_tiled_n; i < (thread_tiled_n+8); i++){
             for(int j = thread_tiled_m; j < (thread_tiled_m+16); j++){

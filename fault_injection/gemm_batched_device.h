@@ -458,7 +458,7 @@ public:
     // cudaStreamCreate(&stream_main);
     cudaStreamCreate(&stream_colchk);
 
-    bool deBug = true;
+    bool deBug = false;
     // int iterations = 1;
     
     cudaEvent_t start, stop;

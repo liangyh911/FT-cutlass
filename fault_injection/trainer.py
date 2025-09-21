@@ -2531,22 +2531,36 @@ class Trainer:
                 # print(f"current step: {i}, update step: {update_step}, total step: {total_updates}\n")
                 
                 # Fault Injection Control
-                if(i == 0):
-                    with open("/home/yuhangl/control/FI.txt", "w") as file:
-                        file.truncate(0)
-                        file.write('t')
-                # elif (i > 0 and i < 9):
-                #     # delete one line from injection plan
-                elif(i == 2):
-                    with open("/home/yuhangl/control/FI.txt", "w") as file:
-                        file.truncate(0)
-                        file.write('f')
-                    # delete current inject loc
-                    with open("/home/yuhangl/control/plan.txt", "r") as file:
-                        lines = file.readlines()
-                    lines.pop(0)
-                    with open("/home/yuhangl/control/plan.txt", "w") as file:
-                        file.writelines(lines)
+                perform_FI = True
+                if perform_FI:
+                    FI_step = 2
+                    if(i == 0):
+                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                            file.truncate(0)
+                            file.write('t')
+                    elif (i > 0 and i < 7):
+                        # delete one line from injection plan based one step
+                        if((i+1) % FI_step == 1):
+                            with open("/home/yuhangl/control/plan.txt", "r") as file:
+                                lines = file.readlines()
+                            lines.pop(0)
+                            with open("/home/yuhangl/control/plan.txt", "w") as file:
+                                file.writelines(lines)
+                    elif(i == 8):
+                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                            file.truncate(0)
+                            file.write('f')
+                        # delete current inject loc
+                        with open("/home/yuhangl/control/plan.txt", "r") as file:
+                            lines = file.readlines()
+                        lines.pop(0)
+                        with open("/home/yuhangl/control/plan.txt", "w") as file:
+                            file.writelines(lines)
+                else:
+                    if(i == 0):
+                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                            file.truncate(0)
+                            file.write('f')
 
                 update_step += 1
                 num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder

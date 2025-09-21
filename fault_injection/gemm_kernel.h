@@ -419,6 +419,15 @@ struct Gemm {
     // }
   }
 
+  template <typename T>
+  __device__ void force_bit_one(T *dA, int bit){ 
+    // 30 or 29
+    float orgValue = (float)*(dA);
+    uint32_t* intValue = reinterpret_cast<uint32_t*>(&orgValue);
+    *intValue |= (1u << bit);
+    *(dA) = (T) *reinterpret_cast<float*>(intValue);
+  }
+
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
@@ -745,7 +754,7 @@ struct Gemm {
         int thread_tiled_m = threadblock_tile_offset_m;
         int thread_tiled_n = threadblock_tile_offset_n;
         int M = params.problem_size.m();
-        int bit = 30;
+        int bit = 20;
         
         for(int i = thread_tiled_n; i < (thread_tiled_n+8); i++){
           for(int j = thread_tiled_m; j < (thread_tiled_m+16); j++){
