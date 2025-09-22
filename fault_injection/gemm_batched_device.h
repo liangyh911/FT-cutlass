@@ -494,7 +494,7 @@ public:
     // Fault Injection Info
     char flag;
     bool injection = false;
-    int faulty_smid =-1, faulty_tid = -1;
+    int faulty_smid =-1, faulty_tid = -1, faulty_bit = -1;
     destinationFile = "/home/yuhangl/control/FI.txt";
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
@@ -506,14 +506,27 @@ public:
         std::ifstream planFile("/home/yuhangl/control/plan.txt");
         if(planFile.is_open()){
           if (planFile >> faulty_smid >> faulty_tid) {
-              std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << std::endl;
+              // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << std::endl;
           }
         }
         else{
           printf("plan: Cannot open file, using default setting.\n");
         }
         planFile.close();
+        
+        // read faulty bit
+        std::ifstream bitFile("/home/yuhangl/control/bit.txt");
+        if(bitFile.is_open()){
+          if (bitFile >> faulty_bit) {
+              // std::cout << "faulty_bit = " << faulty_bit << std::endl;
+          }
+        }
+        else{
+          printf("bit: Cannot open file, using default setting.\n");
+        }
+        bitFile.close();
       }
+      // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << " " << "faulty_bit = " << faulty_bit << std::endl;
     }
     else{
       printf("FI: Cannot open file, using default setting.\n");
@@ -532,7 +545,7 @@ public:
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid, &faulty_bit};
 
     cutlass::arch::synclog_setup();
 

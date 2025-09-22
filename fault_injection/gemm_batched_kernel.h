@@ -469,7 +469,7 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int nSM, int faulty_smid, int faulty_tid) {
+                    int if_split_phase, int *SM_check_res, int nSM, int faulty_smid, int faulty_tid, int faulty_bit) {
 
     // get SM id
     unsigned int real_smid;
@@ -647,12 +647,12 @@ struct GemmBatched {
           int thread_tiled_m = threadblock_tile_offset_m;
           int thread_tiled_n = threadblock_tile_offset_n;
           int M = (if_split_phase == 0) ? (params.problem_size.m()+2) : params.problem_size.m();
-          int bit = 20;
+          // int bit = 20;
           
           for(int i = thread_tiled_n; i < (thread_tiled_n+8); i++){
             for(int j = thread_tiled_m; j < (thread_tiled_m+16); j++){
               int idx = i + j * M + batch_idx * params.stride_D;
-              force_bit_one((params.ref_D.data()+idx), bit);
+              force_bit_one((params.ref_D.data()+idx), faulty_bit);
             } 
           }
         }
