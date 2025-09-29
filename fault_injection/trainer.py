@@ -2531,22 +2531,23 @@ class Trainer:
                 # print(f"current step: {i}, update step: {update_step}, total step: {total_updates}\n")
                 
                 # Fault Injection Control
-                perform_FI = True
+                perform_FI = True 
+                total_fi_steps = 3
+                FI_step = 1
                 if perform_FI:
-                    FI_step = 2
                     if(i == 0):
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
                             file.truncate(0)
                             file.write('t')
-                    elif (i > 0 and i < 7):
+                    elif (i > 0 and i < (total_fi_steps)):
                         # delete one line from injection plan based one step
-                        if((i+1) % FI_step == 1):
+                        if(((i+1) % FI_step == 1) or FI_step == 1) :
                             with open("/home/yuhangl/control/plan.txt", "r") as file:
                                 lines = file.readlines()
                             lines.pop(0)
                             with open("/home/yuhangl/control/plan.txt", "w") as file:
                                 file.writelines(lines)
-                    elif(i == 8):
+                    elif(i == total_fi_steps):
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
                             file.truncate(0)
                             file.write('f')

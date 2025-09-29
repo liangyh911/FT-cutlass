@@ -1720,7 +1720,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
                         at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm\n");
+  // printf("cutlass bgemm\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1956,7 +1956,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         const Dtype *b, int64_t ldb, int64_t strideb,                                           
                         at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm T\n");
+  // printf("cutlass bgemm T\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2301,7 +2301,7 @@ template <typename Dtype>
 bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
                   const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
                   Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase){
-  printf("cutlass_gemm\n");
+  // printf("cutlass_gemm\n");
   
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
