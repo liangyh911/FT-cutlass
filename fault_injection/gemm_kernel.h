@@ -751,14 +751,16 @@ struct Gemm {
       //   // __syncthreads();
       // }
       if(smid == faulty_smid && thread_idx == faulty_tid){
-        int thread_tiled_m = threadblock_tile_offset_m;
-        int thread_tiled_n = threadblock_tile_offset_n;
-        int M = params.problem_size.m();
+        // printf("injection. sm: %d, tid: %d, bit: %d\n", faulty_smid, faulty_tid, faulty_bit);
+
+        int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
+        int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
+        int N = params.problem_size.n();
         // int bit = 20;
         
-        for(int i = thread_tiled_n; i < (thread_tiled_n+8); i++){
-          for(int j = thread_tiled_m; j < (thread_tiled_m+16); j++){
-            int idx = i + j * M;
+        for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
+          for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
+            int idx = j + i * N;
             force_bit_one((params.ref_D.data()+idx), faulty_bit);
           } 
         }
