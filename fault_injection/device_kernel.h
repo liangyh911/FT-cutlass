@@ -101,7 +101,7 @@ void Kernel(typename Operator::Params params) {
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_Batched(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int matrix_SM, int faulty_smid, int faulty_tid, int faulty_bit
+            int if_split_phase, int *SM_check_res, int matrix_SM, int faulty_smid, int faulty_tid_1, int faulty_tid_2, int faulty_bit
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -112,7 +112,7 @@ void Kernel_Batched(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM, faulty_smid, faulty_tid, faulty_bit
+  op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM, faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit
     // all_start, compute, finding, recompute, compare, checking
   );
   
@@ -124,7 +124,7 @@ void Kernel_Batched(typename Operator::Params params,
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_GEMM(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int partion, int faulty_smid, int faulty_tid, int faulty_bit
+            int if_split_phase, int *SM_check_res, int partion, int faulty_smid, int faulty_tid_1, int faulty_tid_2, int faulty_bit
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -135,7 +135,7 @@ void Kernel_GEMM(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, partion, faulty_smid, faulty_tid, faulty_bit
+  op(params, *shared_storage, if_split_phase, SM_check_res, partion, faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit
     // all_start, compute, finding, recompute, compare, checking
   );
   

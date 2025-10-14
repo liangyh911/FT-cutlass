@@ -461,6 +461,7 @@ struct GemmBatched {
     float orgValue = (float)*(dA);
     uint32_t* intValue = reinterpret_cast<uint32_t*>(&orgValue);
     *intValue |= (1u << bit);
+    // *intValue &= ~ ((1u << bit));
     *(dA) = (T) *reinterpret_cast<float*>(intValue);
   }
 
@@ -469,7 +470,8 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int nSM, int faulty_smid, int faulty_tid, int faulty_bit) {
+                    int if_split_phase, int *SM_check_res, int nSM, 
+                    int faulty_smid, int faulty_tid_1, int faulty_tid_2, int faulty_bit) {
 
     // get SM id
     unsigned int real_smid;
@@ -643,7 +645,7 @@ struct GemmBatched {
         //   }
         //   // __syncthreads();
         // }
-        if(real_smid == faulty_smid && thread_idx == faulty_tid){
+        if(real_smid == faulty_smid && (thread_idx == faulty_tid_1 || thread_idx == faulty_tid_2)){
           // printf("batched injection. sm: %d, tid: %d, bit: %d\n", faulty_smid, faulty_tid, faulty_bit);
           
           int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);

@@ -2490,7 +2490,11 @@ class Trainer:
         if args.eval_on_start:
             self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
 
+        # faulty steps for each epoch
+        # faulty_step_arr = random.sample(range(250), 25)
+
         for epoch in range(epochs_trained, num_train_epochs):
+            # print(f"epoch{epoch}")
             epoch_dataloader = train_dataloader
             if hasattr(epoch_dataloader, "set_epoch"):
                 epoch_dataloader.set_epoch(epoch)
@@ -2527,13 +2531,44 @@ class Trainer:
             total_updates = steps_in_epoch // args.gradient_accumulation_steps + int(
                 remainder < args.gradient_accumulation_steps
             )
+
+            # select faulty steps
+            # num_faulty_steps = 3
+            # if(epoch == 0):
+            # faulty_step_arr = random.sample(range(total_updates), num_faulty_steps)
+            # else:
+                # faulty_step_arr = []
+
+            # segment_size = total_updates // num_faulty_steps
+            # faulty_step_arr = []
+            # for s in range(num_faulty_steps):
+            #     start = s * segment_size
+            #     end = (s + 1) * segment_size if s < num_faulty_steps - 1 else num_faulty_steps
+            #     faulty_step_arr.append(np.random.randint(start, end))
+
             for i in range(total_updates):
                 # print(f"current step: {i}, update step: {update_step}, total step: {total_updates}\n")
                 
-                # Fault Injection Control
-                perform_FI = True 
+                # SMChecker: Fault Injection Control
+                perform_FI = True
+                
+                #  Discrete faulty steps
+                # if(i not in faulty_step_arr):
+                #     perform_FI = False
+                # if perform_FI:
+                #     with open("/home/yuhangl/control/FI.txt", "w") as file:
+                #         file.truncate(0)
+                #         file.write('t')
+                # else:
+                #     with open("/home/yuhangl/control/FI.txt", "w") as file:
+                #         file.truncate(0)
+                #         file.write('f')
+
+                # Continuous faulty steps
+                if(epoch != 0):
+                    perform_FI = False
                 total_fi_steps = 3
-                FI_step = 1
+                FI_step = 3
                 if perform_FI:
                     if(i == 0):
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
@@ -2562,6 +2597,7 @@ class Trainer:
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
                             file.truncate(0)
                             file.write('f')
+                # SMChecker: End Fault Injection Control
 
                 update_step += 1
                 num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
@@ -2708,6 +2744,8 @@ class Trainer:
                         )
                     else:
                         self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+                    
+                    # print(f"\nloss: {tr_loss}, grad_norm: {grad_norm}")
 
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
                     # each step. Since we are breaking the loop early, we need to manually

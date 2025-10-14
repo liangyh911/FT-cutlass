@@ -520,6 +520,8 @@ public:
     dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
 
+    // printf("m: %d, n: %d, k: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k());
+
     cudaError_t result;
 
     int smem_size = int(sizeof(typename GemmKernel::SharedStorage));
@@ -537,7 +539,7 @@ public:
     // Fault Injection Info
     char flag;
     bool injection = false;
-    int faulty_smid = -1, faulty_tid = -1, faulty_bit = -1;
+    int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
     destinationFile = "/home/yuhangl/control/FI.txt";
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
@@ -548,7 +550,7 @@ public:
         // read injected SM and thread
         std::ifstream planFile("/home/yuhangl/control/plan.txt");
         if(planFile.is_open()){
-          if (planFile >> faulty_smid >> faulty_tid) {
+          if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
               // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << std::endl;
           }
         }
@@ -594,7 +596,7 @@ public:
     // dim3 new_block(64,1,1);
     dim3 new_grid(12,11,1);
 
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &faulty_tid, &faulty_bit
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit
                 // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
               };
 

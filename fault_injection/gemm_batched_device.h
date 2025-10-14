@@ -494,7 +494,7 @@ public:
     // Fault Injection Info
     char flag;
     bool injection = false;
-    int faulty_smid =-1, faulty_tid = -1, faulty_bit = -1;
+    int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
     destinationFile = "/home/yuhangl/control/FI.txt";
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
@@ -505,8 +505,8 @@ public:
         // read injected SM and thread
         std::ifstream planFile("/home/yuhangl/control/plan.txt");
         if(planFile.is_open()){
-          if (planFile >> faulty_smid >> faulty_tid) {
-              // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << std::endl;
+          if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
+              // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid_1 = " << faulty_tid_1 << ", faulty_tid_2 = " << faulty_tid_2 << std::endl;
           }
         }
         else{
@@ -545,7 +545,7 @@ public:
     // 128 96 112
     int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid, &faulty_bit};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit};
 
     cutlass::arch::synclog_setup();
 
