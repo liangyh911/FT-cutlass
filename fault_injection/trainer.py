@@ -2493,6 +2493,16 @@ class Trainer:
         # faulty steps for each epoch
         # faulty_step_arr = random.sample(range(250), 25)
 
+        # SM-Checker FI: global steps controling FI
+        global_steps = 0
+        falutyStepFP = "/home/yuhangl/control/faulty_step.txt"
+        with open(falutyStepFP, 'r') as file:
+            faulty_step = int(file.readline())
+        # faulty_epoch = faulty_step / 250
+        # local_faulty_step = faulty_step % 250
+        # print(f"faulty step: {faulty_step}, faulty epoch: {faulty_epoch}, local faulty step: {local_faulty_step}")
+        # SM-Checker FI: global steps controling FI END
+
         for epoch in range(epochs_trained, num_train_epochs):
             # print(f"epoch{epoch}")
             epoch_dataloader = train_dataloader
@@ -2550,9 +2560,9 @@ class Trainer:
                 # print(f"current step: {i}, update step: {update_step}, total step: {total_updates}\n")
                 
                 # SMChecker: Fault Injection Control
-                perform_FI = True
                 
                 #  Discrete faulty steps
+                # perform_FI = False
                 # if(i not in faulty_step_arr):
                 #     perform_FI = False
                 # if perform_FI:
@@ -2565,24 +2575,25 @@ class Trainer:
                 #         file.write('f')
 
                 # Continuous faulty steps
+                perform_FI = True
                 if(epoch != 0):
                     perform_FI = False
-                total_fi_steps = 3
-                FI_step = 3
+                total_fi_steps = 3 + faulty_step
+                FI_step = 1
                 if perform_FI:
-                    if(i == 0):
+                    if(global_steps == faulty_step):
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
                             file.truncate(0)
                             file.write('t')
-                    elif (i > 0 and i < (total_fi_steps)):
+                    elif (global_steps > faulty_step and global_steps < (total_fi_steps)):
                         # delete one line from injection plan based one step
-                        if(((i+1) % FI_step == 1) or FI_step == 1) :
+                        if(((global_steps + 1) % FI_step == 1) or FI_step == 1) :
                             with open("/home/yuhangl/control/plan.txt", "r") as file:
                                 lines = file.readlines()
                             lines.pop(0)
                             with open("/home/yuhangl/control/plan.txt", "w") as file:
                                 file.writelines(lines)
-                    elif(i == total_fi_steps):
+                    elif(global_steps == total_fi_steps):
                         with open("/home/yuhangl/control/FI.txt", "w") as file:
                             file.truncate(0)
                             file.write('f')
@@ -2759,6 +2770,11 @@ class Trainer:
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
+                
+                # Count for global steps
+                global_steps += 1
+                # print(global_steps)
+            
             if step < 0:
                 logger.warning(
                     "There seems not to be a single sample in your epoch_iterator, stopping training at step"
@@ -2783,6 +2799,8 @@ class Trainer:
                     )
             if self.control.should_training_stop:
                 break
+
+        # print(f"global steps: {global_steps}")
 
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
