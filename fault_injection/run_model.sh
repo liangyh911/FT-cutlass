@@ -1,17 +1,18 @@
 #!/bin/bash
 
-OUTPUT_FILE="llama_output.log"
+# Get Job id
+JOB_ID=$SLURM_JOB_ID
 
-# Example 1: Running a Python script a fixed number of times
-for i in {1..3}; do
+# rename control file
+mv /home/yuhangl/control_1 /home/yuhangl/control_$JOB_ID
+
+OUTPUT_FILE="/home/yuhangl/control_$JOB_ID/llama_output.log"
+
+# Running a Python script a fixed number of times
+for i in {1..1}; do
   echo "--- Iteration $i ---" >> "$OUTPUT_FILE"
-  python llama.py >> "$OUTPUT_FILE" 2>&1
+  python llama.py
   echo "" >> "$OUTPUT_FILE"
 done
 
-# # Example 2: Running a Python script with different arguments from a list
-# arguments=("arg1" "arg2" "arg3")
-# for arg in "${arguments[@]}"; do
-#   echo "Running Python script with argument: $arg"
-#   python3 your_script.py "$arg"
-# done
+mv /home/yuhangl/control_$JOB_ID /home/yuhangl/control_1

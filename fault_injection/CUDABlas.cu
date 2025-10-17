@@ -2184,7 +2184,10 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   bool state = false;
   char flag;
   bool DEBUG = true;
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  char *job_id = getenv("SLURM_JOB_ID");
+
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2201,7 +2204,8 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
 
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2548,8 +2552,10 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   bool state = false;
   bool DEBUG = true;
   char flag;
+  char *job_id = getenv("SLURM_JOB_ID");
 
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2566,7 +2572,8 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
 
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2942,7 +2949,11 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   bool state = false;
   char flag;
   bool DEBUG = true;
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  char *job_id = getenv("SLURM_JOB_ID");
+
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
+  
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2959,7 +2970,8 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
 
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){

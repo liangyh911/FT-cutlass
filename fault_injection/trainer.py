@@ -2495,10 +2495,16 @@ class Trainer:
 
         # SM-Checker FI: global steps controling FI
         global_steps = 0
-        falutyStepFP = "/home/yuhangl/control/faulty_step.txt"
+        addition_epoch = 0
+
+        job_id = os.getenv('SLURM_JOB_ID')
+        falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
+        FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
+        PlanFP = f"/home/yuhangl/control_{job_id}/plan.txt"
+
         with open(falutyStepFP, 'r') as file:
             faulty_step = int(file.readline())
-        # faulty_epoch = faulty_step / 250
+        faulty_epoch = faulty_step / 250
         # local_faulty_step = faulty_step % 250
         # print(f"faulty step: {faulty_step}, faulty epoch: {faulty_epoch}, local faulty step: {local_faulty_step}")
         # SM-Checker FI: global steps controling FI END
@@ -2566,46 +2572,46 @@ class Trainer:
                 # if(i not in faulty_step_arr):
                 #     perform_FI = False
                 # if perform_FI:
-                #     with open("/home/yuhangl/control/FI.txt", "w") as file:
+                #     with open(FIFP, "w") as file:
                 #         file.truncate(0)
                 #         file.write('t')
                 # else:
-                #     with open("/home/yuhangl/control/FI.txt", "w") as file:
+                #     with open(FIFP, "w") as file:
                 #         file.truncate(0)
                 #         file.write('f')
 
                 # Continuous faulty steps
-                perform_FI = True
-                if(epoch != 0):
-                    perform_FI = False
-                total_fi_steps = 3 + faulty_step
+                perform_FI = False
+                # if(epoch != 0):
+                #     perform_FI = False
+                total_fi_steps = 25 + faulty_step
                 FI_step = 1
                 if perform_FI:
                     if(global_steps == faulty_step):
-                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                        with open(FIFP, "w") as file:
                             file.truncate(0)
                             file.write('t')
                     elif (global_steps > faulty_step and global_steps < (total_fi_steps)):
                         # delete one line from injection plan based one step
                         if(((global_steps + 1) % FI_step == 1) or FI_step == 1) :
-                            with open("/home/yuhangl/control/plan.txt", "r") as file:
+                            with open(PlanFP, "r") as file:
                                 lines = file.readlines()
                             lines.pop(0)
-                            with open("/home/yuhangl/control/plan.txt", "w") as file:
+                            with open(PlanFP, "w") as file:
                                 file.writelines(lines)
                     elif(global_steps == total_fi_steps):
-                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                        with open(FIFP, "w") as file:
                             file.truncate(0)
                             file.write('f')
                         # delete current inject loc
-                        with open("/home/yuhangl/control/plan.txt", "r") as file:
+                        with open(PlanFP, "r") as file:
                             lines = file.readlines()
                         lines.pop(0)
-                        with open("/home/yuhangl/control/plan.txt", "w") as file:
+                        with open(PlanFP, "w") as file:
                             file.writelines(lines)
                 else:
                     if(i == 0):
-                        with open("/home/yuhangl/control/FI.txt", "w") as file:
+                        with open(FIFP, "w") as file:
                             file.truncate(0)
                             file.write('f')
                 # SMChecker: End Fault Injection Control
@@ -2784,6 +2790,11 @@ class Trainer:
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
+            
+            # SM-Checker: record loss for each epoch here 
+            # print(f"\nloss: {tr_loss/250}, grad_norm: {grad_norm}, total_updates:{total_updates}")
+            epoch_loss = tr_loss / total_updates
+
             self._maybe_log_save_evaluate(
                 tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
             )
@@ -2799,6 +2810,17 @@ class Trainer:
                     )
             if self.control.should_training_stop:
                 break
+
+            # SM-Checker: if loss (epoch) meet requirement (10th epoch: 0.095), break training
+            if(epoch > 9 and epoch_loss <= 0.095):
+                print("break the epoch loop")
+                addition_epoch = epoch
+                break
+
+        # SMChecker: record addition epochs after FI
+        logFP = f"/home/yuhangl/control_{job_id}/llama_output.log"
+        with open(logFP, "a") as file:
+            file.write(f"{addition_epoch}\n")
 
         # print(f"global steps: {global_steps}")
 

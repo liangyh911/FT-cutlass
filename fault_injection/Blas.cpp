@@ -558,7 +558,8 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
         }
         else {
           fs::path homePath(homeDir);
-          fs::path destinationFile = "control/cutlass.txt";
+          // fs::path destinationFile = "control/cutlass.txt";
+          fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
           fs::path fullPath = homePath / destinationFile;
           std::ifstream myfile(fullPath);
 
@@ -676,7 +677,8 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           scalar_t* result_ptr = args.result->mutable_data_ptr<scalar_t>();
           
           fs::path homePath(homeDir);
-          fs::path destinationFile = "control/cutlass.txt";
+          // fs::path destinationFile = "control/cutlass.txt";
+          fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
           fs::path fullPath = homePath / destinationFile;
           std::ifstream myfile(fullPath);
 
@@ -864,6 +866,8 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
           std::cerr << "Could not get home directory" << std::endl;
       } 
 
+      char *job_id = getenv("SLURM_JOB_ID");
+
       // If batch is 1 call gemm rather than bgemm
       if (num_batches == 1) {
         at::cuda::blas::gemm<scalar_t>(
@@ -877,7 +881,8 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
       } else {
         // torch.matmul()
         fs::path homePath(homeDir);
-        fs::path destinationFile = "control/cutlass.txt";
+        // fs::path destinationFile = "control/cutlass.txt";
+        fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
         fs::path fullPath = homePath / destinationFile;
         std::ifstream myfile(fullPath);
 

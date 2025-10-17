@@ -539,8 +539,11 @@ public:
     // Fault Injection Info
     char flag;
     bool injection = false;
+    char *job_id = getenv("SLURM_JOB_ID");
     int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
-    destinationFile = "/home/yuhangl/control/FI.txt";
+
+    // destinationFile = "/home/yuhangl/control/FI.txt";
+    destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
       FIFile.get(flag);
@@ -548,7 +551,9 @@ public:
         injection = true;
         // printf("Perform Fault Injection.\n");
         // read injected SM and thread
-        std::ifstream planFile("/home/yuhangl/control/plan.txt");
+        // std::ifstream planFile("/home/yuhangl/control/plan.txt");
+        fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        std::ifstream planFile(planPath);
         if(planFile.is_open()){
           if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
               // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << std::endl;
@@ -560,7 +565,9 @@ public:
         planFile.close();
 
         // read faulty bit
-        std::ifstream bitFile("/home/yuhangl/control/bit.txt");
+        // std::ifstream bitFile("/home/yuhangl/control/bit.txt");
+        fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        std::ifstream bitFile(bitPath);
         if(bitFile.is_open()){
           if (bitFile >> faulty_bit) {
               // std::cout << "faulty_bit = " << faulty_bit << std::endl;
