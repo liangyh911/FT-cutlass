@@ -521,7 +521,7 @@ public:
         
         // read faulty bit
         // std::ifstream bitFile("/home/yuhangl/control/bit.txt");
-        fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "bit.txt";
         std::ifstream bitFile(bitPath);
         if(bitFile.is_open()){
           if (bitFile >> faulty_bit) {
