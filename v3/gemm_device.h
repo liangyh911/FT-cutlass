@@ -485,7 +485,9 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, 
+              // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking,
+              cudaStream_t stream = nullptr) {
 
     // // SM based schedule
     // int checksumblk_per_col = 0;
@@ -581,9 +583,8 @@ public:
     // 0-no split; 1-split; 2-only abft
     // int if_split_phase = 0;
 
-    // printf("m: %d, n: %d, k: %d, log: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), params_.swizzle_log_tile);
-
-    // std::cout << std::is_same<LayoutA_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutB_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutC_, cutlass::layout::RowMajor>::value <<std::endl;
+    printf("m: %d, n: %d, k: %d, log: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), params_.swizzle_log_tile);
+    std::cout << std::is_same<LayoutA_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutB_, cutlass::layout::RowMajor>::value << "; " << std::is_same<LayoutC_, cutlass::layout::RowMajor>::value <<std::endl;
 
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
@@ -662,7 +663,7 @@ public:
     // cudaMemcpy(recompute, d_recompute, size, cudaMemcpyDeviceToHost);
     // cudaMemcpy(compare, d_compare, size, cudaMemcpyDeviceToHost);
     // cudaMemcpy(checking, d_checking, size, cudaMemcpyDeviceToHost);
-    // cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
+    // // cudaMemcpy(all_start_for_split, d_all_start_for_split, size, cudaMemcpyDeviceToHost);
 
     // cudaFree(d_all_start);
     // cudaFree(d_checking);
@@ -670,7 +671,7 @@ public:
     // cudaFree(d_finding);
     // cudaFree(d_recompute);
     // cudaFree(d_compare);
-    // cudaFree(d_all_start_for_split);
+    // // cudaFree(d_all_start_for_split);
 
     cudaFree(SM_check_res);
     
@@ -920,14 +921,22 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, int partion, 
+            // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking, 
+            cudaStream_t stream = nullptr) {
 
-    return underlying_operator_.run(if_split_phase, partion, stream);
+    return underlying_operator_.run(if_split_phase, partion, 
+                                    // all_start, compute, finding, recompute, compare, checking, 
+                                    stream);
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, int partion, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, partion, stream);
+  Status operator()(int if_split_phase, int partion,
+                    // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking,
+                    cudaStream_t stream = nullptr) {
+    return run(if_split_phase, partion, 
+                // all_start, compute, finding, recompute, compare, checking, 
+                stream);
   }
 
   /// Runs the kernel using initialized state.

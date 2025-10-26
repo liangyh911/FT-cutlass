@@ -46,6 +46,9 @@
 #include <cmath>
 #include "cutlass/gemm_ring_queue.h"
 
+#include <cutlass/numeric_types.h>
+#include <cutlass/numeric_conversion.h>
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 using namespace cooperative_groups;
@@ -369,11 +372,12 @@ struct Gemm {
 
   __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
                               unsigned int smid
-                              // int iter, int *recompute, int *compare, int *checking, 
+                              // int iter, int *recompute, int *compare, int *checking
                               // int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, int block_idx
                             ){
     float recomputed_chksum = 0;
     int diff = 0;
+    // int thread_idx = threadIdx.x;
     
     // if use group, not unroll
     int N = params.problem_size.n();
@@ -381,7 +385,7 @@ struct Gemm {
     #pragma unroll
     for(int r = 0; r < 128; r++){
       int idx = matrix_start_idx + r * N;
-      recomputed_chksum += *(params.ref_D.data() + idx);
+      recomputed_chksum += static_cast<float>(*(params.ref_D.data() + idx));
       // float temp = params.ref_D.data(idx);
     }
     
@@ -390,8 +394,11 @@ struct Gemm {
     //   *(recompute + iter) = clock();
     // }
     
-    if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)10){
+    if(fabs(recomputed_chksum - static_cast<float>(*(params.ref_D.data() + chk_start_idx))) > (float)10){
       diff = 1;
+      printf("recompute: %f, checksum: %f, diff: %f\n", 
+              recomputed_chksum, static_cast<float>(*(params.ref_D.data() + chk_start_idx)), fabs(recomputed_chksum - static_cast<float>(*(params.ref_D.data() + chk_start_idx))));
+
       // printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
       //           iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
     }
@@ -863,7 +870,8 @@ struct Gemm {
             // }
 
             // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, iter, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
-            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, targe_smid);
+            // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, iter, recompute, compare, checking);
+            check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid);
           }
           // iter n-1
           else if(iter == SM_iter - 1){
@@ -878,7 +886,7 @@ struct Gemm {
                   check last
                   check self
             */
-            // int ti = iter;
+            int ti = iter;
             if(SM_iter != 1){
               //check last iteration
               last_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, matrix_next_blk_offset_m, matrix_next_blk_offset_n, thread_idx);
@@ -895,7 +903,8 @@ struct Gemm {
               // } 
 
               check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, targe_smid);
-              // ti++;
+              // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, iter, recompute, compare, checking);
+              ti++;
             }
             // cooperative_groups::this_grid().sync();
             // if(beyond_bound){
@@ -906,8 +915,8 @@ struct Gemm {
             }
             // check current iteration
             curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, thread_idx);
-            // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
             check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, targe_smid);
+            // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, ti, recompute, compare, checking);
           }
         }
       // }

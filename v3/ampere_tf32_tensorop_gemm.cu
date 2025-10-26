@@ -44,8 +44,13 @@ data types in tensor cores.  One big advantage is that we can load in fp32 data 
 implicitly to tf32 inside the GEMM kernel which means no change is needed to accelerate traditional
 fp32 data by using NVIDIA Ampere architecture.
 
-nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o out.exe
-ncu -f -o m_4096 --set full ./out.exe --m=8192 --n=4096 --k=4096 --split=0 --iterations=1
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o outT_c.exe
+
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o outT_baseline_bf16.exe
+
+ncu -f -o transpose --set full ./outT_c.exe --m=4096 --n=8196 --k=4096 --split=2 --iterations=1
+
+./outT_c.exe --m=14336 --n=8192 --k=4096 --split=0 --iterations=5
 
 */
 
@@ -61,6 +66,9 @@ ncu -f -o m_4096 --set full ./out.exe --m=8192 --n=4096 --k=4096 --split=0 --ite
 #include "cutlass/util/reference/host/tensor_copy.h"
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
+
+#include <cutlass/numeric_types.h>
+#include <cutlass/numeric_conversion.h>
 
 #include "helper.h"
 
@@ -198,6 +206,7 @@ struct Options {
 
 // The code section below describes datatype for input, output matrices and computation between
 // elements in input matrices.
+// float ok, half ok
 using ElementAccumulator = float;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
 using ElementInputA = float;                        // <- data type of elements in input matrix A
@@ -260,20 +269,20 @@ template <typename Element>
 void encode_col_checksum(Element *A, int k, int n, int partition){
   int m = 1;
   // init checksum vector
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)* k * 1);
+  Element *chk_vector;
+  chk_vector = (Element*)malloc(sizeof(Element)* k * 1);
   for(int c = 0; c < k; c++){
-    chk_vector[c] = (float)1;
+    chk_vector[c] = (Element)1;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode chksum - row major
   for(int p = 0; p < partition; p++){
     for(int r = 0; r < 1; r++){
       for(int c = 0; c < n; c++){
-          float sum = 0.0;
+          Element sum = (Element)0.0;
           for(int i = 0; i < (k/partition); i++){
-              float a = chk_vector[r * k + i];
-              float b = *(A + (c + (i+(k/partition)*p) * n));
+              Element a = chk_vector[r * k + i];
+              Element b = *(A + (c + (i+(k/partition)*p) * n));
               sum += (a * b);
           }
           // printf("%f, ", sum);
@@ -292,20 +301,20 @@ void encode_row_checksum(Element *A, int m, int k, int partition, int lda){
   int k_per_partion = k / partition;
 
   // init checksum vector
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * 1);
+  Element *chk_vector;
+  chk_vector = (Element*)malloc(sizeof(Element)* k_per_partion * 1);
   for(int r = 0; r < k_per_partion; r++){
-    chk_vector[r] = 1.f;
+    chk_vector[r] = (Element)1.f;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode row chksum - column major
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        float sum = 0.0f;
+        Element sum = (Element)0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          float a = A[r + (i + k_per_partion * p) * lda];
-          float b = chk_vector[i];
+          Element a = A[r + (i + k_per_partion * p) * lda];
+          Element b = chk_vector[i];
           sum += a * b;
         }
         // int idx = (k + p) + (c * lda) + (b_idx * stride);
@@ -376,12 +385,13 @@ int run(Options &options) {
   //   *(tensor_b.host_data()+idx) = (float)(idx % kRange);
   // }
 
+
   if(options.if_split_phase==1 || options.if_split_phase==0){
     for(int c = 0; c < (problem_size.n() - 1 * options.partition); c++){
       for(int r = 0; r < problem_size.k(); r++){
         int idx = c * problem_size.k() + r;
-        *(tensor_b.host_data()+idx) = (float)(idx % kRange);
-        // *(tensor_a.host_data()+idx) = (float)1;
+        *(tensor_b.host_data()+idx) = (ElementInputB)(idx % kRange);
+        // *(tensor_b.host_data()+idx) = (ElementInputB)1;
       }
     }
     encode_row_checksum<ElementInputB>(tensor_b.host_data(), problem_size.k(), (problem_size.n() - 1 * options.partition), options.partition,  problem_size.k());
@@ -389,25 +399,25 @@ int run(Options &options) {
     for(int c = 0; c < (problem_size.n() - 1 * options.partition); c++){
       for(int r = 0; r < problem_size.m(); r++){
         int idx = c * problem_size.m() + r;
-        // *(tensor_c.host_data()+idx) = (float)rand()/RAND_MAX;
-        *(tensor_c.host_data()+idx) = (float)1;
+        // *(tensor_c.host_data()+idx) = (ElementOutput)rand()/RAND_MAX;
+        *(tensor_c.host_data()+idx) = (ElementOutput)0;
       }
     }
-    encode_row_checksum<ElementInputB>(tensor_c.host_data(), problem_size.m(), (problem_size.n() - 1 * options.partition), options.partition, problem_size.m());
+    encode_row_checksum<ElementOutput>(tensor_c.host_data(), problem_size.m(), (problem_size.n() - 1 * options.partition), options.partition, problem_size.m());
   }
   else{
     for(int c = 0; c < problem_size.n(); c++){
       for(int r = 0; r < problem_size.k(); r++){
         int idx = c * problem_size.k() + r;
-        *(tensor_b.host_data()+idx) = (float)(idx % kRange);
-        // *(tensor_a.host_data()+idx) = (float)1;
+        *(tensor_b.host_data()+idx) = (ElementInputB)(idx % kRange);
+        // *(tensor_b.host_data()+idx) = (ElementInputB)1;
       }
     }
     cutlass::reference::host::TensorFill(tensor_c.host_view()); 
   }
   for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
-    // *(tensor_b.host_data()+idx) = (float)1;
-    *(tensor_a.host_data()+idx) = (float)(idx % kRange);
+    // *(tensor_a.host_data()+idx) = (ElementInputA)1;
+    *(tensor_a.host_data()+idx) = (ElementInputA)(idx % kRange);
   }
   
   cutlass::reference::host::TensorFill(
@@ -488,7 +498,7 @@ int run(Options &options) {
   // Run profiling loop
   //
 
-  // int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 128)*(options.problem_size.n() / 128))/(double)132)) + 1;
+  // int gemm_iter = (int)ceil((double)(((options.problem_size.m() / 256)*(options.problem_size.n() / 128))/(double)132)) + 1;
 
   // int *elapsed_compute, *elapsed_finding, *elapsed_recompute, *elapsed_compare, *elapsed_reduce;
   // int cnt_matrix = 0, cnt_chksum = 0;
@@ -516,6 +526,9 @@ int run(Options &options) {
   for (int iter = 0; iter < options.iterations; ++iter) {
     // Launch initialized CUTLASS kernel
     status = gemm_op(options.if_split_phase, options.partition);
+    // status = gemm_op(options.if_split_phase, options.partition, 
+    //                   all_start, compute, finding, recompute, compare, checking);
+    // status = gemm_op();
     // CUTLASS_CHECK(status);
 
     // for(int i = 0; i < gemm_iter; i++){
@@ -523,11 +536,16 @@ int run(Options &options) {
     //   elapsed_finding[i] += (finding[i]-all_start[i]);
       
     //   if(i != 0 && i == (gemm_iter-1)){
-    //     elapsed_recompute[i] += (recompute[i]-all_start[i-1]);
-    //     elapsed_compare[i] += (compare[i]-all_start[i-1]);
-    //     elapsed_reduce[i] += (checking[i]-all_start[i-1]);
+    //     // elapsed_recompute[i] += (recompute[i]-all_start[i-1]);
+    //     // elapsed_compare[i] += (compare[i]-all_start[i-1]);
+    //     // elapsed_reduce[i] += (checking[i]-all_start[i-1]);
+
+    //     elapsed_recompute[i] += (recompute[i]-checking[i-1]);
+    //     elapsed_compare[i] += (compare[i]-checking[i-1]);
+    //     elapsed_reduce[i] += (checking[i]-checking[i-1]);
     //   }
     //   else{
+    //     // elapsed_finding[i] += (finding[i]-all_start[i]);
     //     elapsed_recompute[i] += (recompute[i]-all_start[i]);
     //     elapsed_compare[i] += (compare[i]-all_start[i]);
     //     elapsed_reduce[i] += (checking[i]-all_start[i]);
@@ -544,18 +562,44 @@ int run(Options &options) {
     // memset(all_start_for_split, 0, size);
   }
 
+  // float avg_elapsed_compute = 0, avg_elapsed_finding = 0, avg_elapsed_recompute = 0, avg_elapsed_compare = 0, avg_elapsed_reduce = 0;
   // for(int i = 0; i < gemm_iter; i++){
-  //   float avg_elapsed_compute = elapsed_compute[i] / options.iterations;
-  //   float avg_elapsed_finding = elapsed_finding[i] / options.iterations;
-  //   float avg_elapsed_recompute = elapsed_recompute[i] / options.iterations;
-  //   float avg_elapsed_compare = elapsed_compare[i] / options.iterations;
-  //   float avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
-  
-  //   // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
-  //   //       avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+  //   // avg_elapsed_compute = elapsed_compute[i] / options.iterations;
+  //   // avg_elapsed_finding = elapsed_finding[i] / options.iterations;
+  //   // avg_elapsed_recompute = elapsed_recompute[i] / options.iterations;
+  //   // avg_elapsed_compare = elapsed_compare[i] / options.iterations;
+  //   // avg_elapsed_reduce = elapsed_reduce[i] / options.iterations;
+
+  //   // printf("iter: %d, compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
+  //   //       gemm_iter, avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+
+
+  //   avg_elapsed_compute += elapsed_compute[i] / options.iterations;
+
+  //   if(i > 0 && i < (gemm_iter-1)){
+  //      avg_elapsed_finding += elapsed_finding[i] / options.iterations;
+  //      avg_elapsed_recompute += elapsed_recompute[i] / options.iterations;
+  //      avg_elapsed_compare += elapsed_compare[i] / options.iterations;
+  //      avg_elapsed_reduce += elapsed_reduce[i] / options.iterations;
+  //   }
+    
+  //   if(i != 0 && i == (gemm_iter-1)){
+  //     avg_elapsed_recompute += elapsed_recompute[i] / options.iterations;
+  //     avg_elapsed_compare += elapsed_compare[i] / options.iterations;
+  //     avg_elapsed_reduce += elapsed_reduce[i] / options.iterations;
+  //   }
+    
   // }
 
+  // avg_elapsed_compute = avg_elapsed_compute / (gemm_iter-1);
+  // avg_elapsed_finding = avg_elapsed_finding / (gemm_iter-2);
+  // avg_elapsed_recompute = avg_elapsed_recompute / (gemm_iter-2);
+  // avg_elapsed_compare = avg_elapsed_compare / (gemm_iter-2);
+  // avg_elapsed_reduce = avg_elapsed_reduce / (gemm_iter-2);
 
+  // printf("compute: %f, finding: %f, recompute: %f, compare: %f, reduce: %f\n", 
+  //   avg_elapsed_compute, avg_elapsed_finding, avg_elapsed_recompute, avg_elapsed_compare, avg_elapsed_reduce);  
+ 
   // free(all_start);
   // free(compute);
   // free(finding);
