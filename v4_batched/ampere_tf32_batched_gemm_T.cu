@@ -99,11 +99,11 @@ matrix B can be seen as
 , where the batch size is 2, N is 3 and K is 2
 The stride (batch_stride_B) between the first element of two batches is k
 
-nvcc ampere_tf32_batched_gemm_T.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o boutT.exe
+nvcc ampere_tf32_batched_gemm_T.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o boutT_half.exe
 
 nvcc ampere_tf32_batched_gemm_T.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o bloutT.exe
 
-ncu -f -o batchPipe --set full ./boutT.exe --m=1024 --n=1024 --k=128 --batch=256 --split=1 --iterations=1 --validate=0
+ncu -f -o batchPipe --set full ./boutT_half.exe --m=1024 --n=1024 --k=128 --batch=256 --split=1 --iterations=1 --validate=1
 */
 
 // Command line options parsing
@@ -137,7 +137,7 @@ struct Options {
     partition(),
     if_split_phase(2),
     validation(0),
-    monitored(256) { }
+    monitored(0) { }
 
   // bool valid() {
   //   return true;
@@ -173,6 +173,9 @@ struct Options {
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
       problem_size.n() += partition * 2;
+    }
+    if(monitored == 0){
+      monitored = batch_count;
     }
   }
 
@@ -256,13 +259,13 @@ cudaError_t cutlass_strided_batched_sgemm(
   int n,
   int k,
   float alpha,
-  float const *A,
+  ElementInputA const *A,
   int lda,
   long long int batch_stride_A,
-  float const *B,
+  ElementInputB const *B,
   int ldb,
   long long int batch_stride_B,
-  float *C,
+  ElementOutput *C,
   int ldc,
   long long int batch_stride_C,
   float beta,
@@ -272,9 +275,9 @@ cudaError_t cutlass_strided_batched_sgemm(
   int monitored) {
 
   using Gemm = cutlass::gemm::device::GemmBatched<
-    float, cutlass::layout::RowMajor,
-    float, cutlass::layout::ColumnMajor,
-    float, cutlass::layout::ColumnMajor,
+    ElementInputA, cutlass::layout::RowMajor,
+    ElementInputB, cutlass::layout::ColumnMajor,
+    ElementOutput, cutlass::layout::ColumnMajor,
     ElementAccumulator,
     MMAOp,
     SmArch,
@@ -350,13 +353,13 @@ cudaError_t strided_batched_gemm_nn_reference(
   int n,
   int k,
   T alpha,
-  std::vector<T> const &A, 
+  std::vector<ElementInputA> const &A, 
   int lda,
   long long int batch_stride_A,
-  std::vector<T> const &B, 
+  std::vector<ElementInputB> const &B, 
   int ldb,
   long long int batch_stride_B,
-  std::vector<T> &C, 
+  std::vector<ElementOutput> &C, 
   int ldc,
   long long int batch_stride_C,
   T beta,
@@ -409,7 +412,7 @@ bool valid( int m, int n, int k,
           T c = C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           T ref_c = ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           if(c != ref_c){
-            printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
+            printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, static_cast<float>(c), static_cast<float>(ref_c), static_cast<float>(c-ref_c));
             correct = false;
           }
       }
@@ -438,10 +441,10 @@ template <typename Element>
 void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, int b_idx, int stride, int lda){
   int m = 1;
   // init checksum vector
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)* k * 1);
+  Element *chk_vector;
+  chk_vector = (Element*)malloc(sizeof(Element)* k * 1);
   for(int c = 0; c < k; c++){
-    chk_vector[c] = (float)1;
+    chk_vector[c] = (Element)1;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode chksum - column major
@@ -449,10 +452,10 @@ void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, i
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        float sum = 0.0f;
+        Element sum = (Element)0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          float a = chk_vector[r + i * m];
-          float b = A[(i + k_per_partion * p) + c * lda + (b_idx * stride)];
+          Element a = chk_vector[r + i * m];
+          Element b = A[(i + k_per_partion * p) + c * lda + (b_idx * stride)];
           sum += a * b;
         }
         int idx = (k + p) + (c * lda) + (b_idx * stride);
@@ -469,8 +472,8 @@ void encode_row_checksum(std::vector<Element> &A, int m, int k, int partition, i
   int k_per_partion = k / partition;
 
   // init checksum vector
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(Element)* k_per_partion * n);
+  Element *chk_vector;
+  chk_vector = (Element*)malloc(sizeof(Element)* k_per_partion * n);
   for(int r = 0; r < k_per_partion; r++){
     chk_vector[r] = (Element)1;
     chk_vector[k_per_partion + r] = (Element)(r + 1);
@@ -480,10 +483,10 @@ void encode_row_checksum(std::vector<Element> &A, int m, int k, int partition, i
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        float sum = 0.0f;
+        Element sum = (Element)0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          float a = A[r + (i + k_per_partion * p) * lda + (b_idx * stride)];
-          float b = chk_vector[i + c * k_per_partion];
+          Element a = A[r + (i + k_per_partion * p) * lda + (b_idx * stride)];
+          Element b = chk_vector[i + c * k_per_partion];
           sum += a * b;
         }
         // int idx = (k + p) + (c * lda) + (b_idx * stride);
@@ -533,27 +536,27 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   cudaError_t result = cudaSuccess;
 
   // allocate the host memory
-  std::vector<float> host_A(count_A);
-  std::vector<float> host_B(count_B);
-  std::vector<float> host_C(count_C);
-  std::vector<float> result_C(count_C);
+  std::vector<ElementInputA> host_A(count_A);
+  std::vector<ElementInputB> host_B(count_B);
+  std::vector<ElementOutput> host_C(count_C);
+  std::vector<ElementOutput> result_C(count_C);
 
   // allocate the device memory
-  float *A;
-  float *B;
-  float *C;
+  ElementInputA *A;
+  ElementInputB *B;
+  ElementOutput *C;
 
-  result = cudaMalloc(&A, count_A * sizeof(float));
+  result = cudaMalloc(&A, count_A * sizeof(ElementInputA));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
   }
-  result = cudaMalloc(&B, count_B * sizeof(float));
+  result = cudaMalloc(&B, count_B * sizeof(ElementInputB));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
   }
-  result = cudaMalloc(&C, count_C * sizeof(float));
+  result = cudaMalloc(&C, count_C * sizeof(ElementOutput));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
@@ -581,7 +584,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int row_idx = 0; row_idx < m; row_idx++) {
       for (int col_idx = 0; col_idx < k; col_idx++) {
-        host_A[col_idx + row_idx * lda + b_idx * lda * m] = static_cast<float>((col_idx + row_idx * lda + b_idx * lda * m) % kRange) / DIV;
+        host_A[col_idx + row_idx * lda + b_idx * lda * m] = static_cast<ElementInputA>((col_idx + row_idx * lda + b_idx * lda * m) % kRange) / DIV;
         // host_A[col_idx + row_idx * lda + b_idx * lda * m] = 1.f;
       }
     }
@@ -599,13 +602,13 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
         // n = n, k = k, ldb = k * batch_count, 
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
 
-        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
+        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<ElementInputB>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
       }
     }
     if(options.if_split_phase == 1 || options.if_split_phase == 0){
-      encode_row_checksum(host_B, k, (options.problem_size.n() - 2 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
+      encode_row_checksum<ElementInputB>(host_B, k, (options.problem_size.n() - 2 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
     }
   }
   // outputChk(host_B, batch_count, ldb, batch_stride_B, k, options.problem_size.n());
@@ -614,7 +617,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < options.problem_size.n(); col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_C[row_idx + col_idx * ldc + b_idx * ldc * options.problem_size.n()] = 0.f;
+        host_C[row_idx + col_idx * ldc + b_idx * ldc * options.problem_size.n()] = static_cast<ElementOutput>(0.f);
       }
     }
   }
@@ -622,21 +625,21 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   printf("----finish filling matrices-------\n");
 
   // ref memory
-  std::vector<float> ref_A(host_A);
-  std::vector<float> ref_B(host_B);
-  std::vector<float> ref_C(host_C);
+  std::vector<ElementInputA> ref_A(host_A);
+  std::vector<ElementInputB> ref_B(host_B);
+  std::vector<ElementOutput> ref_C(host_C);
   // copy host memory to device
-  result = cudaMemcpy(A, host_A.data(), count_A * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(A, host_A.data(), count_A * sizeof(ElementInputA), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
   }
-  result = cudaMemcpy(B, host_B.data(), count_B * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(B, host_B.data(), count_B * sizeof(ElementInputB), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
   }
-  result = cudaMemcpy(C, host_C.data(), count_C * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(C, host_C.data(), count_C * sizeof(ElementOutput), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
@@ -658,7 +661,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   }
   
   // copy device memory to host
-  result = cudaMemcpy(result_C.data(), C, count_C * sizeof(float), cudaMemcpyDeviceToHost);
+  result = cudaMemcpy(result_C.data(), C, count_C * sizeof(ElementOutput), cudaMemcpyDeviceToHost);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
