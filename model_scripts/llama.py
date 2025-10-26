@@ -14,11 +14,15 @@ import math
 job_id = os.getenv('SLURM_JOB_ID')
 
 # Faulty step select corresponding checkpoint
-falutyStepFP = f"/home/yuhangl//control_{job_id}/faulty_step.txt"
+falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
 with open(falutyStepFP, 'r') as file:
     faulty_step = int(file.readline())
 faulty_epoch = math.floor(faulty_step / 250)
 local_faulty_step = faulty_step % 250
+
+logFP = f"/home/yuhangl/control_{job_id}/llama_output.log"
+with open(logFP, "a") as file:
+    file.write(f"{faulty_step}, ({faulty_epoch}, {local_faulty_step})\n")
 
 # faulty_epoch = 0
 
@@ -128,7 +132,7 @@ for i in range(Iter):
     training_args = TrainingArguments(
         output_dir="./llama1b",
         overwrite_output_dir=True,
-        num_train_epochs=1,
+        num_train_epochs=20,
         # per_device_train_batch_size=8,
         gradient_accumulation_steps=1,
         learning_rate=2e-5,
@@ -186,18 +190,16 @@ for i in range(Iter):
 
     torch.cuda.empty_cache()
 
-    # with open("/home/yuhangl/control_{job_id}/llama_output.log", "a") as file:
-    #     file.write(f"{faulty_step}, ({faulty_epoch}, {local_faulty_step})")
-    #     file.write("\n")
-    #     file.write(", ".join(smchk_loss))
-    #     file.write("\n")
-    #     file.write(", ".join(grad_norm))
+    with open(logFP, "a") as file:
+        file.write(", ".join(smchk_loss))
+        file.write("\n")
+        file.write(", ".join(grad_norm))
 
-    # with open("/home/yuhangl/control_{job_id}/faulty_step.txt", "r") as file:
-    #     lines = file.readlines()
-    # lines.pop(0)
-    # with open("/home/yuhangl/control_{job_id}/faulty_step.txt", "w") as file:
-    #     file.writelines(lines)
+    with open(falutyStepFP, "r") as file:
+        lines = file.readlines()
+    lines.pop(0)
+    with open(falutyStepFP, "w") as file:
+        file.writelines(lines)
 
 # print("Loss of SM-Checker: ")
 # print(f"1st epoch: {loss/Iter}")
