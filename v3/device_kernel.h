@@ -1194,8 +1194,8 @@ void update_checksum_v8_T(typename Operator::Params params, int matrix_SM, int m
       }
       __syncthreads();
 
-      Dtype accum1 = 0.f;
-      Dtype accum2 = 0.f;
+      Dtype accum1 = static_cast<Dtype>(0.f);
+      Dtype accum2 = static_cast<Dtype>(0.f);
 
       // load first stage
       pipeline.producer_acquire();

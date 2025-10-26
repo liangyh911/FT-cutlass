@@ -48,7 +48,7 @@ nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yu
 
 nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o outT_baseline_bf16.exe
 
-ncu -f -o transpose --set full ./outT_c.exe --m=4096 --n=8196 --k=4096 --split=2 --iterations=1
+ncu -f -o transpose --set full ./outT_c.exe --m=4096 --n=8192 --k=4096 --split=2 --iterations=1
 
 ./outT_c.exe --m=14336 --n=8192 --k=4096 --split=0 --iterations=5
 
@@ -350,6 +350,7 @@ int run(Options &options) {
   // Fill input and output matrices on host using CUTLASS helper functions
 
   int kRange = 8;
+  float DIV = 100;
   // if(options.if_split_phase==1 || options.if_split_phase==0){
   //   int m = 1;
   //   int k = problem_size.m() - 1 * options.partition;
@@ -390,7 +391,7 @@ int run(Options &options) {
     for(int c = 0; c < (problem_size.n() - 1 * options.partition); c++){
       for(int r = 0; r < problem_size.k(); r++){
         int idx = c * problem_size.k() + r;
-        *(tensor_b.host_data()+idx) = (ElementInputB)(idx % kRange);
+        *(tensor_b.host_data()+idx) = (ElementInputB)(static_cast<float>(idx % kRange) / DIV);
         // *(tensor_b.host_data()+idx) = (ElementInputB)1;
       }
     }
@@ -409,7 +410,7 @@ int run(Options &options) {
     for(int c = 0; c < problem_size.n(); c++){
       for(int r = 0; r < problem_size.k(); r++){
         int idx = c * problem_size.k() + r;
-        *(tensor_b.host_data()+idx) = (ElementInputB)(idx % kRange);
+        *(tensor_b.host_data()+idx) = (ElementInputB)(static_cast<float>(idx % kRange) / DIV);
         // *(tensor_b.host_data()+idx) = (ElementInputB)1;
       }
     }
@@ -417,7 +418,7 @@ int run(Options &options) {
   }
   for(int idx = 0; idx < (problem_size.m()*problem_size.k()); idx++){
     // *(tensor_a.host_data()+idx) = (ElementInputA)1;
-    *(tensor_a.host_data()+idx) = (ElementInputA)(idx % kRange);
+    *(tensor_a.host_data()+idx) = (ElementInputA)(static_cast<float>(idx % kRange) / DIV);
   }
   
   cutlass::reference::host::TensorFill(
