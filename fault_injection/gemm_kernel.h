@@ -418,22 +418,34 @@ struct Gemm {
     //   // printf("checking: %d\n", *(checking + iter));
     // }
   }
-
+  
   template <typename T>
-  __device__ void force_bit_one(T *dA, int bit){ 
+  __device__ void force_bit_one(T *dA, int bit, int *count, float *buf){ 
     // 30 or 29
     float orgValue = (float)*(dA);
+    float tmp = (float)*(dA);
+    // printf("%.4f ", orgValue);
+    
     uint32_t* intValue = reinterpret_cast<uint32_t*>(&orgValue);
     *intValue |= (1u << bit);
     // *intValue &= ~ ((1u << bit));
     *(dA) = (T) *reinterpret_cast<float*>(intValue);
+    
+    if(tmp != *(dA)){
+      // printf("%.4f %.4f ", tmp, *(dA));
+      int idx = (*count) * 1;
+      *(buf + idx) = tmp;
+      *(buf + (idx + 1)) = *(dA);
+      (*count) += 2;
+    }
+    // printf("%.4f ", *(dA));
   }
 
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   int if_split_phase, int *SM_check_res, int partion, 
-                  int faulty_smid, int faulty_tid_1, int faulty_tid_2, int faulty_bit
+                  int faulty_smid, int faulty_tid_1, int faulty_tid_2, int faulty_bit, int *counter, float *buf
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
@@ -752,20 +764,60 @@ struct Gemm {
       //   }
       //   // __syncthreads();
       // }
-      if(smid == faulty_smid && (thread_idx == faulty_tid_1 || thread_idx == faulty_tid_2)){
-        // printf("injection. sm: %d, tid: %d, bit: %d\n", faulty_smid, faulty_tid, faulty_bit);
+      
+      // Fault Injection
+      // if(smid == faulty_smid && (thread_idx == faulty_tid_1 || thread_idx == faulty_tid_2)){
+      //   // printf("injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
+      //   int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
+      //   int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
+      //   int N = params.problem_size.n();
+      //   // int bit = 20;
+        
+      //   for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
+      //     for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
+      //       int idx = j + i * N;
+      //       force_bit_one((params.ref_D.data()+idx), faulty_bit);
+      //     } 
+      //   }
+      // }
 
+      if(smid == faulty_smid && thread_idx == faulty_tid_1){
+        // printf("injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
         int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
         int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
         int N = params.problem_size.n();
         // int bit = 20;
         
+        // printf("[ \n");
         for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
           for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
             int idx = j + i * N;
-            force_bit_one((params.ref_D.data()+idx), faulty_bit);
-          } 
+            force_bit_one((params.ref_D.data()+idx), faulty_bit, counter, buf);
+          }
+          // printf("\n"); 
         }
+        // printf("] \n");
+      }
+      __syncthreads();
+
+      if(smid == faulty_smid && thread_idx == faulty_tid_2){
+        // printf("injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
+        int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
+        int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
+        int N = params.problem_size.n();
+        // int bit = 20;
+        int init_buf_idx = 16 * 8 * 2 * SM_iter;
+        // int init_buf_idx = *counter;
+        
+        // printf("[ \n");
+        for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
+          for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
+            int idx = j + i * N;
+            force_bit_one((params.ref_D.data()+idx), faulty_bit, (counter+1), (buf+init_buf_idx));
+          }
+          // printf("\n"); 
+        }
+        // printf("] \n");
       }
       __syncthreads();
 

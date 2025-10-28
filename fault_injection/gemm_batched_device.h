@@ -470,6 +470,9 @@ public:
     cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
     cudaMemset(SM_check_res, 0, 132 * sizeof(int));
 
+    // 128 96 112
+    int matrix_SM = (if_split_phase == 2)? 132 : 128;
+
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", new_grid.x, new_grid.y, new_grid.z, block.x, block.y, block.z);
 
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
@@ -491,13 +494,34 @@ public:
       }
     }
 
-    // Fault Injection Info
+    // Fault Injection
     char flag;
     bool injection = false;
     char *job_id = getenv("SLURM_JOB_ID");
     int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
     
+    // Fault Injection Results
+    int SM_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+    if(SM_per_batch > matrix_SM){
+      SM_per_batch = matrix_SM;
+    }
+    int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
+    int batch_iter = (int)(ceil((double)params_.batch_count / (double)batch_step));
+
+    int *d_counter, *h_counter;
+    cudaMalloc((void**)&d_counter, 2 * sizeof(int));
+    cudaMemset(d_counter, 0, 2 * sizeof(int));
+    h_counter = (int*)malloc((2) * sizeof(int));
+
+    float *h_buf, *d_buf;
+    size_t buf_size = (16*8*2*batch_iter * 2) * sizeof(float);
+    cudaMalloc((void**)&d_buf, buf_size);
+    cudaMemset(d_buf, 0, buf_size);
+    h_buf = (float*)malloc(buf_size);
+
     // destinationFile = "/home/yuhangl/control/FI.txt";
+    // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+    fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.bin";
     destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
@@ -532,6 +556,47 @@ public:
           printf("bit: Cannot open file, using default setting.\n");
         }
         bitFile.close();
+
+        // current steps
+        fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
+        std::ifstream stepFile(StepPath);
+        if (stepFile.is_open()) {
+          std::string line;
+          if (std::getline(stepFile, line)) {
+            // std::cout << line << std::endl;
+            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+            int step = std::stoi(line);
+            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+            ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
+
+            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+            // ofs << std::endl << line << " ";
+            // std::cout << std::endl << line;
+
+            ofs.close();
+          } 
+        }
+        stepFile.close();
+
+        // current component
+        fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
+        std::ifstream compfile(componentPath);
+        if (compfile.is_open()) {
+          std::string line;
+          if (std::getline(compfile, line)) {
+            // std::cout << line << std::endl;
+            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+            ofs.write(line.data(), 2);
+
+            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+            // ofs << line << " ";
+            // std::cout << std::endl << line;
+
+            ofs.close();
+          } 
+        }
+        compfile.close();
       }
       // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << " " << "faulty_bit = " << faulty_bit << std::endl;
     }
@@ -548,11 +613,8 @@ public:
     int update_smem_size;
 
     // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
-
-    // 128 96 112
-    int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf};
 
     cutlass::arch::synclog_setup();
 
@@ -618,6 +680,10 @@ public:
       }
     }
 
+    // redirecte stdout
+    // int saved_stdout_fd = dup(fileno(stdout));
+    // freopen(FIInfoPath.string().c_str(), "a", stdout);
+    
     if(deBug){
       cudaEventRecord(start, stream);
     }   
@@ -642,13 +708,57 @@ public:
     //   sum_check += t_check;
     // }
     cudaDeviceSynchronize();
+    
+    // direct back
+    // fflush(stdout);               
+    // dup2(saved_stdout_fd, fileno(stdout)); // restore
+    // close(saved_stdout_fd);
     // }
 
     if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 
+    cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_counter, d_counter, 2*sizeof(int), cudaMemcpyDeviceToHost);
+
+    std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+    // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+
+    ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
+    ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
+
+    // int N = (*h_counter) + (*(h_counter+1));
+    // ofs << h_counter[0] << ": ";
+    // for (int i = 0; i < 1*(h_counter[0]); i++) {
+        // ofs << h_buf[i] << " "; 
+        // if (i != N - 1){
+        // ofs << " ";  
+        // }
+        // printf("%f ", h_buf[i]);
+    // }
+    // ofs << "|||| ";
+
+    int o = 16*8*2*batch_iter;
+    ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
+    ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
+    // ofs << h_counter[1] << ": ";
+    // for (int i = 0; i < 1*(h_counter[1]); i++) {
+    //     ofs << h_buf[i + o]; 
+    //     // if (i != 2*(h_counter[0]) - 1){
+    //     ofs << " ";  
+    //     // }
+    //     // printf("%f ", h_buf[i + o]);
+    // }
+
+    ofs.close();
+    
     // Clean up
     cudaFree(SM_check_res);
     cudaStreamDestroy(stream_colchk);
+    
+    cudaFree(d_counter);
+    cudaFree(d_buf);
+    free(h_counter);
+    free(h_buf);
 
     result = cudaGetLastError();
 
