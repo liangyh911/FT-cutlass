@@ -184,7 +184,7 @@ class LlamaMLP(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("up_proj ")
+                file.write("UP")
         up_proj = self.up_proj(x)
         # print("up_proj: ")
         # print(up_proj[0])
@@ -192,7 +192,7 @@ class LlamaMLP(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("gate_proj ")
+                file.write("GA")
         gate_proj = self.gate_proj(x)
         # print("gate_proj: ")
         # print(gate_proj[0])
@@ -204,7 +204,7 @@ class LlamaMLP(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("down_proj ")
+                file.write("DO")
         down_proj = self.down_proj(gate_proj * up_proj)
 
         # print("down_proj: ")
@@ -249,7 +249,7 @@ def eager_attention_forward(
     if FI: 
         with open(component, 'w') as file:
             file.truncate(0)
-            file.write("Q*K_T ")
+            file.write("QK")
     
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
@@ -274,7 +274,7 @@ def eager_attention_forward(
     if FI: 
         with open(component, 'w') as file:
             file.truncate(0)
-            file.write("AP*V ")
+            file.write("AV")
         
     attn_output = torch.matmul(attn_weights, value_states)
 
@@ -356,19 +356,19 @@ class LlamaAttention(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(Q) ")
+                    file.write("WQ")
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(K) ")
+                    file.write("WK")
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(V) ")
+                    file.write("WV")
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         # if(decoder_idx == 0):
@@ -426,7 +426,7 @@ class LlamaAttention(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(AO) ")
+                    file.write("WO")
         
         attn_output = self.o_proj(attn_output)
 
