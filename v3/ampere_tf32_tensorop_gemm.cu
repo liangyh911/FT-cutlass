@@ -44,11 +44,11 @@ data types in tensor cores.  One big advantage is that we can load in fp32 data 
 implicitly to tf32 inside the GEMM kernel which means no change is needed to accelerate traditional
 fp32 data by using NVIDIA Ampere architecture.
 
-nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o outT_c.exe
+nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o outT_c_bf16.exe
 
 nvcc ampere_tf32_tensorop_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o outT_baseline_bf16.exe
 
-ncu -f -o transpose --set full ./outT_c.exe --m=4096 --n=8192 --k=4096 --split=2 --iterations=1
+ncu -f -o transpose --set full ./outT_c_bf16.exe --m=4096 --n=8192 --k=4096 --split=2 --iterations=1
 
 ./outT_c.exe --m=14336 --n=8192 --k=4096 --split=0 --iterations=5
 
@@ -209,9 +209,9 @@ struct Options {
 // float ok, half ok
 using ElementAccumulator = float;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = float;                        // <- data type of elements in input matrix A
-using ElementInputB = float;                        // <- data type of elements in input matrix B
-using ElementOutput = float;                        // <- data type of elements in output matrix D
+using ElementInputA = cutlass::bfloat16_t;                        // <- data type of elements in input matrix A
+using ElementInputB = cutlass::bfloat16_t;                        // <- data type of elements in input matrix B
+using ElementOutput = cutlass::bfloat16_t;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
 // Matrix A, Row Major for Matrix B and Row Major for Matrix C
@@ -295,31 +295,62 @@ void encode_col_checksum(Element *A, int k, int n, int partition){
   free(chk_vector);
 }
 
+// template <typename Element>
+// void encode_row_checksum(Element *A, int m, int k, int partition, int lda){
+//   int n = 1;
+//   int k_per_partion = k / partition;
+
+//   // init checksum vector
+//   Element *chk_vector;
+//   chk_vector = (Element*)malloc(sizeof(Element)* k_per_partion * 1);
+//   for(int r = 0; r < k_per_partion; r++){
+//     chk_vector[r] = (Element)1.f;
+//     // chk_vector[c + k] = (float)(c+1);
+//   }
+//   // encode row chksum - column major
+//   for(int p = 0; p < partition; p++){
+//     for(int c = 0; c < n; c++){
+//       for(int r = 0; r < m; r++){
+//         Element sum = (Element)0.0f;
+//         for(int i = 0; i < k_per_partion; i++){
+//           Element a = A[r + (i + k_per_partion * p) * lda];
+//           Element b = chk_vector[i];
+//           sum += a * b;
+//         }
+//         // int idx = (k + p) + (c * lda) + (b_idx * stride);
+//         int idx = lda * (k + p) + r;
+//         A[idx] = sum;
+//       }
+//     }
+//   }
+//   free(chk_vector);
+// }
+
 template <typename Element>
 void encode_row_checksum(Element *A, int m, int k, int partition, int lda){
   int n = 1;
   int k_per_partion = k / partition;
 
   // init checksum vector
-  Element *chk_vector;
-  chk_vector = (Element*)malloc(sizeof(Element)* k_per_partion * 1);
+  float *chk_vector;
+  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * 1);
   for(int r = 0; r < k_per_partion; r++){
-    chk_vector[r] = (Element)1.f;
+    chk_vector[r] = (float)1.f;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode row chksum - column major
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        Element sum = (Element)0.0f;
+        float sum = (float)0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          Element a = A[r + (i + k_per_partion * p) * lda];
-          Element b = chk_vector[i];
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda]);
+          float b = chk_vector[i];
           sum += a * b;
         }
         // int idx = (k + p) + (c * lda) + (b_idx * stride);
         int idx = lda * (k + p) + r;
-        A[idx] = sum;
+        A[idx] = static_cast<Element>(sum);
       }
     }
   }
@@ -350,7 +381,7 @@ int run(Options &options) {
   // Fill input and output matrices on host using CUTLASS helper functions
 
   int kRange = 8;
-  float DIV = 100;
+  float DIV = 1;
   // if(options.if_split_phase==1 || options.if_split_phase==0){
   //   int m = 1;
   //   int k = problem_size.m() - 1 * options.partition;

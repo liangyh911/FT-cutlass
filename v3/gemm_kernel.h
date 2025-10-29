@@ -394,10 +394,13 @@ struct Gemm {
     //   *(recompute + iter) = clock();
     // }
     
-    if(fabs(recomputed_chksum - static_cast<float>(*(params.ref_D.data() + chk_start_idx))) > (float)10){
+    float updated_chksum = static_cast<float>(*(params.ref_D.data() + chk_start_idx));
+    if(fabs(recomputed_chksum - updated_chksum) > (float)1){
       diff = 1;
-      printf("recompute: %f, checksum: %f, diff: %f\n", 
-              recomputed_chksum, static_cast<float>(*(params.ref_D.data() + chk_start_idx)), fabs(recomputed_chksum - static_cast<float>(*(params.ref_D.data() + chk_start_idx))));
+      float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+      float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+      printf("recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+              recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
 
       // printf("%d Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
       //           iter, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));

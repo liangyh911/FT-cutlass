@@ -337,7 +337,8 @@ struct GemmBatched {
     int M = params.problem_size.m();
     int K = params.problem_size.k();
     int N = params.problem_size.n();
-    float E = 10;
+    
+    float E = 1e1;
     // int loc = -1;
     float MAX = 0;
     // int diff = 0;
@@ -351,15 +352,15 @@ struct GemmBatched {
     #pragma unroll 128
     for(int r = 0; r < M; r++){
       int idx = start_idx + r * N;
-      float element = *(params.ref_D.data() + idx);
+      float element = static_cast<float>(*(params.ref_D.data() + idx));
       
       dA_col_r1 += element;
-      dA_col_r2 += (float)(r+1) * element;
+      dA_col_r2 += static_cast<float>(r+1) * element;
     }
 
     // detect error
-    float dA_col_1 = *(params.ref_D.data() + start_idx + (M*N));
-    float dA_col_2 = *(params.ref_D.data() + start_idx + (M+1)*N);
+    float dA_col_1 = static_cast<float>(*(params.ref_D.data() + start_idx + (M*N)));
+    float dA_col_2 = static_cast<float>(*(params.ref_D.data() + start_idx + (M+1)*N));
 
     float d1 = (float)(dA_col_1 - dA_col_r1);
     float d2 = (float)(dA_col_2 - dA_col_r2);
@@ -370,7 +371,9 @@ struct GemmBatched {
     if(abs_d1 > E){
       if(!std::isinf(d2)){
         loc = round(d2 / d1) - 1;
-        printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f)\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
+        float max = (dA_col_1 > dA_col_r1) ? dA_col_1 : dA_col_r1;
+        float rel_err = abs_d1 / max;
+        printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f), rel_err: %f\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2, rel_err);
         diff = 1;
       }
       else{

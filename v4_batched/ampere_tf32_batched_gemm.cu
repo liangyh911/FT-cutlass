@@ -213,6 +213,11 @@ using ElementInputA = float;                        // <- data type of elements 
 using ElementInputB = float;                        // <- data type of elements in input matrix B
 using ElementOutput = float;                        // <- data type of elements in output matrix D
 
+// using ElementInputA = cutlass::bfloat16_t;                        // <- data type of elements in input matrix A
+// using ElementInputB = cutlass::bfloat16_t;                        // <- data type of elements in input matrix B
+// using ElementOutput = cutlass::bfloat16_t;                        // <- data type of elements in output matrix D
+
+
 // The code section below describes matrix layout of input and output matrices. Column Major for
 
 // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
@@ -335,22 +340,22 @@ cudaError_t cutlass_strided_batched_sgemm(
   return cudaSuccess;
 }
 
-template<typename T> 
+// template<typename T> 
 cudaError_t strided_batched_gemm_nn_reference(
   int m,
   int n,
   int k,
-  T alpha,
-  std::vector<T> const &A, 
+  ElementOutput alpha,
+  std::vector<ElementInputA> const &A, 
   int lda,
   long long int batch_stride_A,
-  std::vector<T> const &B, 
+  std::vector<ElementInputB> const &B, 
   int ldb,
   long long int batch_stride_B,
-  std::vector<T> &C, 
+  std::vector<ElementOutput> &C, 
   int ldc,
   long long int batch_stride_C,
-  T beta,
+  ElementOutput beta,
   int batch_count) {
   /*
   strided batched gemm NN
@@ -374,13 +379,16 @@ cudaError_t strided_batched_gemm_nn_reference(
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
     for (int n_idx = 0; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
-        T accum = beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
         for (int k_idx = 0; k_idx < k; k_idx++) {
-          accum += alpha 
-            * A[batch_idx * batch_stride_A + k_idx * lda + m_idx]
-            * B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          // accum += alpha 
+          //   * A[batch_idx * batch_stride_A + k_idx * lda + m_idx]
+          //   * B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          ElementInputA a = A[batch_idx * batch_stride_A + k_idx * lda + m_idx];
+          ElementInputB b = B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];  
+          accum += static_cast<float>(alpha * a * b);
         }
-        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = static_cast<ElementOutput>(accum);
       }
     }
   }
@@ -396,9 +404,11 @@ bool valid( int m, int n, int k,
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
     for (int n_idx = 0; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
-          T c = C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
-          T ref_c = ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
-          if(c != ref_c){
+          // T c = C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
+          // T ref_c = ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
+          float c = static_cast<float>(C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+          float ref_c = static_cast<float>(ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+          if(fabs(c - ref_c) > (float)1e1){
             printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
             correct = false;
           }
@@ -472,13 +482,13 @@ void encode_row_checksum(std::vector<Element> &A, int m, int k, int partition, i
       for(int r = 0; r < m; r++){
         float sum = 0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          float a = A[r + (i + k_per_partion * p) * lda + (b_idx * stride)];
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
           float b = chk_vector[i + c * k_per_partion];
           sum += a * b;
         }
         // int idx = (k + p) + (c * lda) + (b_idx * stride);
         int idx = (lda * (k + 2*p)) + (r + c * m + (b_idx * stride));
-        A[idx] = sum;
+        A[idx] = static_cast<Element>(sum);
       }
     }
   }
@@ -514,33 +524,33 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   long long int batch_stride_C = static_cast<long long int>(ldc) * static_cast<long long int>(options.problem_size.n());
 
   // alpha and beta
-  float alpha = 1.f;
-  float beta = 0.f;
+  ElementInputA alpha = static_cast<ElementInputA>(1.f);
+  ElementOutput beta = static_cast<ElementOutput>(0.f);
 
   cudaError_t result = cudaSuccess;
 
   // allocate the host memory
-  std::vector<float> host_A(count_A);
-  std::vector<float> host_B(count_B);
-  std::vector<float> host_C(count_C);
-  std::vector<float> result_C(count_C);
+  std::vector<ElementInputA> host_A(count_A);
+  std::vector<ElementInputB> host_B(count_B);
+  std::vector<ElementOutput> host_C(count_C);
+  std::vector<ElementOutput> result_C(count_C);
 
   // allocate the device memory
-  float *A;
-  float *B;
-  float *C;
+  ElementInputA *A;
+  ElementInputB *B;
+  ElementOutput *C;
 
-  result = cudaMalloc(&A, count_A * sizeof(float));
+  result = cudaMalloc(&A, count_A * sizeof(ElementInputA));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
   }
-  result = cudaMalloc(&B, count_B * sizeof(float));
+  result = cudaMalloc(&B, count_B * sizeof(ElementInputB));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
   }
-  result = cudaMalloc(&C, count_C * sizeof(float));
+  result = cudaMalloc(&C, count_C * sizeof(ElementOutput));
   if (result != cudaSuccess) {
     std::cerr << "cudaMalloc result = " << result << std::endl;
     return result;
@@ -554,7 +564,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < k; col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange) / DIV;
+        host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<ElementInputA>(static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange) / DIV);
         // host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
       }
     }
@@ -575,14 +585,14 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
         // n = n, k = k, ldb = k * batch_count, 
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
-        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV;
+        host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<ElementInputB>(static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV);
         
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
         // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
       }
     }
     if(options.if_split_phase == 1 || options.if_split_phase == 0){
-      encode_row_checksum(host_B, k, (options.problem_size.n() - 2 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
+      encode_row_checksum<ElementInputB>(host_B, k, (options.problem_size.n() - 2 * options.partition), options.partition, b_idx, batch_stride_B, ldb);
     }
   }
   // outputChk(host_B, batch_count, ldb, batch_stride_B, k, options.problem_size.n());
@@ -591,7 +601,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for (int b_idx = 0; b_idx < batch_count; b_idx++) {
     for (int col_idx = 0; col_idx < options.problem_size.n(); col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
-        host_C[row_idx + col_idx * ldc + b_idx * ldc * options.problem_size.n()] = 0.f;
+        host_C[row_idx + col_idx * ldc + b_idx * ldc * options.problem_size.n()] = static_cast<ElementOutput>(0.f);
       }
     }
   }
@@ -599,21 +609,21 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   printf("----finish filling matrices-------\n");
 
   // ref memory
-  std::vector<float> ref_A(host_A);
-  std::vector<float> ref_B(host_B);
-  std::vector<float> ref_C(host_C);
+  std::vector<ElementInputA> ref_A(host_A);
+  std::vector<ElementInputB> ref_B(host_B);
+  std::vector<ElementOutput> ref_C(host_C);
   // copy host memory to device
-  result = cudaMemcpy(A, host_A.data(), count_A * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(A, host_A.data(), count_A * sizeof(ElementInputA), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
   }
-  result = cudaMemcpy(B, host_B.data(), count_B * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(B, host_B.data(), count_B * sizeof(ElementInputB), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
   }
-  result = cudaMemcpy(C, host_C.data(), count_C * sizeof(float), cudaMemcpyHostToDevice);
+  result = cudaMemcpy(C, host_C.data(), count_C * sizeof(ElementOutput), cudaMemcpyHostToDevice);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
@@ -635,7 +645,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   }
   
   // copy device memory to host
-  result = cudaMemcpy(result_C.data(), C, count_C * sizeof(float), cudaMemcpyDeviceToHost);
+  result = cudaMemcpy(result_C.data(), C, count_C * sizeof(ElementOutput), cudaMemcpyDeviceToHost);
   if (result != cudaSuccess) {
     std::cerr << "cudaMemcpy result = " << result << std::endl;
     return result;
