@@ -1715,10 +1715,10 @@ bool valid( int m, int n, int k,
 }
 
 template <typename Dtype>
-bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
-                        const Dtype *a, int64_t lda, int64_t stridea,                                         
-                        const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
+bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,  
+                        Dtype *a_, int64_t lda, int64_t stridea,                                         
+                        Dtype *b_, int64_t ldb, int64_t strideb,                                           
+                        Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase){
   // printf("cutlass bgemm\n");
 
@@ -1735,6 +1735,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   const char* homeDir = nullptr;
   homeDir = getenv("HOME");
   fs::path homePath(homeDir);
+
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::ColumnMajor;
@@ -1765,14 +1769,14 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
 
-  alpha = Dtype(alpha);
-  beta = Dtype(beta);
+  // alpha = Dtype(alpha);
+  // beta = Dtype(beta);
   
   // ldb = ldb * num_batches;
 
@@ -1796,8 +1800,9 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   // B = A + count_A;
 
   // // copy matrix A and matrix B
-  Dtype *a_ = const_cast<Dtype*>(a);
-  Dtype *b_ = const_cast<Dtype*>(b);
+  // Dtype *a_ = const_cast<Dtype*>(a);
+  // Dtype *b_ = const_cast<Dtype*>(b);
+
   // copy_batched_matrix<<<dim3((k+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea, stridea);
   // copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb, strideb_check);
 
@@ -1860,7 +1865,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
       Dtype, LayoutInputA,
       Dtype, LayoutInputB,
       Dtype, LayoutOutput,
-      Dtype,
+      DtypeAccumulator,
       MMAOp,
       SmArch,
       ShapeMMAThreadBlock,
@@ -1951,10 +1956,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
 }
 
 template <typename Dtype>
-bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
-                        const Dtype *a, int64_t lda, int64_t stridea,                                         
-                        const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
+bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,  
+                        Dtype *a_, int64_t lda, int64_t stridea,                                         
+                        Dtype *b_, int64_t ldb, int64_t strideb,                                           
+                        Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase){
   // printf("cutlass bgemm T\n");
 
@@ -1971,6 +1976,10 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   const char* homeDir = nullptr;
   homeDir = getenv("HOME");
   fs::path homePath(homeDir);
+
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::RowMajor;
@@ -2001,14 +2010,14 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
 
-  alpha = Dtype(alpha);
-  beta = Dtype(beta);
+  // alpha = Dtype(alpha);
+  // beta = Dtype(beta);
   
   // ldb = ldb * num_batches;
 
@@ -2032,8 +2041,9 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // B = A + count_A;
 
   // copy matrix A and matrix B
-  Dtype *a_ = const_cast<Dtype*>(a);
-  Dtype *b_ = const_cast<Dtype*>(b);
+  // Dtype *a_ = const_cast<Dtype*>(a);
+  // Dtype *b_ = const_cast<Dtype*>(b);
+
   // copy_batched_matrix<<<dim3((m+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, k, m, stridea, stridea);
   // copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb, strideb_check);
 
@@ -2097,7 +2107,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       Dtype, LayoutInputA,
       Dtype, LayoutInputB,
       Dtype, LayoutOutput,
-      Dtype,
+      DtypeAccumulator,
       MMAOp,
       SmArch,
       ShapeMMAThreadBlock,
@@ -2220,49 +2230,56 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   }
   SplitFile.close();
 
-  if constexpr (std::is_same<Dtype, float>::value) {
-    // c10::Half torch_half = 1;
-    // float f = static_cast<float>(torch_half);
-    // cutlass::half_t cutlass_half = cutlass::half_t(static_cast<float>(f));
+  // if constexpr (std::is_same<Dtype, float>::value) {
+  //   Dtype alpha_ = Dtype(alpha);
+  //   Dtype beta_ = Dtype(beta);
 
-    // float x = static_cast<float>(cutlass_half);
-    // torch_half = c10::Half(static_cast<float>(x));
+  //   Dtype *a_ = const_cast<Dtype*>(a);
+  //   Dtype *b_ = const_cast<Dtype*>(b);
 
-    if(transa == 't'){
-      // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
-      state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha,  
-        a, lda, stridea,                                         
-        b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
-    }
-    else{
-      // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
-      state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
-        a, lda, stridea,                                         
-        b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
-    }
-  }
-  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
   //   if(transa == 't'){
-  //     state = cutlass_bgemm_T<c10::Half>(transa, transb, m, n, k, alpha,  
-  //       a, lda, stridea,                                         
-  //       b, ldb, strideb,                                           
-  //       beta, c, ldc, stridec, num_batches);
+  //     // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+  //     state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha_,  
+  //       a_, lda, stridea,                                         
+  //       b_, ldb, strideb,                                           
+  //       beta_, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
   //   }
   //   else{
-  //     state = cutlass_bgemm<c10::Half>(transa, transb, m, n, k, alpha,  
-  //         a, lda, stridea,                                         
-  //         b, ldb, strideb,                                           
-  //         beta, c, ldc, stridec, num_batches);
+  //     // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+  //     state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha_,  
+  //       a_, lda, stridea,                                         
+  //       b_, ldb, strideb,                                           
+  //       beta_, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
   //   }
-  // } 
+  // }
+  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+  if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+    cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
+    cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
+    cutlass::bfloat16_t *c_ = reinterpret_cast<cutlass::bfloat16_t*>(c);
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha);
+    cutlass::bfloat16_t beta_ = static_cast<cutlass::bfloat16_t>(beta);
+
+    if(transa == 't'){
+      state = cutlass_bgemm_T<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
+        a_, lda, stridea,                                         
+        b_, ldb, strideb,                                           
+        beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase);
+    }
+    else{
+      state = cutlass_bgemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
+          a_, lda, stridea,                                         
+          b_, ldb, strideb,                                           
+          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase);
+    }
+  } 
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
   //                                           a, lda, b, ldb, beta,
   //                                           c, ldc);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
   //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
   //                                             a, lda, b, ldb, beta,
   //                                             c, ldc);

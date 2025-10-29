@@ -663,7 +663,7 @@ public:
         }
       }
       else{
-        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
         cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
         if(deBug){
