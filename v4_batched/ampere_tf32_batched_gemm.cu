@@ -39,6 +39,9 @@
 
 #include "helper.h"
 
+#include <cutlass/numeric_types.h>
+#include <cutlass/numeric_conversion.h>
+
 
 #pragma warning( disable : 4503)
 
@@ -99,11 +102,11 @@ matrix B can be seen as
 , where the batch size is 2, N is 3 and K is 2
 The stride (batch_stride_B) between the first element of two batches is k
 
-nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o bout.exe
+nvcc ampere_tf32_batched_gemm_T.cu -O0 -I/home/yuhangl/cutlass/include -I/home/yuhangl/cutlass/tools/util/include -I/home/yuhangl/cutlass/examples/common -arch=sm_90 -o boutT_bf16.exe
 
-nvcc ampere_tf32_batched_gemm.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o blout.exe
+nvcc ampere_tf32_batched_gemm_T.cu -O0 -I/home/yuhangl/origin_cutlass/cutlass/include -I/home/yuhangl/origin_cutlass/cutlass/tools/util/include -I/home/yuhangl/origin_cutlass/cutlass/examples/common -arch=sm_90 -o bloutT_bf16.exe
 
-ncu -f -o batch32 --set full ./bout.exe --batch=256 --m=1024 --n=1024 --k=128 --split=0 --iterations=1
+ncu -f -o batchPipe --set full ./boutT_bf16.exe --m=1024 --n=1024 --k=128 --batch=256 --split=1 --iterations=1 --validate=1
 */
 
 // Command line options parsing
@@ -123,6 +126,8 @@ struct Options {
   int if_split_phase;
 
   int validation;
+
+  int monitored;
   
   Options():
     help(false),
@@ -134,7 +139,8 @@ struct Options {
     beta(0),
     partition(),
     if_split_phase(2),
-    validation(0) { }
+    validation(0),
+    monitored(0) { }
 
   // bool valid() {
   //   return true;
@@ -162,12 +168,17 @@ struct Options {
 
     cmd.get_cmd_line_argument("validate", validation);
 
+    cmd.get_cmd_line_argument("monitored", monitored);
+
     // cmd.get_cmd_line_argument("partition", partition);
     partition = 1;
 
     // add checksum size
     if(if_split_phase == 1 || if_split_phase == 0){
       problem_size.n() += partition * 2;
+    }
+    if(monitored == 0){
+      monitored = batch_count;
     }
   }
 
@@ -187,7 +198,8 @@ struct Options {
       << "  --iterations=<int>          Number of profiling iterations to perform.\n\n"
       << "  --partition=<int>           Number of partition of the matrix.\n\n"
       << "  --split=<int>               0-no split, 1-split, 2-baseline.\n\n"
-      << "  --validate=<int>            0-no validate, 1-validate";
+      << "  --validate=<int>            0-no validate, 1-validate\n\n"
+      << "  --monitored=<int>           Number of ABFT monitored batches.";
 
     out << "\n\nExamples:\n\n"
       << "$ ./examples/14_ampere_tf32_tensorop_gemm/14_ampere_tf32_tensorop_gemm --m=1024 --n=512 --k=1024 \\\n"
@@ -209,13 +221,14 @@ struct Options {
 
 using ElementAccumulator = float;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = float;                        // <- data type of elements in input matrix A
-using ElementInputB = float;                        // <- data type of elements in input matrix B
-using ElementOutput = float;                        // <- data type of elements in output matrix D
 
-// using ElementInputA = cutlass::bfloat16_t;                        // <- data type of elements in input matrix A
-// using ElementInputB = cutlass::bfloat16_t;                        // <- data type of elements in input matrix B
-// using ElementOutput = cutlass::bfloat16_t;                        // <- data type of elements in output matrix D
+using ElementInputA = cutlass::bfloat16_t;                        // <- data type of elements in input matrix A
+using ElementInputB = cutlass::bfloat16_t;                        // <- data type of elements in input matrix B
+using ElementOutput = cutlass::bfloat16_t;                        // <- data type of elements in output matrix D
+
+// using ElementInputA = float;                        // <- data type of elements in input matrix A
+// using ElementInputB = float;                        // <- data type of elements in input matrix B
+// using ElementOutput = float;                        // <- data type of elements in output matrix D
 
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
@@ -255,24 +268,25 @@ cudaError_t cutlass_strided_batched_sgemm(
   int n,
   int k,
   float alpha,
-  float const *A,
+  ElementInputA const *A,
   int lda,
   long long int batch_stride_A,
-  float const *B,
+  ElementInputB const *B,
   int ldb,
   long long int batch_stride_B,
-  float *C,
+  ElementOutput *C,
   int ldc,
   long long int batch_stride_C,
   float beta,
   int batch_count,
   int if_split_phase,
-  int partition) {
+  int partition,
+  int monitored) {
 
   using Gemm = cutlass::gemm::device::GemmBatched<
-    float, cutlass::layout::ColumnMajor,
-    float, cutlass::layout::ColumnMajor,
-    float, cutlass::layout::ColumnMajor,
+    ElementInputA, cutlass::layout::ColumnMajor,
+    ElementInputB, cutlass::layout::ColumnMajor,
+    ElementOutput, cutlass::layout::ColumnMajor,
     ElementAccumulator,
     MMAOp,
     SmArch,
@@ -317,6 +331,8 @@ cudaError_t cutlass_strided_batched_sgemm(
   cudaStream_t stream;
   cudaStreamCreate(&stream);
 
+  printf("monitored batches num: %d\n", monitored);
+
   cutlass::Status status = gemm_op({
     {m, n, k},
     {A, lda}, 
@@ -329,7 +345,7 @@ cudaError_t cutlass_strided_batched_sgemm(
     batch_stride_C,
     {alpha, beta},
     batch_count},
-    if_split_phase, partition, batch_count,
+    if_split_phase, partition, monitored,
     stream
   );
 
@@ -409,7 +425,9 @@ bool valid( int m, int n, int k,
           float c = static_cast<float>(C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
           float ref_c = static_cast<float>(ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
           if(fabs(c - ref_c) > (float)1e1){
-            printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
+            // if(n_idx > 1023){
+              printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, static_cast<float>(c), static_cast<float>(ref_c), static_cast<float>(c-ref_c));
+            // }
             correct = false;
           }
       }
@@ -425,7 +443,7 @@ void outputChk(std::vector<T> &A, int64_t nb, int64_t ld, int64_t stride, int64_
     for(int r = 0; r < row; r++){
       printf("|");
       for(int c = 0; c < col; c++){
-        printf("%.6f", (float)(A[i*stride + c*ld + r]));
+        printf("%.6f", static_cast<float>(A[i*stride + c*ld + r]));
         printf(", ");
       }
       printf("!\n");
@@ -438,10 +456,10 @@ template <typename Element>
 void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, int b_idx, int stride, int lda){
   int m = 1;
   // init checksum vector
-  float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(float)* k * 1);
+  Element *chk_vector;
+  chk_vector = (Element*)malloc(sizeof(Element)* k * 1);
   for(int c = 0; c < k; c++){
-    chk_vector[c] = (float)1;
+    chk_vector[c] = (Element)1;
     // chk_vector[c + k] = (float)(c+1);
   }
   // encode chksum - column major
@@ -449,10 +467,10 @@ void encode_col_checksum(std::vector<Element> &A, int k, int n, int partition, i
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        float sum = 0.0f;
+        Element sum = (Element)0.0f;
         for(int i = 0; i < k_per_partion; i++){
-          float a = chk_vector[r + i * m];
-          float b = A[(i + k_per_partion * p) + c * lda + (b_idx * stride)];
+          Element a = chk_vector[r + i * m];
+          Element b = A[(i + k_per_partion * p) + c * lda + (b_idx * stride)];
           sum += a * b;
         }
         int idx = (k + p) + (c * lda) + (b_idx * stride);
@@ -470,17 +488,17 @@ void encode_row_checksum(std::vector<Element> &A, int m, int k, int partition, i
 
   // init checksum vector
   float *chk_vector;
-  chk_vector = (float*)malloc(sizeof(Element)* k_per_partion * n);
+  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * n);
   for(int r = 0; r < k_per_partion; r++){
-    chk_vector[r] = (Element)1;
-    chk_vector[k_per_partion + r] = (Element)(r + 1);
+    chk_vector[r] = float(1);
+    chk_vector[k_per_partion + r] = float(r + 1);
   }
 
   // encode row chksum - column major
   for(int p = 0; p < partition; p++){
     for(int c = 0; c < n; c++){
       for(int r = 0; r < m; r++){
-        float sum = 0.0f;
+        float sum = float(0.0f);
         for(int i = 0; i < k_per_partion; i++){
           float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
           float b = chk_vector[i + c * k_per_partion];
@@ -565,14 +583,11 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
     for (int col_idx = 0; col_idx < k; col_idx++) {
       for (int row_idx = 0; row_idx < m; row_idx++) {
         host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<ElementInputA>(static_cast<float>((row_idx + col_idx * lda + b_idx * lda * k) % kRange) / DIV);
-        // host_A[row_idx + col_idx * lda + b_idx * lda * k] = 1.f;
+        // host_A[row_idx + col_idx * lda + b_idx * lda * k] = static_cast<ElementInputA>(1.f);
       }
     }
-    // if(options.if_split_phase == 1 || options.if_split_phase == 0){
-    //   encode_col_checksum(host_A, (m-1*options.partition), k, options.partition, b_idx, batch_stride_A, lda);
-    // }
   }
-  // outputChk(host_A, batch_count, lda, batch_stride_A, m, k);
+  // outputChk(host_A, batch_count, lda, batch_stride_A, m, options.problem_size.k());
   
   // fill B
   int n1 = options.problem_size.n();
@@ -585,10 +600,10 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
       for (int row_idx = 0; row_idx < k; row_idx++) {
         // n = n, k = k, ldb = k * batch_count, 
         // host_B[row_idx + col_idx * ldb + b_idx * k] = static_cast<float>(((n + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange);
+
         host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<ElementInputB>(static_cast<float>(((options.problem_size.n() + k * ldb + batch_count * k) - (row_idx + col_idx * ldb + b_idx * k)) % kRange) / DIV);
-        
-        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV;
-        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = 1.f;
+        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<ElementInputB>(static_cast<float>((row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()) % kRange) / DIV);
+        // host_B[row_idx + col_idx * ldb + b_idx * ldb * options.problem_size.n()] = static_cast<ElementInputB>(1.f);
       }
     }
     if(options.if_split_phase == 1 || options.if_split_phase == 0){
@@ -637,7 +652,7 @@ cudaError_t run_batched_gemm(bool use_array, Options &options) {
   for(int i = 0; i < options.iterations; i++){
     result = cutlass_strided_batched_sgemm(
       m, n, k, alpha, A, lda, batch_stride_A, B, ldb, batch_stride_B, C, ldc, batch_stride_C,
-      beta, batch_count, options.if_split_phase, options.partition);
+      beta, batch_count, options.if_split_phase, options.partition, batch_count);
     if (result != cudaSuccess){
       std::cerr << "cutlass result = " << result << std::endl;
       return result;
@@ -711,7 +726,7 @@ int main(int argc, const char **argv) {
     options.print_usage(std::cout) << std::endl;
     return 0;
   }
-
+    
   printf("%d x %d x %d x %d TF32 tensor op Matrix Multiply\n", \
     options.batch_count, options.problem_size.m(), options.problem_size.n(), options.problem_size.k());
 
