@@ -1720,7 +1720,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase){
-  // printf("cutlass bgemm\n");
+  printf("cutlass bgemm\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1961,7 +1961,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase){
-  // printf("cutlass bgemm T\n");
+  printf("cutlass bgemm T\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2231,6 +2231,8 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   SplitFile.close();
 
   // if constexpr (std::is_same<Dtype, float>::value) {
+  //   printf("using float\n");
+
   //   Dtype alpha_ = Dtype(alpha);
   //   Dtype beta_ = Dtype(beta);
 
@@ -2252,8 +2254,10 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   //       beta_, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
   //   }
   // }
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
-  if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+  // else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+  if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+    printf("using c10::BFloat16\n");
+
     cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
     cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
     cutlass::bfloat16_t *c_ = reinterpret_cast<cutlass::bfloat16_t*>(c);
@@ -2319,10 +2323,10 @@ template bool cutlass_bgemm_launcher<c10::complex<float>>(char transa, char tran
 
 
 template <typename Dtype>
-bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
-                  const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
+bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,
+                  Dtype *a_, int64_t lda, Dtype *b_, int64_t ldb, Dtype beta,
                   Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase){
-  // printf("cutlass_gemm\n");
+  printf("cutlass_gemm\n");
   
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2352,6 +2356,10 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // problem size
   // cutlass::gemm::GemmCoord problem_size({m, n, k});
 
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
+
   // Matrix Layerout
   using LayoutInputA = cutlass::layout::RowMajor;
   using LayoutInputB = cutlass::layout::ColumnMajor;
@@ -2366,8 +2374,8 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   using LayoutOutput = cutlass::layout::ColumnMajor;
 
   // Initialize alpha and beta for dot product computation
-  alpha = Dtype(alpha);
-  beta = Dtype(beta);
+  // alpha = Dtype(alpha);
+  // beta = Dtype(beta);
 
   // init host_tensor of A, B and D
   // cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
@@ -2375,8 +2383,8 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
   
   // copy data
-  Dtype *a_ = const_cast<Dtype*>(a);
-  Dtype *b_ = const_cast<Dtype*>(b);
+  // Dtype *a_ = const_cast<Dtype*>(a);
+  // Dtype *b_ = const_cast<Dtype*>(b);
   // issue loading A?
   // copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(a_, tensor_a.device_data(), k, m);
   // copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(b_, tensor_b.device_data(), k, n);
@@ -2448,8 +2456,8 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
@@ -2461,7 +2469,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                          LayoutInputB,
                                          Dtype,
                                          LayoutOutput,
-                                         Dtype,
+                                         DtypeAccumulator,
                                          MMAOp,
                                          SmArch,
                                          ShapeMMAThreadBlock,
@@ -2606,10 +2614,33 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   SplitFile.close();
 
   if constexpr (std::is_same<Dtype, float>::value) {
-    state = cutlass_gemm<float>(transa, transb, m, n, k, alpha,
-                                a, lda, b, ldb, beta,
+    printf("using float\n");
+
+    Dtype alpha_ = Dtype(alpha);
+    Dtype beta_ = Dtype(beta);
+
+    Dtype *a_ = const_cast<Dtype*>(a);
+    Dtype *b_ = const_cast<Dtype*>(b);
+
+    state = cutlass_gemm<float>(transa, transb, m, n, k, alpha_,
+                                a_, lda, b_, ldb, beta_,
                                 c, ldc, DEBUG, if_split_phase);
   }
+  else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+    printf("using c10::BFloat16\n");
+
+    cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
+    cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
+    cutlass::bfloat16_t *c_ = reinterpret_cast<cutlass::bfloat16_t*>(c);
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha);
+    cutlass::bfloat16_t beta_ = static_cast<cutlass::bfloat16_t>(beta);
+
+    state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,
+                                              a_, lda, b_, ldb, beta_,
+                                              c_, ldc, DEBUG, if_split_phase);
+  } 
+
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
   //                               a, lda, b, ldb, beta,
@@ -2627,11 +2658,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   //                                           *temp_a, lda, *temp_b, ldb, temp_beta,
   //                                           *temp_c, ldc);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
-  //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
-  //                                             *a, lda, *b, ldb, beta,
-  //                                             *c, ldc);
-  // } 
+
   return state;
 }
 
@@ -2666,12 +2693,12 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
     int64_t m,
     int64_t n,
     int64_t k,
-    at::opmath_type<Dtype> alpha_val,
-    const Dtype* mat1_ptr,
+    Dtype alpha_val,
+    Dtype* mat1_ptr_,
     int64_t mat1_ld,
-    const Dtype* mat2_ptr,
+    Dtype* mat2_ptr_,
     int64_t mat2_ld,
-    const Dtype* bias,
+    Dtype* bias_,
     Dtype* result_ptr,
     int64_t result_ld,
     GEMMAndBiasActivationEpilogue activation, bool DEBUG, int if_split_phase){
@@ -2711,6 +2738,10 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // Problem Size
   // cutlass::gemm::GemmCoord problem_size({m, n, k});
 
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
+
   // Matrix Layerout
   using LayoutInputA = cutlass::layout::RowMajor;
   using LayoutInputB = cutlass::layout::ColumnMajor;
@@ -2731,13 +2762,14 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
   
   // bias vector to bias matrix
-  Dtype *bias_ = const_cast<Dtype*>(bias);
+  // Dtype *bias_ = const_cast<Dtype*>(bias);
   Dtype *bias_mat;
   cudaMalloc((void**)bias_mat, m * n * sizeof(Dtype));
   vector_to_matrix<<<dim3(128), dim3((n+128-1)/128)>>>(bias_, bias_mat, m, n);
+  
   // copy data
-  Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
-  Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
+  // Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
+  // Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
   // copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), k, m);
   // copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
 
@@ -2753,15 +2785,20 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
 
   // Initialize alpha and beta for dot product computation
-  Dtype alpha = Dtype(1);
-  Dtype beta = Dtype(1);
-  Dtype encode_beta = Dtype(0);
+  // Dtype alpha = Dtype(1);
+  // Dtype beta = Dtype(1);
+  // Dtype encode_beta = Dtype(0);
+
+  Dtype alpha = static_cast<Dtype>(1);
+  Dtype beta = static_cast<Dtype>(1);
+  Dtype encode_beta = static_cast<Dtype>(0);
 
   // encode checksum
-  cudaStream_t stream_main, stream_rowchk, stream_biaschk;
+  // cudaStream_t stream_main, stream_rowchk, stream_biaschk;
+  cudaStream_t stream_main;
   cudaStreamCreate(&stream_main);
-  cudaStreamCreate(&stream_rowchk);
-  cudaStreamCreate(&stream_biaschk);
+  // cudaStreamCreate(&stream_rowchk);
+  // cudaStreamCreate(&stream_biaschk);
 
   // cublasHandle_t handle_rowchk, handle_biaschk;
   // cublasCreate(&handle_rowchk);
@@ -2835,8 +2872,8 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
@@ -2848,7 +2885,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                          LayoutInputB,
                                          Dtype,
                                          LayoutOutput,
-                                         Dtype,
+                                         DtypeAccumulator,
                                          MMAOp,
                                          SmArch,
                                          ShapeMMAThreadBlock,
@@ -2932,6 +2969,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // tensor_d.reset();
 
   cudaFree(bias_mat);
+  cudaStreamDestroy(stream_main);
 
   if(DEBUG){
     cudaEventRecord(abft_prepare_end, 0);
@@ -3004,12 +3042,37 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   SplitFile.close();
 
   if constexpr (std::is_same<Dtype, float>::value) {
-    state = cutlass_gemm_and_bias<float>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
-      mat1_ptr, mat1_ld,
-      mat2_ptr, mat2_ld,
-      bias, result_ptr,result_ld,
+    printf("using float\n");
+
+    Dtype alpha_ = Dtype(alpha_val);
+    // Dtype beta_ = Dtype(beta);
+
+    Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
+    Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
+    Dtype *bias_ = const_cast<Dtype*>(bias);
+
+    state = cutlass_gemm_and_bias<float>(transpose_mat1,transpose_mat2,m,n,k,alpha_,
+      mat1_ptr_, mat1_ld,
+      mat2_ptr_, mat2_ld,
+      bias_, result_ptr,result_ld,
       activation, DEBUG, if_split_phase);
   }
+  else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {    
+    printf("using c10::BFloat16\n");
+
+    cutlass::bfloat16_t *mat1_ptr_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(mat1_ptr));
+    cutlass::bfloat16_t *mat2_ptr_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(mat2_ptr));
+    cutlass::bfloat16_t *result_ptr = reinterpret_cast<cutlass::bfloat16_t*>(result_ptr);
+    cutlass::bfloat16_t *bias_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(bias));
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha_val);
+
+    state = cutlass_gemm_and_bias<cutlass::bfloat16_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_,
+      mat1_ptr_, mat1_ld,
+      mat2_ptr_, mat2_ld,
+      bias_, result_ptr,result_ld,
+      activation, DEBUG, if_split_phase);
+  } 
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
   //     mat1_ptr, mat1_ld,
@@ -3024,13 +3087,7 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   //     bias, result_ptr,result_ld,
   //     activation);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
-  //   state = cutlass_gemm_and_bias<cutlass::bfloat16_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
-  //     mat1_ptr, mat1_ld,
-  //     mat2_ptr, mat2_ld,
-  //     bias, result_ptr,result_ld,
-  //     activation);
-  // } 
+  
   return state;
 }
 
