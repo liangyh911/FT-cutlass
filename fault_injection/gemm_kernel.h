@@ -420,7 +420,7 @@ struct Gemm {
   }
   
   template <typename T>
-  __device__ void force_bit_one(T *dA, int bit, int *count, float *buf){ 
+  __device__ void force_bit_one_f32(T *dA, int bit, int *count, float *buf){ 
     // 30 or 29
     float orgValue = (float)*(dA);
     float tmp = (float)*(dA);
@@ -436,6 +436,33 @@ struct Gemm {
       int idx = (*count) * 1;
       *(buf + idx) = tmp;
       *(buf + (idx + 1)) = *(dA);
+      (*count) += 2;
+    }
+    // printf("%.4f ", *(dA));
+  }
+
+  template <typename T>
+  __device__ void force_bit_one_bf16(T *dA, int bit, int *count, float *buf){ 
+    // 30 or 29
+    float orgValue = static_cast<float>(*dA);
+    float tmp = orgValue;
+    // printf("%.4f ", orgValue);
+    
+    uint32_t intValue = *reinterpret_cast<uint32_t*>(&orgValue);
+    uint16_t bf16_bits = static_cast<uint16_t>(intValue >> 16);
+    bf16_bits |= (1u << bit);
+    // *intValue &= ~ ((1u << bit));
+
+    uint32_t new_int_value = (static_cast<uint32_t>(bf16_bits) << 16);
+    float new_float = *reinterpret_cast<float*>(&new_int_value);
+    *dA = static_cast<cutlass::bfloat16_t>(new_float);
+
+    if(tmp != new_float){
+      // printf("%.4f %.4f ", tmp, new_float);
+      // int idx = (*count) * 2;
+      int idx = *count;
+      *(buf + idx) = tmp;
+      *(buf + (idx + 1)) = new_float;
       (*count) += 2;
     }
     // printf("%.4f ", *(dA));
@@ -776,7 +803,7 @@ struct Gemm {
       //   for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
       //     for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
       //       int idx = j + i * N;
-      //       force_bit_one((params.ref_D.data()+idx), faulty_bit);
+      //       force_bit_one_f32((params.ref_D.data()+idx), faulty_bit);
       //     } 
       //   }
       // }
@@ -792,7 +819,8 @@ struct Gemm {
         for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
           for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
             int idx = j + i * N;
-            force_bit_one((params.ref_D.data()+idx), faulty_bit, counter, buf);
+            // force_bit_one_f32((params.ref_D.data()+idx), faulty_bit, counter, buf);
+            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
           }
           // printf("\n"); 
         }
@@ -813,7 +841,8 @@ struct Gemm {
         for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
           for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
             int idx = j + i * N;
-            force_bit_one((params.ref_D.data()+idx), faulty_bit, (counter+1), (buf+init_buf_idx));
+            // force_bit_one_f32((params.ref_D.data()+idx), faulty_bit, (counter+1), (buf+init_buf_idx));
+            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, (counter+1), (buf+init_buf_idx));
           }
           // printf("\n"); 
         }

@@ -620,7 +620,7 @@ public:
 
             // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
             // ofs << std::endl << line << " ";
-            // std::cout << std::endl << line;
+            // std::cout << std::endl << line << " ";
 
             ofs.close();
           } 
@@ -640,7 +640,7 @@ public:
             
             // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
             // ofs << line << " ";
-            // std::cout << std::endl << line;
+            // std::cout << line << " ";
 
             ofs.close();
           } 

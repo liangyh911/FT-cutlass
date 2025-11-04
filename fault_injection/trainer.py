@@ -2501,10 +2501,20 @@ class Trainer:
         falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
         FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
         PlanFP = f"/home/yuhangl/control_{job_id}/plan.txt"
+        totalfaultyStepFP = f"/home/yuhangl/control_{job_id}/total_faulty_steps.txt"
+        CurStepFP = f"/home/yuhangl/control_{job_id}/current_step.txt"
 
+        with open(FIFP, "w") as file:
+            file.truncate(0)
+            file.write('f')
+ 
         with open(falutyStepFP, 'r') as file:
             faulty_step = int(file.readline())
         faulty_epoch = faulty_step / 250
+
+        with open(totalfaultyStepFP, 'r') as file:
+            total_fi_steps = int(file.readline()) + faulty_step
+        
         # local_faulty_step = faulty_step % 250
         # print(f"faulty step: {faulty_step}, faulty epoch: {faulty_epoch}, local faulty step: {local_faulty_step}")
         # SM-Checker FI: global steps controling FI END
@@ -2584,9 +2594,14 @@ class Trainer:
                 perform_FI = False
                 # if(epoch != 0):
                 #     perform_FI = False
-                total_fi_steps = 25 + faulty_step
+                # total_fi_steps = 25 + faulty_step
                 FI_step = 1
                 if perform_FI:
+                    # write current global step
+                    with open(CurStepFP, "w") as file:
+                        file.truncate(0)
+                        file.write(f"{global_steps} ")
+
                     if(global_steps == faulty_step):
                         with open(FIFP, "w") as file:
                             file.truncate(0)
@@ -2792,8 +2807,8 @@ class Trainer:
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             
             # SM-Checker: record loss for each epoch here 
-            # print(f"\nloss: {tr_loss/250}, grad_norm: {grad_norm}, total_updates:{total_updates}")
-            epoch_loss = tr_loss / total_updates
+            print(f"\nepoch: {epoch}, loss: {tr_loss/250}, grad_norm: {grad_norm}, total_updates:{total_updates}")
+            epoch_loss = tr_loss / 250
 
             self._maybe_log_save_evaluate(
                 tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
@@ -2810,15 +2825,21 @@ class Trainer:
                     )
             if self.control.should_training_stop:
                 break
+            
+             # SM-Checker: if loss = 0, break training
+            if(epoch_loss == 0):
+                print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
+                addition_epoch = epoch
+                break
 
-            # SM-Checker: if loss (epoch) meet requirement (10th epoch: 0.095), break training
-            if(epoch > 9 and epoch_loss <= 0.095):
-                print("break the epoch loop")
+            # SM-Checker: if loss (epoch) meet requirement (llama: 10th epoch: 0.1; qwen: 0.07), break training
+            if(epoch >= 9 and epoch_loss <= 0.07):
+                print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
                 addition_epoch = epoch
                 break
 
         # SMChecker: record addition epochs after FI
-        logFP = f"/home/yuhangl/control_{job_id}/llama_output.log"
+        logFP = f"/home/yuhangl/control_{job_id}/output.log"
         with open(logFP, "a") as file:
             file.write(f"{addition_epoch}\n")
 

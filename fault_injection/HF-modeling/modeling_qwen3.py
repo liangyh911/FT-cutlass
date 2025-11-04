@@ -100,13 +100,13 @@ class Qwen3MLP(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("up_proj ")
+                file.write("UP")
         up_proj = self.up_proj(x)
 
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("gate_proj ")
+                file.write("GA")
         gate_proj = self.gate_proj(x)
         
         gate_proj = self.act_fn(gate_proj)
@@ -114,7 +114,7 @@ class Qwen3MLP(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
-                file.write("down_proj ")
+                file.write("DO")
         down_proj = self.down_proj(gate_proj * up_proj)
 
         with open(cutlassFP, 'w') as file:
@@ -190,7 +190,7 @@ def eager_attention_forward(
     if FI: 
         with open(component, 'w') as file:
             file.truncate(0)
-            file.write("Q*K_T ")
+            file.write("QK")
 
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
@@ -203,7 +203,7 @@ def eager_attention_forward(
     if FI: 
         with open(component, 'w') as file:
             file.truncate(0)
-            file.write("AP*V ")
+            file.write("AV")
     attn_output = torch.matmul(attn_weights, value_states)
 
     attn_output = attn_output.transpose(1, 2).contiguous()
@@ -267,7 +267,7 @@ class Qwen3Attention(nn.Module):
                 file.truncate(0)
                 file.write('t')
 
-         with open(FIFP, 'r') as file:
+        with open(FIFP, 'r') as file:
             FIflag = file.read()
             if FIflag == 't':
                 FI = True
@@ -277,19 +277,19 @@ class Qwen3Attention(nn.Module):
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(Q) ")
+                    file.write("W(Q)")
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         
-         if FI: 
+        if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(K) ")
+                    file.write("W(K)")
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(V) ")
+                    file.write("W(V)")
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings

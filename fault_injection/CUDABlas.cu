@@ -1720,7 +1720,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm\n");
+  // printf("cutlass bgemm\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1961,7 +1961,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm T\n");
+  // printf("cutlass bgemm T\n");
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2256,7 +2256,7 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   // }
   // else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
   if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
-    printf("using c10::BFloat16\n");
+    // printf("using c10::BFloat16\n");
 
     cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
     cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
@@ -2326,7 +2326,7 @@ template <typename Dtype>
 bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,
                   Dtype *a_, int64_t lda, Dtype *b_, int64_t ldb, Dtype beta,
                   Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase){
-  printf("cutlass_gemm\n");
+  // printf("cutlass_gemm\n");
   
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2614,7 +2614,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   SplitFile.close();
 
   if constexpr (std::is_same<Dtype, float>::value) {
-    printf("using float\n");
+    // printf("using float\n");
 
     Dtype alpha_ = Dtype(alpha);
     Dtype beta_ = Dtype(beta);
@@ -2627,7 +2627,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
                                 c, ldc, DEBUG, if_split_phase);
   }
   else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
-    printf("using c10::BFloat16\n");
+    // printf("using c10::BFloat16\n");
 
     cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
     cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
