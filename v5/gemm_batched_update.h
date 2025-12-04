@@ -484,21 +484,33 @@ struct GemmBatchedUpdate {
     real_smid -= matrix_SM;
     // assign enough SMs for each batch 
     int nSM = 132 - matrix_SM;
-    int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n();
-    if(SM_per_batch > nSM){
-      SM_per_batch = nSM;
-    }
-    int batch_step = (int)(floor((double)nSM / (double)SM_per_batch));
-    int local_smid = real_smid % SM_per_batch;
-    int init_batch_idx = real_smid / SM_per_batch;
+    
+    // one SM works on one batch
+    int batch_step = nSM;
+    int init_batch_idx = real_smid;
     int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
+    int inter_batch_iter = params.grid_tiled_shape.n();
 
-    int smid = local_smid;
+    // int local_smid = real_smid % SM_per_batch;
+    // int smid = local_smid;
+    
+    // mutiple SMs work on one batch
+    // int SM_per_batch = params.grid_tiled_shape.m() * params.grid_tiled_shape.n();
+    // if(SM_per_batch > nSM){
+    //   SM_per_batch = nSM;
+    // }
+    
+    // int batch_step = (int)(floor((double)nSM / (double)SM_per_batch));
+    // int local_smid = real_smid % SM_per_batch;
+    // int init_batch_idx = real_smid / SM_per_batch;
+    // int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
+
+    // int smid = local_smid;
 
     // if(threadIdx.x == 0) printf("SM_per_batch: %d, batch_step: %d, batch_iter: %d\n", SM_per_batch, batch_step, batch_iter);
-    // if(threadIdx.x == 0) printf("nSM: %d, M: %d, N: %d\n", nSM, params.problem_size.m(), params.problem_size.n());
+    // if(threadIdx.x == 0) printf("nSM: %d, M: %d, N: %d\n", nSM, params.grid_tiled_shape.m(), params.grid_tiled_shape.n());
     
-    int checksumblk_per_col = 0;
+    // int checksumblk_per_col = 0;
     // int matrix_SM = SM_per_batch;
     int matrix_shape_m = params.grid_tiled_shape.m();
 
@@ -517,18 +529,25 @@ struct GemmBatchedUpdate {
     //   return;
     // }
 
-    int block_idx;
+    // int block_idx = 0;
     int thread_idx = threadIdx.x;
 
     // Each CTA handles multiple batch indices to accommodate limited range of CUDA grid's Z dimension    
-    int batch_idx;
+    int batch_idx = 0;
     // if(real_smid < (nSM - 1)){
       // for matrix
-      for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
-        batch_idx = init_batch_idx + b_iter * batch_step;
-        int local_matrix_idx = smid;
-        block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
-        block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
+    for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
+      batch_idx = init_batch_idx + b_iter * batch_step;
+      // block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
+      threadblock_tile_offset_m = 0;
+      threadblock_tile_offset_n = 0;
+      
+      for (int i_iter = 0; i_iter < inter_batch_iter; i_iter += 1){
+        // batch_idx = init_batch_idx + b_iter * batch_step;
+        // int local_matrix_idx = smid;
+        // block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
+        // block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
+        // if(real_smid == 0 && thread_idx == 0) printf("iter: (%d, %d), smid: %d, blk: %d, m:%d, n:%d\n", b_iter, i_iter, real_smid, batch_idx, threadblock_tile_offset_m, threadblock_tile_offset_n );
 
         if(batch_idx < params.batch_count){
           cutlass::MatrixCoord tb_offset_A{
@@ -632,6 +651,8 @@ struct GemmBatchedUpdate {
 
         }
 
+        threadblock_tile_offset_n += 1;
+
         // Simulate compute matrix error
         // if(batch_idx == 1){
         //   if(thread_idx == 0){
@@ -642,7 +663,7 @@ struct GemmBatchedUpdate {
         //   // __syncthreads();
         // }
       }
-    // }
+    }
   }
 };
 
