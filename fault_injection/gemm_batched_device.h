@@ -498,7 +498,18 @@ public:
     char flag;
     bool injection = false;
     char *job_id = getenv("SLURM_JOB_ID");
+    
     int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
+    
+    int *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
+    size_t faulty_size = sizeof(int) * 16;
+
+    h_faulty_MMAs = (int*)malloc(faulty_size);
+    h_faulty_elements = (int*)malloc(faulty_size);
+    cudaMalloc((void**)&d_faulty_MMAs, faulty_size);
+    cudaMemset(d_faulty_MMAs, -1, faulty_size);
+    cudaMalloc((void**)&d_faulty_elements, faulty_size);
+    cudaMemset(d_faulty_elements, -1, faulty_size);
     
     // Fault Injection Results
     int SM_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
@@ -529,19 +540,72 @@ public:
       if(flag == 't'){
         injection = true;
         // printf("Perform Fault Injection.\n");
-        // read injected SM and thread
-        // std::ifstream planFile("/home/yuhangl/control/plan.txt");
+        
+        // // read injected SM and thread
+        // // std::ifstream planFile("/home/yuhangl/control/plan.txt");
+        // fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        // std::ifstream planFile(planPath);
+        // if(planFile.is_open()){
+        //   if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
+        //       // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid_1 = " << faulty_tid_1 << ", faulty_tid_2 = " << faulty_tid_2 << std::endl;
+        //   }
+        // }
+        // else{
+        //   printf("plan: Cannot open file, using default setting.\n");
+        // }
+        // planFile.close();
+
+        // read the faulty SM, MMAs, elements (faultySM, faultyMMA1, faultyMMA2,..., faultyMMA16, faultyElement1, faultyElement2,..., faultyElement16)
         fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
         std::ifstream planFile(planPath);
         if(planFile.is_open()){
-          if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
-              // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid_1 = " << faulty_tid_1 << ", faulty_tid_2 = " << faulty_tid_2 << std::endl;
+          std::string line;
+          // while (std::getline(planFile, line)) {
+            
+          if (!std::getline(planFile, line)) {
+              std::cerr << "File is empty" << std::endl;
+              return Status::kErrorInternal;
           }
+
+          std::stringstream ss(line);
+          std::string token;
+          std::vector<int> nums;
+
+          while (std::getline(ss, token, ' ')) {
+              nums.push_back(std::stoi(token));
+          }
+
+          if (nums.size() != 33) {
+              printf("Error: expected 33 numbers but got %ld\n", nums.size());
+              return Status::kErrorInternal;
+          }
+
+          int idx = 0;
+          faulty_smid = nums[idx++];
+          // printf("faulty SM: %d, faulty MMA: ", faulty_smid);
+
+          for (int i = 0; i < 16; i++){
+            h_faulty_MMAs[i] = nums[idx++];
+            // printf("%d ", h_faulty_MMAs[i]);
+          }
+
+          // printf("faulty elements: ");
+          for (int i = 0; i < 16; i++){
+            h_faulty_elements[i] = nums[idx++];
+            // printf("%d ", h_faulty_elements[i]);
+          }
+          // printf("\n");
+              
+          // }
+
+          cudaMemcpy(d_faulty_MMAs, h_faulty_MMAs, faulty_size, cudaMemcpyHostToDevice);
+          cudaMemcpy(d_faulty_elements, h_faulty_elements, faulty_size, cudaMemcpyHostToDevice);
         }
         else{
           printf("plan: Cannot open file, using default setting.\n");
         }
         planFile.close();
+
         
         // read faulty bit
         // std::ifstream bitFile("/home/yuhangl/control/bit.txt");
@@ -717,39 +781,41 @@ public:
 
     if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 
-    cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_counter, d_counter, 2*sizeof(int), cudaMemcpyDeviceToHost);
+    if(injection){
+      cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
+      cudaMemcpy(h_counter, d_counter, 2*sizeof(int), cudaMemcpyDeviceToHost);
 
-    std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-    // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+      std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+      // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
 
-    ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
-    ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
+      ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
+      ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
 
-    // int N = (*h_counter) + (*(h_counter+1));
-    // ofs << h_counter[0] << ": ";
-    // for (int i = 0; i < 1*(h_counter[0]); i++) {
-        // ofs << h_buf[i] << " "; 
-        // if (i != N - 1){
-        // ofs << " ";  
-        // }
-        // printf("%f ", h_buf[i]);
-    // }
-    // ofs << "|||| ";
+      // int N = (*h_counter) + (*(h_counter+1));
+      // ofs << h_counter[0] << ": ";
+      // for (int i = 0; i < 1*(h_counter[0]); i++) {
+          // ofs << h_buf[i] << " "; 
+          // if (i != N - 1){
+          // ofs << " ";  
+          // }
+          // printf("%f ", h_buf[i]);
+      // }
+      // ofs << "|||| ";
 
-    int o = 16*8*2*batch_iter;
-    ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
-    ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
-    // ofs << h_counter[1] << ": ";
-    // for (int i = 0; i < 1*(h_counter[1]); i++) {
-    //     ofs << h_buf[i + o]; 
-    //     // if (i != 2*(h_counter[0]) - 1){
-    //     ofs << " ";  
-    //     // }
-    //     // printf("%f ", h_buf[i + o]);
-    // }
+      int o = 16*8*2*batch_iter;
+      ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
+      ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
+      // ofs << h_counter[1] << ": ";
+      // for (int i = 0; i < 1*(h_counter[1]); i++) {
+      //     ofs << h_buf[i + o]; 
+      //     // if (i != 2*(h_counter[0]) - 1){
+      //     ofs << " ";  
+      //     // }
+      //     // printf("%f ", h_buf[i + o]);
+      // }
 
-    ofs.close();
+      ofs.close();
+    }
     
     // Clean up
     cudaFree(SM_check_res);
@@ -759,6 +825,11 @@ public:
     cudaFree(d_buf);
     free(h_counter);
     free(h_buf);
+
+    cudaFree(d_faulty_MMAs);
+    cudaFree(d_faulty_elements);
+    free(h_faulty_MMAs);
+    free(h_faulty_elements);
 
     result = cudaGetLastError();
 
