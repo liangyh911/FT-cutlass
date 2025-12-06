@@ -540,9 +540,9 @@ public:
     char flag;
     bool injection = false;
     char *job_id = getenv("SLURM_JOB_ID");
-    int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
+    // int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
 
-    int *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
+    int faulty_smid = -1, faulty_bit = -1, *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
     size_t faulty_size = sizeof(int) * 16;
 
     h_faulty_MMAs = (int*)malloc(faulty_size);
@@ -568,12 +568,13 @@ public:
     int SM_iter = (int)ceil((double)((matrix_shape_m * params_.grid_tiled_shape.n())/(double)matrix_SM));
 
     int *d_counter, *h_counter;
-    cudaMalloc((void**)&d_counter, 2 * sizeof(int));
-    cudaMemset(d_counter, 0, 2 * sizeof(int));
-    h_counter = (int*)malloc(2 * sizeof(int));
+    cudaMalloc((void**)&d_counter, 1 * sizeof(int));
+    cudaMemset(d_counter, 0, 1 * sizeof(int));
+    h_counter = (int*)malloc(1 * sizeof(int));
 
     float *h_buf, *d_buf;
-    size_t buf_size = (16*8*2*SM_iter * 2) * sizeof(float);
+    // size_t buf_size = (16*8*2*SM_iter * 2) * sizeof(float);
+    size_t buf_size = (16 * 2 * SM_iter * 2) * sizeof(float);
     cudaMalloc((void**)&d_buf, buf_size);
     cudaMemset(d_buf, 0, buf_size);
     h_buf = (float*)malloc(buf_size);
@@ -733,7 +734,11 @@ public:
     // dim3 new_block(64,1,1);
     dim3 new_grid(12,11,1);
 
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf
+    // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf
+    //             // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
+    //           };
+
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf
                 // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
               };
 
@@ -790,7 +795,7 @@ public:
 
     if(injection){
       cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
-      cudaMemcpy(h_counter, d_counter, 2*sizeof(int), cudaMemcpyDeviceToHost);
+      cudaMemcpy(h_counter, d_counter, 1 * sizeof(int), cudaMemcpyDeviceToHost);
 
       std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
       // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
@@ -812,9 +817,9 @@ public:
       // ofs << "|||| ";
       // printf("|||| ");
 
-      int o = 16*8*2*SM_iter;
-      ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
-      ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
+      // int o = 16*8*2*SM_iter;
+      // ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
+      // ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
 
       // ofs << h_counter[1] << ": ";
       // // printf("%d: ", h_counter[1]);
