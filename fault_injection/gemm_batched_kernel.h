@@ -694,8 +694,8 @@ struct GemmBatched {
           int N = params.problem_size.n();
           int c = 0;
           for(int i = 0; i < 16; i++){
-            int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 16) * 16;
-            int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 16) * 8;
+            int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
+            int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
 
             // index of 1st faulty element
             int fault_m = faulty_elements[i] % 8;
