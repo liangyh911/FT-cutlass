@@ -132,11 +132,11 @@ for i in range(Iter):
     training_args = TrainingArguments(
         output_dir="./llama1b",
         overwrite_output_dir=True,
-        # num_train_epochs=20,
+        num_train_epochs=20,
         # per_device_train_batch_size=8,
         gradient_accumulation_steps=1,
         learning_rate=2e-5,
-        max_steps = 1,
+        # max_steps = 2,
         # warmup_steps=100,
         # logging_steps=50,
         save_strategy="no",
