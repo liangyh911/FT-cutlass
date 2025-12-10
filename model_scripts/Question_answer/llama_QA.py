@@ -28,8 +28,8 @@ job_id = os.getenv('SLURM_JOB_ID')
 falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
 with open(falutyStepFP, 'r') as file:
     faulty_step = int(file.readline())
-faulty_epoch = math.floor(faulty_step / 250)
-local_faulty_step = faulty_step % 250
+faulty_epoch = math.floor(faulty_step / 63)
+local_faulty_step = faulty_step % 63
 
 logFP = f"/home/yuhangl/control_{job_id}/output.log"
 with open(logFP, "a") as file:
@@ -164,15 +164,14 @@ def run_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     print(f"\n[Evaluation] Starting evaluation on {num_samples} random samples...")
     model.eval()
     
-    # 手动清理缓存，防止 OOM
+    # clean cache
     torch.cuda.empty_cache()
     
     f1_scores = []
     subset = eval_dataset.shuffle(seed=SEED).select(range(min(num_samples, len(eval_dataset))))
     
-    # 临时开启 cache 以加速推理
     original_use_cache = model.config.use_cache
-    model.config.use_cache = True
+    model.config.use_cache = False
     
     for item in tqdm(subset, desc="Evaluating"):
         messages = [
@@ -187,7 +186,8 @@ def run_evaluation(model, tokenizer, eval_dataset, num_samples=200):
                 **inputs, 
                 max_new_tokens=50, 
                 pad_token_id=tokenizer.eos_token_id,
-                do_sample=False
+                do_sample=False,
+                use_cache=False
             )
         generated_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
         ground_truths = item['answers']['text']
@@ -206,13 +206,16 @@ def run_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     avg_f1 = sum(f1_scores) / len(f1_scores)
     print(f"\n[Result] Epoch F1 Score: {avg_f1:.4f}")
 
+    with open(logFP, "a") as f:
+        f.write(f"{avg_f1:.4f} ")
+
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("t")
     
-    # 恢复状态
+    # back to training mode
     model.config.use_cache = original_use_cache
-    model.train() # 切回训练模式
+    model.train() 
     
     return avg_f1
 
@@ -235,10 +238,9 @@ class SquadEpochEvalCallback(TrainerCallback):
         """
         print(f"\n\n*** Epoch {state.epoch:.1f} Finished. Running SQuAD Evaluation... ***")
         
-        # 获取当前模型
         model = kwargs['model']
         
-        # 运行评估
+        # evaluate
         f1 = run_evaluation(
             model=model,
             tokenizer=self.tokenizer,
@@ -246,7 +248,7 @@ class SquadEpochEvalCallback(TrainerCallback):
             num_samples=self.num_samples
         )
         
-        # 必须清理显存，因为 generate 产生了大量 cache，不清理会导致后续训练 OOM
+        # clean cache
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -276,7 +278,7 @@ def main():
     # 3. Data Collator
     # data_collator = DataCollatorForSeq2Seq(
     #     tokenizer=tokenizer,
-    #     model=None, # 可选
+    #     model=None,
     #     padding=True,
     #     pad_to_multiple_of=8
     # )
@@ -297,11 +299,11 @@ def main():
     )
 
     # 5. Initialize Callback
-    # 我们需要在 Trainer 初始化前准备好 Callback
+    # Callback for evaluating after each epoch
     epoch_eval_callback = SquadEpochEvalCallback(
         tokenizer=tokenizer,
-        eval_dataset=dataset["validation"], # 传入验证集
-        num_samples=200 # 每个 epoch 测 200 条
+        eval_dataset=dataset["validation"],
+        num_samples=200
     )
 
     # 6. Trainer
@@ -311,7 +313,7 @@ def main():
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
-        num_train_epochs=3,
+        num_train_epochs=20,
         # max_steps = 1,
         bf16=True,
         # logging_steps=10,
@@ -336,9 +338,9 @@ def main():
         callbacks=[epoch_eval_callback] 
     )
 
-    # 可以在训练前先跑一次 Baseline (可选)
-    print("Running baseline evaluation...")
-    run_evaluation(model, tokenizer, dataset["validation"], num_samples=200)
+    # evaluate Baseline 
+    # print("Running baseline evaluation...")
+    # run_evaluation(model, tokenizer, dataset["validation"], num_samples=200)
     
     # # cutlass control file
     # controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
@@ -374,16 +376,16 @@ def main():
 
     # # 8. Final evaluation (Using the trained model)
     # print("Running Final Evaluation...")
-    # # 再次确保开启 cache
     # model.config.use_cache = True
     # final_F1_score = run_evaluation(trainer.model, tokenizer, dataset["validation"], num_samples=200)
     
     torch.cuda.empty_cache()
 
     with open(logFP, "a") as file:
-        file.write(", ".join(smchk_loss))
         file.write("\n")
-        file.write(", ".join(grad_norm))
+        file.write(" ".join(smchk_loss))
+        file.write("\n")
+        file.write(" ".join(grad_norm))
         file.write("\n")
         # file.write(str(final_F1_score))
         # file.write("\n")

@@ -176,7 +176,7 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     
     # 临时开启 cache 加速推理
     original_use_cache = model.config.use_cache
-    model.config.use_cache = True
+    model.config.use_cache = False
     
     correct_count = 0
     total_count = 0
@@ -196,7 +196,8 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
                 **inputs, 
                 max_new_tokens=1, 
                 pad_token_id=tokenizer.eos_token_id, 
-                do_sample=False
+                do_sample=False,
+                use_cache=False
             )
         new_token_id = outputs[0][inputs.input_ids.shape[1]:]
         generated_char = tokenizer.decode(new_token_id, skip_special_tokens=True).strip().upper()
@@ -213,8 +214,12 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("t")
+    
     model.config.use_cache = original_use_cache
     model.train()
+
+    with open(logFP, "a") as f:
+        f.write(f"{accuracy:.4f} ")
     
     # 再次清理显存
     torch.cuda.empty_cache()
@@ -241,7 +246,7 @@ class EpochEvalCallback(TrainerCallback):
         """
         print(f"\n\n*** Epoch {state.epoch:.1f} Finished. Running Evaluation... ***")
         model = kwargs['model']
-        run_accuracy_evaluation(model, self.tokenizer, self.eval_dataset, self.num_samples)
+        accurcy = run_accuracy_evaluation(model, self.tokenizer, self.eval_dataset, self.num_samples)
 
 # ==========================================
 # 6. 主程序
@@ -311,7 +316,7 @@ def main():
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
         # num_train_epochs=NUM_EPOCHS, # 3 个 Epoch
-        num_train_epochs = 10,
+        num_train_epochs = 20,
         bf16=True,
         logging_strategy="epoch",
         
@@ -366,9 +371,10 @@ def main():
 
 
     with open(logFP, "a") as file:
-        file.write(", ".join(smchk_loss))
         file.write("\n")
-        file.write(", ".join(grad_norm))
+        file.write(" ".join(smchk_loss))
+        file.write("\n")
+        file.write(" ".join(grad_norm))
         file.write("\n")
         # file.write(str(final_F1_score))
         # file.write("\n")
