@@ -20,7 +20,7 @@ with open(falutyStepFP, 'r') as file:
 faulty_epoch = math.floor(faulty_step / 250)
 local_faulty_step = faulty_step % 250
 
-logFP = f"/home/yuhangl/control_{job_id}/llama_output.log"
+logFP = f"/home/yuhangl/control_{job_id}/output.log"
 with open(logFP, "a") as file:
     file.write(f"{faulty_step}, ({faulty_epoch}, {local_faulty_step})\n")
 
@@ -40,8 +40,8 @@ model_name = checkpoint
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    # torch_dtype=torch.bfloat16,   # H100 推荐 bf16
-    torch_dtype=torch.float32,
+    torch_dtype=torch.bfloat16,   # H100 推荐 bf16
+    # torch_dtype=torch.float32,
     # torch_dtype=torch.float16,
     device_map="auto",
     attn_implementation="eager" 
@@ -132,17 +132,17 @@ for i in range(Iter):
     training_args = TrainingArguments(
         output_dir="./llama1b",
         overwrite_output_dir=True,
-        num_train_epochs=20,
+        # num_train_epochs=20,
         # per_device_train_batch_size=8,
         gradient_accumulation_steps=1,
         learning_rate=2e-5,
-        # max_steps = 2,
+        max_steps = 1,
         # warmup_steps=100,
         # logging_steps=50,
         save_strategy="no",
         # evaluation_strategy="epoch",
         logging_strategy="epoch",
-        bf16=False,            
+        bf16=True,            
         fp16=False,
         gradient_checkpointing=True,   # reduce memory usage
         # save_total_limit=2,
@@ -151,8 +151,8 @@ for i in range(Iter):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        # torch_dtype=torch.bfloat16, 
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16, 
+        # torch_dtype=torch.float32,
         # torch_dtype=torch.float16,
         device_map="auto",
         attn_implementation="eager" 
