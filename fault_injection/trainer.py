@@ -2496,6 +2496,7 @@ class Trainer:
         # SM-Checker FI: global steps controling FI
         global_steps = 0
         addition_epoch = 0
+        perform_FI = True
 
         job_id = os.getenv('SLURM_JOB_ID')
         falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
@@ -2510,7 +2511,7 @@ class Trainer:
  
         with open(falutyStepFP, 'r') as file:
             faulty_step = int(file.readline())
-        faulty_epoch = faulty_step / 250
+        # faulty_epoch = faulty_step / 63
 
         with open(totalfaultyStepFP, 'r') as file:
             total_fi_steps = int(file.readline()) + faulty_step
@@ -2591,7 +2592,8 @@ class Trainer:
                 #         file.write('f')
 
                 # Continuous faulty steps
-                perform_FI = False
+                # perform_FI = True
+
                 # if(epoch != 0):
                 #     perform_FI = False
                 # total_fi_steps = 25 + faulty_step
@@ -2807,8 +2809,8 @@ class Trainer:
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             
             # SM-Checker: record loss for each epoch here 
-            print(f"\nepoch: {epoch}, loss: {tr_loss/250}, grad_norm: {grad_norm}, total_updates:{total_updates}")
-            epoch_loss = tr_loss / 250
+            print(f"\nepoch: {epoch}, loss: {tr_loss/total_updates}, grad_norm: {grad_norm}, total_updates:{total_updates}")
+            epoch_loss = tr_loss / total_updates
 
             self._maybe_log_save_evaluate(
                 tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
@@ -2826,22 +2828,26 @@ class Trainer:
             if self.control.should_training_stop:
                 break
             
-             # SM-Checker: if loss = 0, break training
-            if(epoch_loss == 0):
-                print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
-                addition_epoch = epoch
-                break
+            if perform_FI:
+                # SM-Checker: if loss = 0, break training
+                if(epoch_loss == 0):
+                    print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
+                    addition_epoch = epoch
+                    break
 
-            # SM-Checker: if loss (epoch) meet requirement (llama: 10th epoch: 0.1; qwen: 0.07), break training
-            if(epoch >= 9 and epoch_loss <= 0.07):
-                print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
-                addition_epoch = epoch
-                break
+                # SM-Checker: if loss (epoch) meet requirement (llama: 10th epoch: 0.12; qwen: 0.9), break training
+                # SM-Checker: Llama (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
+                # SM-Checker: Qwen (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
+                if(epoch >= 8 and epoch_loss <= 0.0001):
+                    print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
+                    addition_epoch = epoch
+                    break
 
-        # SMChecker: record addition epochs after FI
-        logFP = f"/home/yuhangl/control_{job_id}/output.log"
-        with open(logFP, "a") as file:
-            file.write(f"{addition_epoch}\n")
+        if perform_FI:
+            # SMChecker: record addition epochs after FI
+            logFP = f"/home/yuhangl/control_{job_id}/output.log"
+            with open(logFP, "a") as file:
+                file.write(f"\n{addition_epoch}")
 
         # print(f"global steps: {global_steps}")
 
