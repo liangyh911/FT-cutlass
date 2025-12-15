@@ -543,7 +543,7 @@ public:
     // int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
 
     int faulty_smid = -1, faulty_bit = -1, *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
-    size_t faulty_size = sizeof(int) * 16;
+    size_t faulty_size = sizeof(int) * 64;
 
     h_faulty_MMAs = (int*)malloc(faulty_size);
     h_faulty_elements = (int*)malloc(faulty_size);
@@ -574,15 +574,20 @@ public:
 
     float *h_buf, *d_buf;
     // size_t buf_size = (16*8*2*SM_iter * 2) * sizeof(float);
-    size_t buf_size = (16 * 2 * SM_iter * 2) * sizeof(float);
+    size_t buf_size = (64 * 2 * SM_iter * 2) * sizeof(float);
     cudaMalloc((void**)&d_buf, buf_size);
     cudaMemset(d_buf, 0, buf_size);
     h_buf = (float*)malloc(buf_size);
 
     // destinationFile = "/home/yuhangl/control/FI.txt";
     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
-    fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.bin";
-    destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
+    // Absolute Path
+    // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.bin";
+    // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
+    // Relative Path
+    fs::path FIInfoPath = fs::path("./control_" + std::string(job_id)) / "fi_info.bin";
+    destinationFile = fs::path("./control_" + std::string(job_id)) / "FI.txt";
+
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
       FIFile.get(flag);
@@ -604,7 +609,10 @@ public:
         // planFile.close();
 
         // read the faulty SM, MMAs, elements (faultySM, faultyMMA1, faultyMMA2,..., faultyMMA16, faultyElement1, faultyElement2,..., faultyElement16)
-        fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        // Absolute Path
+        // fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        // Relative Path
+        fs::path planPath = fs::path("./control_" + std::string(job_id)) / "plan.txt";
         std::ifstream planFile(planPath);
         if(planFile.is_open()){
           std::string line;
@@ -623,8 +631,8 @@ public:
               nums.push_back(std::stoi(token));
           }
 
-          if (nums.size() != 33) {
-              printf("Error: expected 33 numbers but got %ld\n", nums.size());
+          if (nums.size() != 129) {
+              printf("Error: expected 129 numbers but got %ld\n", nums.size());
               return Status::kErrorInternal;
           }
 
@@ -632,13 +640,13 @@ public:
           faulty_smid = nums[idx++];
           // printf("faulty SM: %d, faulty MMA: ", faulty_smid);
 
-          for (int i = 0; i < 16; i++){
+          for (int i = 0; i < 64; i++){
             h_faulty_MMAs[i] = nums[idx++];
             // printf("%d ", h_faulty_MMAs[i]);
           }
 
           // printf("faulty elements: ");
-          for (int i = 0; i < 16; i++){
+          for (int i = 0; i < 64; i++){
             h_faulty_elements[i] = nums[idx++];
             // printf("%d ", h_faulty_elements[i]);
           }
@@ -656,7 +664,10 @@ public:
 
         // read faulty bit
         // std::ifstream bitFile("/home/yuhangl/control/bit.txt");
-        fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "bit.txt";
+        // Absolute Path
+        // fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "bit.txt";
+        // Relative Path
+        fs::path bitPath = fs::path("./control_" + std::string(job_id)) / "bit.txt";
         std::ifstream bitFile(bitPath);
         if(bitFile.is_open()){
           if (bitFile >> faulty_bit) {
@@ -669,7 +680,10 @@ public:
         bitFile.close();
 
         // current steps
-        fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
+        // Absolute Path
+        // fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
+        // Relative Path
+        fs::path StepPath = fs::path("./control_" + std::string(job_id)) / "current_step.txt";
         std::ifstream stepFile(StepPath);
         if (stepFile.is_open()) {
           std::string line;
@@ -690,7 +704,10 @@ public:
         stepFile.close();
 
         // current component
-        fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
+        // Absolute Path
+        // fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
+        // Relative Path
+        fs::path componentPath = fs::path("./control_" + std::string(job_id)) / "component.txt";
         std::ifstream compfile(componentPath);
         if (compfile.is_open()) {
           std::string line;
