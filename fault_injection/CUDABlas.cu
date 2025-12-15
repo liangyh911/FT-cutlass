@@ -1720,7 +1720,8 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase){
-  // printf("cutlass bgemm\n");
+  printf("cutlass bgemm\n");
+  printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1780,14 +1781,15 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
   
   // ldb = ldb * num_batches;
 
-  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
-
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
   if(if_split_phase == 0) n1 += 2;
   int64_t strideb_check = ldb * n1;
   int64_t stridec_check = ldc * n1;
+
+  // printf("cudablas, num_batch: %d, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", num_batches, m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("  stride A: %d, stride B: (%d, %d), stride C: (%d, %d)\n", stridea, strideb, strideb_check, stridec, stridec_check);
 
   int const count_A = num_batches * lda * k;
   int const count_B = num_batches * ldb * n1;
@@ -1961,7 +1963,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         Dtype *b_, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase){
-  // printf("cutlass bgemm T\n");
+  printf("cutlass bgemm T\n");
+  printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2021,18 +2024,24 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   
   // ldb = ldb * num_batches;
 
-  // ABFT size
-  // int64_t n1 = n + 2;
+  // No ABFT
   int64_t n1 = n;
-  if(if_split_phase == 0) n1 += 2;
-  int64_t strideb_check = ldb * n1;
-  int64_t stridec_check = ldc * n1;
+  int64_t strideb_check = strideb;
+  int64_t stridec_check = stridec;
 
-  int const count_A = num_batches * lda * m;
-  int const count_B = num_batches * ldb * n1;
-  int const count_C = num_batches * ldc * n1;
+  // ABFT size
+  // // int64_t n1 = n + 2;
+  // int64_t n1 = n;
+  // if(if_split_phase == 0) n1 += 2;
+  // int64_t strideb_check = ldb * n1;
+  // int64_t stridec_check = ldc * n1;
 
-  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
+  // int const count_A = num_batches * lda * m;
+  // int const count_B = num_batches * ldb * n1;
+  // int const count_C = num_batches * ldc * n1;
+
+  // printf("cudablas, num_batch: %d, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", num_batches, m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("  stride A: %d, stride B: (%d, %d), stride C: (%d, %d)\n", stridea, strideb, strideb_check, stridec, stridec_check);
 
   // allocate the device memory
   // Dtype *A, *B, *C;
