@@ -465,6 +465,8 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
   
   char *job_id = getenv("SLURM_JOB_ID");
   // printf("job_id: %s\n", job_id);
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
 
   if (useLtInterface) {
 #if defined(USE_ROCM)
@@ -565,7 +567,7 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           // std::ifstream myfile(fullPath);
 
           // Relative Path
-          fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "cutlass.txt";
+          fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
           std::ifstream myfile(destinationFile);
 
           if (!myfile.is_open()){
@@ -689,7 +691,7 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           // std::ifstream myfile(fullPath);
 
           // Relative Path
-          fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "cutlass.txt";
+          fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
           std::ifstream myfile(destinationFile);
 
           if (!myfile.is_open()){
@@ -877,6 +879,8 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
       // } 
 
       char *job_id = getenv("SLURM_JOB_ID");
+      int gpu_dev = -1;
+      cudaGetDevice(&gpu_dev);
 
       // If batch is 1 call gemm rather than bgemm
       if (num_batches == 1) {
@@ -899,7 +903,7 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
         // std::ifstream myfile(fullPath);
 
         // Relative Path
-        fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "cutlass.txt";
+        fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
         std::ifstream myfile(destinationFile);
 
         if (!myfile.is_open()){

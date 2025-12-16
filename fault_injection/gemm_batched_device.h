@@ -498,6 +498,9 @@ public:
     char flag;
     bool injection = false;
     char *job_id = getenv("SLURM_JOB_ID");
+
+    int gpu_dev = -1;
+    cudaGetDevice(&gpu_dev);
     
     // int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
     
@@ -538,8 +541,8 @@ public:
     // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
 
     // Relative Path
-    fs::path FIInfoPath = fs::path("./control_" + std::string(job_id)) / "fi_info.bin";
-    destinationFile = fs::path("./control_" + std::string(job_id)) / "FI.txt";
+    fs::path FIInfoPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "fi_info.bin";
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "FI.txt";
 
     std::ifstream FIFile(destinationFile);
     if(FIFile.is_open()){
@@ -567,7 +570,7 @@ public:
         // fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
         
         // Relative Path
-        fs::path planPath = fs::path("./control_" + std::string(job_id)) / "plan.txt";
+        fs::path planPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "plan.txt";
         std::ifstream planFile(planPath);
         if(planFile.is_open()){
           std::string line;
@@ -623,7 +626,7 @@ public:
         // Absolute Path
         // fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "bit.txt";
         // Relative Path
-        fs::path bitPath = fs::path("./control_" + std::string(job_id)) / "bit.txt";
+        fs::path bitPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "bit.txt";
         std::ifstream bitFile(bitPath);
         if(bitFile.is_open()){
           if (bitFile >> faulty_bit) {
@@ -639,7 +642,7 @@ public:
         // Absolute Path
         // fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
         // Relative Path
-        fs::path StepPath = fs::path("./control_" + std::string(job_id)) / "current_step.txt";
+        fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
         std::ifstream stepFile(StepPath);
         if (stepFile.is_open()) {
           std::string line;
@@ -663,7 +666,7 @@ public:
         // Absolute Path
         // fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
         // Relative Path
-        fs::path componentPath = fs::path("./control_" + std::string(job_id)) / "component.txt";
+        fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
         std::ifstream compfile(componentPath);
         if (compfile.is_open()) {
           std::string line;

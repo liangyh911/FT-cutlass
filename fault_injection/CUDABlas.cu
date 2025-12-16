@@ -2203,11 +2203,15 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   bool state = false;
   char flag;
   bool DEBUG = true;
+
   char *job_id = getenv("SLURM_JOB_ID");
+  
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
 
   // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
   // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
-  fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2226,7 +2230,7 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   int if_split_phase = 2;
   // destinationFile = "/home/yuhangl/control/split.txt";
   // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
-  destinationFile = fs::path("./control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2592,10 +2596,13 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   bool DEBUG = true;
   char flag;
   char *job_id = getenv("SLURM_JOB_ID");
+  
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
 
   // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
   // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
-  fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2614,7 +2621,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   int if_split_phase = 2;
   // destinationFile = "/home/yuhangl/control/split.txt";
   // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
-  destinationFile = fs::path("./control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -3022,9 +3029,12 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   bool DEBUG = true;
   char *job_id = getenv("SLURM_JOB_ID");
 
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
+
   // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
   // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
-  fs::path destinationFile = fs::path("./control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
   
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
@@ -3044,7 +3054,7 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   int if_split_phase = 2;
   // destinationFile = "/home/yuhangl/control/split.txt";
   // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
-  destinationFile = fs::path("./control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
