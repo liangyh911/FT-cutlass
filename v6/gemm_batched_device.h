@@ -517,7 +517,7 @@ public:
 
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", new_grid.x, new_grid.y, new_grid.z, block.x, block.y, block.z);
     // printf("(%d, %d, %d), %d\n", grid.x, grid.y, grid.z, block.x);
-    // printf("m: %d, n: %d, k: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k());
+    printf("m: %d, n: %d, k: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k());
 
     cudaError_t result;
 
@@ -565,8 +565,15 @@ public:
 
       if(transpose == 0){
         // printf("non-transpose\n");
-        cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-        cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
+
+        int warps_per_TB = params_.problem_size.n() / 16;
+        batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
+        
+        update_smem_size = (batch_per_TB * (16 * params_.problem_size.k())) * sizeof(ElementA) + (batch_per_TB * (16 * params_.problem_size.n())) * sizeof(float);
+        cudaFuncSetAttribute(cutlass::update_checksum_wmma<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        cutlass::update_checksum_wmma<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
 
         // void *kernelArgs_update[] = {&params_update, &if_split_phase, &SM_check_res, &partion, &matrix_SM, &monitored_batched_count};
         // cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Update<GemmUpdateKernel>, grid_updatechk, block_update, kernelArgs_update, smem_size_update, stream_colchk);
@@ -649,12 +656,18 @@ public:
         // cutlass::update_checksum_v2<GemmKernel><<<new_grid, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
 
         if(transpose == 0){
-          cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-          cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
+          // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+          // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
+
+          int warps_per_TB = params_.problem_size.n() / 16;
+          batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
+          
+          update_smem_size = (batch_per_TB * (16 * params_.problem_size.k())) * sizeof(ElementA) + (batch_per_TB * (16 * params_.problem_size.n())) * sizeof(float);
+          cudaFuncSetAttribute(cutlass::update_checksum_wmma<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+          cutlass::update_checksum_wmma<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms);
           
           // void *kernelArgs_update[] = {&params_update, &if_split_phase, &SM_check_res, &partion, &matrix_SM, &monitored_batched_count};
           // cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Update<GemmUpdateKernel>, grid_updatechk, block_update, kernelArgs_update, smem_size_update, stream_colchk);
-
         }
         else{
           // update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);

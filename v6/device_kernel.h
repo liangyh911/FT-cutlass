@@ -470,6 +470,127 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
 
 template <typename Operator, typename Dtype>
 CUTLASS_GLOBAL
+void update_checksum_wmma(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  if(real_smid < matrix_SM) return;
+  
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+  int chk_SM = num_sms - matrix_SM;
+  int tid = threadIdx.x;
+  int warp_id = tid / 32;
+
+  extern __shared__ Dtype SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+
+  int checksum_stride = 16 * K;
+  float *smem_base = reinterpret_cast<float*>(SharedMem + TB_per_batch * checksum_stride);
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  int warps_per_batch = N / 16;
+
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+
+  int col_idx = tid;
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)blockDim.x));
+  
+  // int thread_group_idx = tid / (2 * N);
+  int local_tid = tid % (2 * N);
+  int warp_level_tid = tid % 32;
+
+  int warp_group_idx = warp_id / warps_per_batch;
+  int local_warp_idx = warp_id % warps_per_batch;
+
+  // int local_col_dim = blockDim.x / batch_per_TB;
+
+  int init_batch = (local_smid * TB_per_batch) + warp_group_idx;
+  int start_bid = local_smid * TB_per_batch;
+
+  // int shared_offset = thread_group_idx * checksum_stride;
+  int shared_offset = warp_group_idx * checksum_stride;
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_acc;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    // load checksum to share memroy
+    // int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    int load_init_batch_idx = start_bid + b_iter * chk_step; 
+    for(int t = 0; t < TB_per_batch; t++){
+      int load_batch_idx = load_init_batch_idx + t;
+      if(load_batch_idx < params.batch_count){
+        int load_offset = t * checksum_stride;
+        int idx_a = (load_batch_idx * params.stride_A) + mk;
+        for(int i = 0; i < load_iter; i++){
+          int idx = col_idx + blockDim.x * i;
+          if(idx < checksum_stride){
+            SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
+          }
+        }
+      }
+    }
+    __syncthreads();
+    
+    // update checksum
+    int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < params.batch_count && warp_group_idx < TB_per_batch){
+      wmma::fill_fragment(c_acc, 0.0f);
+
+      __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(SharedMem + shared_offset);
+      
+      int idx_b = batch_idx * params.stride_B;
+      __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(params.ref_B.data() + idx_b);
+
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+      wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::row_major> b_frag;
+
+      for(int k = 0; k < K; k +=16){
+        // Load A
+        wmma::load_matrix_sync(a_frag, (a + k), K);
+        // Load B
+        wmma::load_matrix_sync(b_frag, (b + (local_warp_idx * 16) + (k * N)), N);
+        // MMA
+        wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
+      }
+
+      // Store
+      int warp_offset_c = (local_warp_idx * 16) + warp_group_idx * (16 * N);
+      wmma::store_matrix_sync((smem_base + warp_offset_c), c_acc, N, wmma::mem_row_major);
+      
+      // __syncthreads();
+      // int idx_chk = (batch_idx * params.stride_D + mn) + local_tid;
+      // float val_f32 = smem_base[warp_group_idx * (16 * N) + local_tid];
+      // *(params.ref_D.data() + idx_chk) = static_cast<Dtype>(val_f32);
+
+      int frag_row = warp_level_tid / 16;
+      int frag_col = warp_level_tid % 16 + local_warp_idx * 16;
+      int seme_idx = frag_col + frag_row * N + warp_group_idx * (16 * N);
+      int d_idx = frag_col + frag_row * N + batch_idx * params.stride_D + mn;
+      *(params.ref_D.data() + d_idx) = static_cast<Dtype>(smem_base[seme_idx]);
+    }
+    __syncthreads();
+  } 
+}
+
+
+template <typename Operator, typename Dtype>
+CUTLASS_GLOBAL
 void update_checksum_v3_T(typename Operator::Params params, int matrix_SM, int TB_per_batch){
   // get SM id
   unsigned int real_smid;
