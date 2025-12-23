@@ -1557,16 +1557,17 @@ void update_checksum_T_wmma(typename Operator::Params params, int matrix_SM, int
         // Load A
         wmma::load_matrix_sync(a_frag, a, K);
 
-        // Compute Tile 0 (Col 0 ~ 511)
-        int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
-        wmma::load_matrix_sync(b_frag, (b + b_offset_0), semeB_ld);
-        wmma::mma_sync(c_acc[0], a_frag, b_frag, c_acc[0]);
+        for(int k = 0; k < tiled_K; k += 16){
+          // Compute Tile 0 (Col 0 ~ 511)
+          int b_offset_0 = warp_id * (semeB_ld * 16) + k; // Row 0, Col offset
+          wmma::load_matrix_sync(b_frag, (b + b_offset_0), semeB_ld);
+          wmma::mma_sync(c_acc[0], a_frag, b_frag, c_acc[0]);
 
-        // Compute Tile 1 (Col 512 ~ 1023)
-        int b_offset_1 = b_offset_0 + (semeB_ld * 512); // Row 0, Col offset
-        wmma::load_matrix_sync(b_frag, (b + b_offset_1), semeB_ld);
-        wmma::mma_sync(c_acc[1], a_frag, b_frag, c_acc[1]);
-
+          // Compute Tile 1 (Col 512 ~ 1023)
+          int b_offset_1 = b_offset_0 + (semeB_ld * 512); // Row 0, Col offset
+          wmma::load_matrix_sync(b_frag, (b + b_offset_1), semeB_ld);
+          wmma::mma_sync(c_acc[1], a_frag, b_frag, c_acc[1]);
+        }
         pipeline.consumer_release();
       }
 
@@ -1585,15 +1586,17 @@ void update_checksum_T_wmma(typename Operator::Params params, int matrix_SM, int
       // Load A
       wmma::load_matrix_sync(a_frag, a, K);
 
-      // Compute Tile 0 (Col 0 ~ 511)
-      int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
-      wmma::load_matrix_sync(b_frag, (b + b_offset_0), semeB_ld);
-      wmma::mma_sync(c_acc[0], a_frag, b_frag, c_acc[0]);
+      for(int k = 0; k < tiled_K; k += 16){
+        // Compute Tile 0 (Col 0 ~ 511)
+        int b_offset_0 = warp_id * (semeB_ld * 16) + k; // Row 0, Col offset
+        wmma::load_matrix_sync(b_frag, (b + b_offset_0), semeB_ld);
+        wmma::mma_sync(c_acc[0], a_frag, b_frag, c_acc[0]);
 
-      // Compute Tile 1 (Col 512 ~ 1023)
-      int b_offset_1 = b_offset_0 + (semeB_ld * 512); // Row 0, Col offset
-      wmma::load_matrix_sync(b_frag, (b + b_offset_1), semeB_ld);
-      wmma::mma_sync(c_acc[1], a_frag, b_frag, c_acc[1]);
+        // Compute Tile 1 (Col 512 ~ 1023)
+        int b_offset_1 = b_offset_0 + (semeB_ld * 512); // Row 0, Col offset
+        wmma::load_matrix_sync(b_frag, (b + b_offset_1), semeB_ld);
+        wmma::mma_sync(c_acc[1], a_frag, b_frag, c_acc[1]);
+      }
       
       pipeline.consumer_release();
 
@@ -1619,6 +1622,14 @@ void update_checksum_T_wmma(typename Operator::Params params, int matrix_SM, int
       
       *(params.ref_D.data() + idx_chk_1) = static_cast<Dtype>(val_f32_1);
       *(params.ref_D.data() + idx_chk_2) = static_cast<Dtype>(val_f32_2);
+
+      // int warp_offset_0 = warp_id * 16;
+      // int warp_offset_1 = warp_offset_0 + (N / 2);
+      // int idx_chk_1 = ((batch_idx * params.stride_D + mn) + warp_offset_0);
+      // int idx_chk_2 = ((batch_idx * params.stride_D + mn + (N / 2)) + warp_offset_1); 
+
+      // wmma::store_matrix_sync(params.ref_D.data() + idx_chk_1, c_acc[0], N, wmma::mem_row_major);
+      // wmma::store_matrix_sync(params.ref_D.data() + idx_chk_2, c_acc[1], N, wmma::mem_row_major);
 
     }
   } 
