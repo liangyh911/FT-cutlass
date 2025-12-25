@@ -337,7 +337,7 @@ struct GemmBatched {
     int M = params.problem_size.m();
     int K = params.problem_size.k();
     int N = params.problem_size.n();
-    float E = 10;
+    float E = 100;
     // int loc = -1;
     float MAX = 0;
     // int diff = 0;
@@ -455,13 +455,64 @@ struct GemmBatched {
     // __syncthreads();
   }
 
+  template <typename T>
+  __device__ void force_bit_one_f32(T *dA, int bit, int *count, float *buf){ 
+    // 30 or 29
+    float orgValue = (float)*(dA);
+    float tmp = (float)*(dA);
+    // printf("%.4f ", orgValue);
+    
+    uint32_t* intValue = reinterpret_cast<uint32_t*>(&orgValue);
+    *intValue |= (1u << bit);
+    // *intValue &= ~ ((1u << bit));
+    *(dA) = (T) *reinterpret_cast<float*>(intValue);
+    
+    if(tmp != *(dA)){
+      // printf("%.4f %.4f ", tmp, *(dA));
+      // int idx = (*count) * 2;
+      int idx = *count;
+      *(buf + idx) = tmp;
+      *(buf + (idx + 1)) = *(dA);
+      (*count) += 2;
+    }
+    // printf("%.4f ", *(dA));
+  }
+
+  template <typename T>
+  __device__ void force_bit_one_bf16(T *dA, int bit, int *count, float *buf){ 
+    // 30 or 29
+    float orgValue = static_cast<float>(*dA);
+    float tmp = orgValue;
+    // printf("%.4f ", orgValue);
+    
+    // uint32_t* intValue = reinterpret_cast<uint32_t*>(&orgValue);
+    uint32_t intValue = *reinterpret_cast<uint32_t*>(&orgValue);
+    uint16_t bf16_bits = static_cast<uint16_t>(intValue >> 16);
+    bf16_bits |= (1u << bit);
+    // *intValue &= ~ ((1u << bit));
+
+    uint32_t new_int_value = (static_cast<uint32_t>(bf16_bits) << 16);
+    float new_float = *reinterpret_cast<float*>(&new_int_value);
+    *dA = static_cast<cutlass::bfloat16_t>(new_float);
+
+    if(tmp != new_float){
+      // printf("%.4f %.4f ", tmp, new_float);
+      // int idx = (*count) * 2;
+      int idx = *count;
+      *(buf + idx) = tmp;
+      *(buf + (idx + 1)) = new_float;
+      (*count) += 2;
+    }
+    // printf("%.4f ", *(dA));
+  }
 
   GemmBatched() = default;
 
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int partion, int nSM) {
+                    int if_split_phase, int *SM_check_res, int nSM, 
+                    int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf) {
 
     // get SM id
     unsigned int real_smid;
@@ -635,11 +686,84 @@ struct GemmBatched {
         //   }
         //   // __syncthreads();
         // }
+        
+        // Fault Injection
+        if(real_smid == faulty_smid && thread_idx == 0){
+          // int mma_grid_m = params.problem_size.m() / 16;
+          // int mma_grid_n = params.problem_size.n() / 8;
+          int N = params.problem_size.n();
+          int c = 0;
+          for(int i = 0; i < 64; i++){
+            int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
+            int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
+
+            // index of 1st faulty element
+            int fault_m = faulty_elements[i] % 8;
+            int fault_n = faulty_elements[i] / 8;
+            int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+
+            // index of 2nd faulty element (gap is 64)
+            fault_m += 8;
+            idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+          }
+        }
+        __syncthreads();
+
+        // if(real_smid == faulty_smid && (thread_idx == faulty_tid_1)){
+        //   // printf("batched injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
+        //   int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
+        //   int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
+
+        //   // int M = (if_split_phase == 0) ? (params.problem_size.m()+2) : params.problem_size.m();
+        //   int N = params.problem_size.n();
+        //   // int bit = 20;
+          
+        //   // printf("[ \n");
+        //   for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
+        //     for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
+        //       int idx = j + i * N + batch_idx * params.stride_D;
+        //       // force_bit_one_f32((params.ref_D.data()+idx), faulty_bit, counter, buf);
+        //       force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+        //     }
+        //     // printf("\n");  
+        //   }
+        //   // printf("] \n");
+        // }
+        // __syncthreads();
+
+        // if(real_smid == faulty_smid && (thread_idx == faulty_tid_2)){
+        //   // printf("batched injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
+          
+        //   int thread_tiled_m = (threadblock_tile_offset_m * 128) + ((thread_idx % 8) * 16);
+        //   int thread_tiled_n = (threadblock_tile_offset_n * 256) + ((thread_idx / 8) * 8);
+
+        //   // int M = (if_split_phase == 0) ? (params.problem_size.m()+2) : params.problem_size.m();
+        //   int N = params.problem_size.n();
+
+        //   int init_buf_idx = 16*8*2*batch_iter;
+        //   // int init_buf_idx = *counter;
+        //   // int bit = 20;
+          
+        //   // printf("[ \n");
+        //   for(int i = thread_tiled_m; i < (thread_tiled_m+16); i++){
+        //     for(int j = thread_tiled_n; j < (thread_tiled_n+8); j++){
+        //       int idx = j + i * N + batch_idx * params.stride_D;
+        //       // force_bit_one_f32((params.ref_D.data()+idx), faulty_bit, (counter + 1), (buf + init_buf_idx));
+        //       force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, (counter + 1), (buf + init_buf_idx));
+        //     }
+        //     // printf("\n");  
+        //   }
+          
+        //   // printf("] \n");
+        // }
+        // __syncthreads();
       }
     // }
 
     #if 1
-    if(if_split_phase == 1){
+    if(if_split_phase == 0){
       // check checksum
       // using Dtype = typename decltype(params.ref_D)::Element;
       // cooperative_groups::this_grid().sync();
@@ -664,7 +788,6 @@ struct GemmBatched {
           int checked_batch_idx = checked_init_batch_idx + i * check_step;
 
           // if(threadIdx.x == 0 && i == check_iter - 1) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
-
         
           if(checked_batch_idx < params.batch_count){
             // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
