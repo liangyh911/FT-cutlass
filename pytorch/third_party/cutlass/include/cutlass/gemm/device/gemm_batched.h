@@ -445,13 +445,22 @@ public:
     homeDir = getenv("HOME");
     fs::path homePath(homeDir);
 
+    int gpu_dev = -1;
+    cudaGetDevice(&gpu_dev);
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, gpu_dev);
+    int num_sms = prop.multiProcessorCount;
+    // int num_sms = 132;
+    // printf("SM count: %d\n", num_sms);
+
     ThreadblockSwizzle threadblock_swizzle;
 
     // dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
-    dim3 grid_gemm(132,1,1);
+    dim3 grid_gemm(num_sms,1,1);
 
-    dim3 grid_updatechk(132,1,1);
+    dim3 grid_updatechk(num_sms,1,1);
     dim3 block_updatechk(1024,1, 1);
     
     cudaStream_t stream_colchk;
@@ -467,11 +476,21 @@ public:
     float t_gemm = 0, t_chksum = 0, t_check = 0;
 
     // int *SM_check_res;
-    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
-    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
+    cudaMalloc((void**)&SM_check_res, num_sms * sizeof(int));
+    cudaMemset(SM_check_res, 0, num_sms * sizeof(int));
 
     // 128 96 112
-    int matrix_SM = (if_split_phase == 2)? 132 : 128;
+    // int matrix_SM = (if_split_phase == 2)? num_sms : 128;
+    int matrix_SM = num_sms;
+    if(if_split_phase != 2){
+      int sm_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+      if(num_sms % sm_per_batch == 0){
+        matrix_SM = num_sms - sm_per_batch;
+      }
+      else{
+        matrix_SM = num_sms - (num_sms % sm_per_batch);
+      }
+    }
 
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", new_grid.x, new_grid.y, new_grid.z, block.x, block.y, block.z);
 
@@ -497,11 +516,7 @@ public:
     // Fault Injection
     char flag;
     bool injection = false;
-    char *job_id = getenv("SLURM_JOB_ID");
-
-    int gpu_dev = -1;
-    cudaGetDevice(&gpu_dev);
-    
+    char *job_id = getenv("SLURM_JOB_ID");    
     // int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
     
     int faulty_smid =-1, faulty_bit = -1, *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
@@ -596,6 +611,7 @@ public:
 
           int idx = 0;
           faulty_smid = nums[idx++];
+          faulty_smid = faulty_smid % num_sms;
           // printf("faulty SM: %d, faulty MMA: ", faulty_smid);
 
           for (int i = 0; i < 64; i++){

@@ -515,6 +515,17 @@ public:
     homeDir = getenv("HOME");
     fs::path homePath(homeDir);
 
+    // 
+    int gpu_dev = -1;
+    cudaGetDevice(&gpu_dev);
+
+    // get sm count 
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, gpu_dev);
+    int num_sms = prop.multiProcessorCount;
+    // int num_sms = 132;
+    // printf("SM count: %d\n", num_sms);
+
     ThreadblockSwizzle threadblock_swizzle;
 
     dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
@@ -540,9 +551,6 @@ public:
     char flag;
     bool injection = false;
     char *job_id = getenv("SLURM_JOB_ID");
-
-    int gpu_dev = -1;
-    cudaGetDevice(&gpu_dev);
     // int faulty_smid = -1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
 
     int faulty_smid = -1, faulty_bit = -1, *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
@@ -562,12 +570,12 @@ public:
       checksumblk_per_col = (int)(ceil((double)((partion) / (double)(128))));
     }
     int matrix_shape_m = params_.grid_tiled_shape.m() - checksumblk_per_col;
-    int max_col = (int)ceil((double)132 / (double)(matrix_shape_m));
+    int max_col = (int)ceil((double)num_sms / (double)(matrix_shape_m));
     if(max_col > params_.grid_tiled_shape.n()){
       max_col = params_.grid_tiled_shape.n();
     }
     int remaining_SM = (int)(max_col * checksumblk_per_col);
-    int matrix_SM = (int)(132 - remaining_SM);
+    int matrix_SM = (int)(num_sms - remaining_SM);
     int SM_iter = (int)ceil((double)((matrix_shape_m * params_.grid_tiled_shape.n())/(double)matrix_SM));
 
     int *d_counter, *h_counter;
@@ -641,6 +649,7 @@ public:
 
           int idx = 0;
           faulty_smid = nums[idx++];
+          faulty_smid = faulty_smid % num_sms;
           // printf("faulty SM: %d, faulty MMA: ", faulty_smid);
 
           for (int i = 0; i < 64; i++){
@@ -742,8 +751,8 @@ public:
     // int if_split_phase = 0;
     
     // int *SM_check_res_1;
-    cudaMalloc((void**)&SM_check_res_1, 132 * sizeof(int));
-    cudaMemset(SM_check_res_1, 0, 132 * sizeof(int));
+    cudaMalloc((void**)&SM_check_res_1, num_sms * sizeof(int));
+    cudaMemset(SM_check_res_1, 0, num_sms * sizeof(int));
 
     bool deBug = false;
     // int iterations = 1;
@@ -752,13 +761,13 @@ public:
     cudaEventCreate(&stop);
     float t_compute = 0;
     // dim3 new_block(64,1,1);
-    dim3 new_grid(12,11,1);
+    dim3 new_grid(num_sms,1,1);
 
     // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf
     //             // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
     //           };
 
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf, &num_sms
                 // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
               };
 

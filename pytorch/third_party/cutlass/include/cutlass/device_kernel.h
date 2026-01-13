@@ -126,7 +126,7 @@ template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_GEMM(typename Operator::Params params, 
             int if_split_phase, int *SM_check_res, int partion, 
-            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf
+            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, int num_sms
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -137,7 +137,7 @@ void Kernel_GEMM(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, partion, faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, counter, buf
+  op(params, *shared_storage, if_split_phase, SM_check_res, partion, faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, counter, buf, num_sms
     // all_start, compute, finding, recompute, compare, checking
   );
   

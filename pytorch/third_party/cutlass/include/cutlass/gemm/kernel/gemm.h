@@ -472,13 +472,15 @@ struct Gemm {
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   int if_split_phase, int *SM_check_res, int partion, 
-                  int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf
+                  int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, int nsmid
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
     // get SM id
     unsigned int smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    // asm volatile("mov.u32 %0, %nsmid;" : "=r"(nsmid));
+
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
 
     // SM based schedule info
@@ -492,13 +494,13 @@ struct Gemm {
     int matrix_shape_m = params.grid_tiled_shape.m() - checksumblk_per_col;
     int matrix_shape_n = params.grid_tiled_shape.n();
 
-    int max_col = (int)ceil((double)132 / (double)(matrix_shape_m));
+    int max_col = (int)ceil((double)nsmid / (double)(matrix_shape_m));
     if(max_col > params.grid_tiled_shape.n()){
       max_col = params.grid_tiled_shape.n();
     }
 
     int remaining_SM = (int)(max_col * checksumblk_per_col);
-    int matrix_SM = (int)(132 - remaining_SM);
+    int matrix_SM = (int)(nsmid - remaining_SM);
 
     int matrix_next_blk_offset_m = matrix_SM % matrix_shape_m;
     int matrix_next_blk_offset_n = matrix_SM / matrix_shape_m;
