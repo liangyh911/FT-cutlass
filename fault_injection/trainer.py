@@ -2496,25 +2496,41 @@ class Trainer:
         # SM-Checker FI: global steps controling FI
         global_steps = 0
         addition_epoch = 0
-        perform_FI = True
+        should_exit = False
+        perform_FI = False
+        perform_Rec_Val = False
 
         job_id = os.getenv('SLURM_JOB_ID')
-        falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
-        FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
-        PlanFP = f"/home/yuhangl/control_{job_id}/plan.txt"
-        totalfaultyStepFP = f"/home/yuhangl/control_{job_id}/total_faulty_steps.txt"
-        CurStepFP = f"/home/yuhangl/control_{job_id}/current_step.txt"
+        falutyStepFP = f"./control_{job_id}/0/faulty_step.txt"
+        FIFP = f"./control_{job_id}/0/FI.txt"
+        PlanFP = f"./control_{job_id}/0/plan.txt"
+        totalfaultyStepFP = f"./control_{job_id}/0/total_faulty_steps.txt"
+        CurStepFP = f"./control_{job_id}/0/current_step.txt"
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
+
+        # target loss at step 500
+        model_name = model.config.name_or_path
+        loss_dic_A100 = {"Qwen/Qwen3-1.7B":0.0286, "meta-llama/Llama-3.2-1B-Instruct":0.0035, "Qwen/Qwen2.5-1.5B":1, "google/gemma-3-1b-it":0.2497}
+        loss_dic_H100 = {"Qwen/Qwen3-1.7B":0.0279, "meta-llama/Llama-3.2-1B-Instruct":0.0031, "Qwen/Qwen2.5-1.5B":1, "google/gemma-3-1b-it":0.205}
+        target_loss = loss_dic_A100[model_name]
+        
+        # print(f"model name: {model.config.name_or_path}")
 
         with open(FIFP, "w") as file:
             file.truncate(0)
             file.write('f')
  
         with open(falutyStepFP, 'r') as file:
-            faulty_step = int(file.readline())
+            # faulty_step = int(file.readline())
+            line = file.readline()
+            str_list = line.strip().split()
+            faulty_steps_list = [int(e) for e in str_list]
+
         # faulty_epoch = faulty_step / 63
 
         with open(totalfaultyStepFP, 'r') as file:
-            total_fi_steps = int(file.readline()) + faulty_step
+            # total_fi_steps = int(file.readline()) + faulty_step
+            faulty_duration = int(file.readline())
         
         # local_faulty_step = faulty_step % 250
         # print(f"faulty step: {faulty_step}, faulty epoch: {faulty_epoch}, local faulty step: {local_faulty_step}")
@@ -2597,13 +2613,15 @@ class Trainer:
                 # if(epoch != 0):
                 #     perform_FI = False
                 # total_fi_steps = 25 + faulty_step
+                if len(faulty_steps_list) != 0:
+                    faulty_step = faulty_steps_list[0]
+                total_fi_steps = faulty_step + faulty_duration
                 FI_step = 1
                 if perform_FI:
                     # write current global step
                     with open(CurStepFP, "w") as file:
                         file.truncate(0)
                         file.write(f"{global_steps} ")
-
                     if(global_steps == faulty_step):
                         with open(FIFP, "w") as file:
                             file.truncate(0)
@@ -2626,12 +2644,26 @@ class Trainer:
                         lines.pop(0)
                         with open(PlanFP, "w") as file:
                             file.writelines(lines)
+                        # delete current faulty step
+                        faulty_steps_list.pop(0)
                 else:
                     if(i == 0):
                         with open(FIFP, "w") as file:
                             file.truncate(0)
                             file.write('f')
                 # SMChecker: End Fault Injection Control
+
+                # SMChecker: Record Tensor Value Range
+                if perform_Rec_Val:
+                    # write current global step
+                    with open(CurStepFP, "w") as file:
+                        file.truncate(0)
+                        file.write(f"{global_steps} ")
+                    
+                    with open(VRFP, "w") as file:
+                        file.truncate(0)
+                        file.write('t')
+                 # SMChecker: End Record Tensor Value Range
 
                 update_step += 1
                 num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
@@ -2766,7 +2798,8 @@ class Trainer:
                         self.state.global_step += 1
                         self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                         self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                        self._maybe_log_save_evaluate(
+
+                        real_step_loss = self._maybe_log_save_evaluate(
                             tr_loss,
                             grad_norm,
                             model,
@@ -2776,10 +2809,26 @@ class Trainer:
                             start_time,
                             learning_rate=learning_rate,
                         )
+                        # print(f"{i} {global_steps}, do_sync, real_step_loss: {real_step_loss}")
+
+                        # SM-Checker, FI exit
+                        if perform_FI:
+                            # SM-Checker: if loss = 0, break training
+                            if(real_step_loss == 0):
+                                print(f"break the epoch loop, loss: {real_step_loss}, step: {global_steps}")
+                                addition_epoch = global_steps
+                                should_exit = True
+                                break
+
+                            if global_steps > 499 and real_step_loss <= target_loss:
+                                print(f"break the epoch loop, loss: {real_step_loss}, step: {global_steps}")
+                                addition_epoch = global_steps
+                                should_exit = True
+                                break
                     else:
                         self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
                     
-                    # print(f"\nloss: {tr_loss}, grad_norm: {grad_norm}")
+                    # print(f"{i} tr_loss_step: {tr_loss_step}, tr_loss: {tr_loss}, grad_norm: {grad_norm}")
 
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
                     # each step. Since we are breaking the loop early, we need to manually
@@ -2792,6 +2841,10 @@ class Trainer:
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     if is_torch_xla_available():
                         xm.mark_step()
+                    break
+                
+                # SM-Checker, exit step loop
+                if should_exit:
                     break
                 
                 # Count for global steps
@@ -2809,7 +2862,7 @@ class Trainer:
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             
             # SM-Checker: record loss for each epoch here 
-            print(f"\nepoch: {epoch}, loss: {tr_loss/total_updates}, grad_norm: {grad_norm}, total_updates:{total_updates}")
+            # print(f"\nepoch: {epoch}, loss: {tr_loss/total_updates}, grad_norm: {grad_norm}, total_updates:{total_updates}")
             epoch_loss = tr_loss / total_updates
 
             self._maybe_log_save_evaluate(
@@ -2828,24 +2881,29 @@ class Trainer:
             if self.control.should_training_stop:
                 break
             
-            if perform_FI:
-                # SM-Checker: if loss = 0, break training
-                if(epoch_loss == 0):
-                    print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
-                    addition_epoch = epoch
-                    break
+            # SM-Checker, exit epoch loop
+            if should_exit:
+                break
+            
+            # if perform_FI:
+            #     # SM-Checker: if loss = 0, break training
+            #     if(epoch_loss == 0):
+            #         print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
+            #         addition_epoch = epoch
+            #         break
 
-                # SM-Checker: if loss (epoch) meet requirement (llama: 10th epoch: 0.12; qwen: 0.9), break training
-                # SM-Checker: Llama (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
-                # SM-Checker: Qwen (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
-                if(epoch >= 8 and epoch_loss <= 0.0001):
-                    print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
-                    addition_epoch = epoch
-                    break
+            #     # SM-Checker: if loss (epoch) meet requirement (llama: 10th epoch: 0.12; qwen: 0.9), break training
+            #     # SM-Checker: Llama (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
+            #     # SM-Checker: Qwen (QA: epoch 7, loss 0.0003) (GE: epoch 9, loss 0.0001)
+            #     # if(epoch >= 8 and epoch_loss <= 0.0001):
+            #     if global_step > 499 and epoch_loss <= target_loss:
+            #         print(f"break the epoch loop, loss: {epoch_loss}, epoch: {epoch}")
+            #         addition_epoch = epoch
+            #         break
 
         if perform_FI:
             # SMChecker: record addition epochs after FI
-            logFP = f"/home/yuhangl/control_{job_id}/output.log"
+            logFP = f"./control_{job_id}/0/output.log"
             with open(logFP, "a") as file:
                 file.write(f"\n{addition_epoch}")
 
@@ -3259,6 +3317,8 @@ class Trainer:
             tr_loss -= tr_loss
 
             logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            # print("log loss: ", logs["loss"])
+
             if grad_norm is not None:
                 logs["grad_norm"] = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
             if learning_rate is not None:
@@ -3272,6 +3332,8 @@ class Trainer:
 
             self.log(logs, start_time)
 
+            return logs["loss"]
+
         metrics = None
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval)
@@ -3283,7 +3345,7 @@ class Trainer:
         if self.control.should_save:
             self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
-
+        
     def _load_rng_state(self, checkpoint):
         # Load RNG states from `checkpoint`
         if checkpoint is None:
@@ -3934,6 +3996,13 @@ class Trainer:
 
         with self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+        
+        # SM-Checker: Disable record value range in backward
+        job_id = os.getenv('SLURM_JOB_ID')
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
+        with open(VRFP, "w") as file:
+            file.truncate(0)
+            file.write('f')
 
         del inputs
         if (
