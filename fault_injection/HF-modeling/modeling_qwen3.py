@@ -20,6 +20,7 @@
 # limitations under the License.
 
 import os
+import struct
 
 from typing import Callable, Optional, Union
 
@@ -47,6 +48,24 @@ from ...utils.deprecation import deprecate_kwarg
 from ...utils.generic import check_model_inputs
 from .configuration_qwen3 import Qwen3Config
 
+
+def record_value_range(input_tensor, code):
+    job_id = os.getenv('SLURM_JOB_ID')
+    value_range_FP = f"./control_{job_id}/0/value_range.bin"
+    CurStepFP = f"./control_{job_id}/0/current_step.txt"
+    
+    mean_val = torch.mean(input_tensor).item()
+    min_val = torch.min(input_tensor).item()
+    max_val = torch.max(input_tensor).item()
+
+    with open(CurStepFP, 'r') as file:
+        current_step = int(file.readline())
+    with open(value_range_FP, 'ab') as f:
+        f.write(struct.pack('<i', current_step))
+        f.write(code.encode('utf-8'))
+        f.write(struct.pack('<f', min_val))
+        f.write(struct.pack('<f', mean_val))
+        f.write(struct.pack('<f', max_val))
 
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3RMSNorm(nn.Module):
@@ -82,11 +101,14 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x):
         job_id = os.getenv('SLURM_JOB_ID')
-        controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
-        cutlassFP = f"/home/yuhangl/control_{job_id}/cutlass.txt"
-        FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
-        component = f"/home/yuhangl/control_{job_id}/component.txt"
+        controlFP = f"./control_{job_id}/0/perform.txt"
+        cutlassFP = f"./control_{job_id}/0/cutlass.txt"
+        FIFP = f"./control_{job_id}/0/FI.txt"
+        component = f"./control_{job_id}/0/component.txt"
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
+
         FI = False
+        Val_Range = False
 
         with open(FIFP, 'r') as file:
             FIflag = file.read()
@@ -94,6 +116,13 @@ class Qwen3MLP(nn.Module):
                 FI = True
             else:
                 FI = False
+        
+        with open(VRFP, 'r') as file:
+            flag = file.read()
+            if flag == 't':
+                Val_Range = True
+            else:
+                Val_Range = False
 
         # down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
@@ -102,12 +131,16 @@ class Qwen3MLP(nn.Module):
                 file.truncate(0)
                 file.write("UP")
         up_proj = self.up_proj(x)
+        if Val_Range:
+            record_value_range(up_proj, "UP")
 
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
                 file.write("GA")
         gate_proj = self.gate_proj(x)
+        if Val_Range:
+            record_value_range(gate_proj, "GA")
         
         gate_proj = self.act_fn(gate_proj)
         
@@ -116,6 +149,8 @@ class Qwen3MLP(nn.Module):
                 file.truncate(0)
                 file.write("DO")
         down_proj = self.down_proj(gate_proj * up_proj)
+        if Val_Range:
+            record_value_range(down_proj, "DO")
 
         with open(cutlassFP, 'w') as file:
             file.truncate(0)
@@ -179,10 +214,11 @@ def eager_attention_forward(
     scaling: float,
     dropout: float = 0.0,
     FI: bool = False,
+    Val_Range: bool = False,
     **kwargs: Unpack[TransformersKwargs],
 ):
     job_id = os.getenv('SLURM_JOB_ID')
-    component = f"/home/yuhangl/control_{job_id}/component.txt"
+    component = f"./control_{job_id}/0/component.txt"
 
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
@@ -191,8 +227,12 @@ def eager_attention_forward(
         with open(component, 'w') as file:
             file.truncate(0)
             file.write("QK")
+    # attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3))
+    if Val_Range:
+            record_value_range(attn_weights, "QK")
+    attn_weights = attn_weights * scaling
 
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
@@ -205,6 +245,10 @@ def eager_attention_forward(
             file.truncate(0)
             file.write("AV")
     attn_output = torch.matmul(attn_weights, value_states)
+    if Val_Range:
+            record_value_range(attn_output, "AV")
+
+    # print(f"attn_weights: {attn_weights.size()}; attn_output: {attn_output.size()}")
 
     attn_output = attn_output.transpose(1, 2).contiguous()
 
@@ -254,11 +298,14 @@ class Qwen3Attention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         job_id = os.getenv('SLURM_JOB_ID')
-        controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
-        cutlassFP = f"/home/yuhangl/control_{job_id}/cutlass.txt"
-        FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
-        component = f"/home/yuhangl/control_{job_id}/component.txt"
+        controlFP = f"./control_{job_id}/0/perform.txt"
+        cutlassFP = f"./control_{job_id}/0/cutlass.txt"
+        FIFP = f"./control_{job_id}/0/FI.txt"
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
+        component = f"./control_{job_id}/0/component.txt"
+        
         FI = False
+        Val_Range = False
 
         with open(controlFP, 'r') as file:
             flag = file.read()
@@ -273,24 +320,39 @@ class Qwen3Attention(nn.Module):
                 FI = True
             else:
                 FI = False
+        
+        with open(VRFP, 'r') as file:
+            flag = file.read()
+            if flag == 't':
+                Val_Range = True
+            else:
+                Val_Range = False
 
         if FI: 
             with open(component, 'w') as file:
                     file.truncate(0)
-                    file.write("W(Q)")
+                    file.write("WQ")
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        if Val_Range:
+            record_value_range(query_states, "WQ")
         
         if FI: 
             with open(component, 'w') as file:
-                    file.truncate(0)
-                    file.write("W(K)")
+                file.truncate(0)
+                file.write("WK")
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        if Val_Range:
+            record_value_range(key_states, "WK")
         
         if FI: 
             with open(component, 'w') as file:
-                    file.truncate(0)
-                    file.write("W(V)")
+                file.truncate(0)
+                file.write("WV")
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        if Val_Range:
+            record_value_range(value_states, "WV")
+
+        # print(f"input size: {hidden_states.size()}; query size: {query_states.size()}; key size: {key_states.size()}; value size: {value_states.size()}")
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -314,6 +376,7 @@ class Qwen3Attention(nn.Module):
             scaling=self.scaling,
             sliding_window=self.sliding_window,  # diff with Llama
             FI=FI,
+            Val_Range=Val_Range,
             **kwargs,
         )
 
@@ -321,9 +384,11 @@ class Qwen3Attention(nn.Module):
 
         if FI: 
             with open(component, 'w') as file:
-                    file.truncate(0)
-                    file.write("W(AO) ")
+                file.truncate(0)
+                file.write("WO ")
         attn_output = self.o_proj(attn_output)
+        if Val_Range:
+            record_value_range(attn_output, "WO")
 
         return attn_output, attn_weights
 
