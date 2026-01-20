@@ -17,6 +17,11 @@ from transformers import (
 )
 from tqdm import tqdm
 
+
+# total traing steps 500, lanuch 1000, one epoch 187, memory usage: 30859MiB /  81559MiB
+# H100: baseline loss at step 500: 0.0279, time: 10+2 mins/500 #
+# A100 80GB: baseline loss at step 500: 0.0286, time: 35 hr/500 #
+
 # ==========================================
 # 1. 配置 (Configuration)
 # ==========================================
@@ -25,22 +30,21 @@ from tqdm import tqdm
 job_id = os.getenv('SLURM_JOB_ID')
 
 # Faulty step select corresponding checkpoint
-falutyStepFP = f"/home/yuhangl/control_{job_id}/faulty_step.txt"
+falutyStepFP = f"./control_{job_id}/0/faulty_step.txt"
 with open(falutyStepFP, 'r') as file:
-    faulty_step = int(file.readline())
-faulty_epoch = math.floor(faulty_step / 250)
-local_faulty_step = faulty_step % 250
+    faulty_step = file.readline()
+faulty_epoch = math.floor(faulty_step / 47)
+local_faulty_step = faulty_step % 47
 
-logFP = f"/home/yuhangl/control_{job_id}/output.log"
+logFP = f"./control_{job_id}/0/output.log"
 with open(logFP, "a") as file:
-    file.write(f"{faulty_step}, ({faulty_epoch}, {local_faulty_step})\n")
+    file.write(f"{faulty_step})\n")
     
 # cutlass control file
-controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
-cutlassFP = f"/home/yuhangl/control_{job_id}/cutlass.txt"
-SMChkFP = f"/home/yuhangl/control_{job_id}/split.txt"
+controlFP = f"./control_{job_id}/0/perform.txt"
+cutlassFP = f"./control_{job_id}/0/cutlass.txt"
+SMChkFP = f"./control_{job_id}/0/split.txt"
 
-# MODEL_ID = "meta-llama/Llama-3.2-1B-Instruct"
 MODEL_ID = "Qwen/Qwen3-1.7B"
 TEMP_OUTPUT_DIR = "./tmp_mmlu_epoch_eval_logs"
 
@@ -51,10 +55,10 @@ NUM_SUBJECTS_TO_LOAD = 20
 NUM_TRAIN_SAMPLES = 4000 
 SEED = 42
 
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 GRAD_ACCUMULATION = 2
-LEARNING_RATE = 2e-5
-MAX_SEQ_LENGTH = 256 
+LEARNING_RATE = 1e-5
+MAX_SEQ_LENGTH = 1024 
 NUM_EPOCHS = 3          # <--- 跑 3 个 epoch 以观察变化
 
 logging.basicConfig(level=logging.INFO)
@@ -178,7 +182,7 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     subset = eval_dataset.shuffle(seed=SEED).select(range(min(num_samples, len(eval_dataset))))
     
     original_use_cache = model.config.use_cache
-    model.config.use_cache = True
+    model.config.use_cache = False
     
     correct_count = 0
     total_count = 0
@@ -197,7 +201,8 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
                 # 【修改 1】给模型多一点空间，防止它想说 "The answer is A"
                 max_new_tokens=10, 
                 pad_token_id=tokenizer.eos_token_id,
-                do_sample=False
+                do_sample=False,
+                use_cache=False
             )
         
         # 解码生成的文本
@@ -248,21 +253,40 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
 # ==========================================
 
 class EpochEvalCallback(TrainerCallback):
-    """
-    在每个 Epoch 结束时触发 MMLU 评估
-    """
-    def __init__(self, tokenizer, eval_dataset, num_samples=200):
+    def __init__(self, tokenizer, eval_dataset, num_samples=200, eval_steps=250):
         self.tokenizer = tokenizer
         self.eval_dataset = eval_dataset
         self.num_samples = num_samples
+        self.eval_steps = eval_steps
+        self.last_eval_step = -1
+    
+    def _perform_eval(self, model, step):
+        """
+        内部辅助函数，执行评估并更新记录
+        """
+        print(f"\n\n*** Step {step} Evaluation Triggered... ***")
+        run_accuracy_evaluation(model, self.tokenizer, self.eval_dataset, self.num_samples)
+        self.last_eval_step = step
 
-    def on_epoch_end(self, args, state, control, **kwargs):
+    def on_step_end(self, args, state, control, **kwargs):
         """
-        Trainer 会在每个 epoch 结束时自动调用此方法
+        Trainer 会在每个 eval_steps 结束时调用此方法
         """
-        print(f"\n\n*** Epoch {state.epoch:.1f} Finished. Running Evaluation... ***")
-        model = kwargs['model']
-        accurcy = run_accuracy_evaluation(model, self.tokenizer, self.eval_dataset, self.num_samples)
+        if state.global_step > 0 and \
+           state.global_step % self.eval_steps == 0 and \
+           state.global_step != self.last_eval_step:
+            
+            model = kwargs['model']
+            self._perform_eval(model, state.global_step)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """
+        当训练结束时（无论是跑满 max_steps 还是提前退出）调用
+        """
+        if state.global_step > 0 and state.global_step != self.last_eval_step:
+            print(f"\n\n*** Training Finished at Step {state.global_step}. Running Final Evaluation... ***")
+            model = kwargs['model']
+            self._perform_eval(model, state.global_step)
 
 # ==========================================
 # 6. 主程序
@@ -321,7 +345,8 @@ def main():
     eval_callback = EpochEvalCallback(
         tokenizer=tokenizer,
         eval_dataset=partial_eval_dataset,
-        num_samples=200 # 每个 epoch 结束测 200 条
+        num_samples=200, # 每个 epoch 结束测 200 条
+        eval_steps=250 
     )
 
     # --- F. Trainer 配置 ---
@@ -331,10 +356,13 @@ def main():
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
-        # num_train_epochs=NUM_EPOCHS, # 3 个 Epoch
-        num_train_epochs = 20,
+        # num_train_epochs = 3,
+        max_steps=1000,
         bf16=True,
-        logging_strategy="epoch",
+
+        # logging_strategy="epoch",
+        logging_strategy="steps",
+        logging_steps=1, # 每 250 步打印一次 log
         
         # 关键设置：关闭内置 eval，使用 callback
         eval_strategy="no", 
@@ -355,6 +383,13 @@ def main():
     )
 
     print("Starting Training...")
+
+    with open(cutlassFP, 'w') as file:
+        file.truncate(0)
+        file.write("f")
+    with open(SMChkFP, 'w') as file:
+        file.truncate(0)
+        file.write("f")
     
     # 可选：训练前先跑一次 Baseline
     print("Running baseline evaluation...")
@@ -363,14 +398,6 @@ def main():
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("t")
-
-    with open(cutlassFP, 'w') as file:
-        file.truncate(0)
-        file.write("f")
-
-    with open(SMChkFP, 'w') as file:
-        file.truncate(0)
-        file.write("f")
 
     # 开始训练 loop
     trainer.train()
@@ -385,15 +412,13 @@ def main():
 
     torch.cuda.empty_cache()
 
-
     with open(logFP, "a") as file:
         file.write("\n")
         file.write(" ".join(smchk_loss))
         file.write("\n")
         file.write(" ".join(grad_norm))
         file.write("\n")
-        # file.write(str(final_F1_score))
-        # file.write("\n")
+
 
     with open(falutyStepFP, "r") as file:
         lines = file.readlines()

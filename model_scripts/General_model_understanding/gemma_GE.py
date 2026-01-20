@@ -4,6 +4,7 @@ import logging
 import gc
 import os
 import math
+import sys
 
 from datasets import load_dataset, concatenate_datasets, get_dataset_config_names
 from transformers import (
@@ -12,39 +13,55 @@ from transformers import (
     TrainingArguments,
     Trainer,
     DataCollatorForSeq2Seq,
-    TrainerCallback  # <--- 新增导入
+    TrainerCallback
 )
+
+# total traing steps 500, lanuch 1000, one epoch 187, memory usage: 30859MiB /  81559MiB
+# H100: baseline loss at step 500: 0.205, time: /500 #
+# A100 80GB: baseline loss at step 500: 0.2497, time: 30 mins / 500 iter#
+
+# 尝试导入 Gemma3 相关配置（如果 transformers 版本够新，AutoModel 也能自动识别）
+try:
+    from transformers import Gemma3Config
+except ImportError:
+    pass
+
 from tqdm import tqdm
 
-# total traing steps 500, lanuch 1000 , memory usage: 25539MiB /  81559MiB, one epoch 187 #
-# H100: baseline loss at step 500: 0.0031, time: 15 mins/500 #
-# A100 80GB: baseline loss at step 500: 0.0035, time: 15+2 mins/500 #
+# ==========================================
+# 0. 环境检查 & 配置
+# ==========================================
 
-# ==========================================
-# 1. 配置 (Configuration)
-# ==========================================
+# Gemma 3 需要较新的 transformers 版本 (>=4.50.0)
+# print(f"Transformers Version: {import transformers; transformers.__version__}")
 
 # Job id
-job_id = os.getenv('SLURM_JOB_ID')
+job_id = os.getenv('SLURM_JOB_ID', 'local_debug')
 
-# Faulty step select corresponding checkpoint
+# --- 控制文件逻辑 (保持原样，增加容错) ---
+os.makedirs(f"./control_{job_id}", exist_ok=True)
 falutyStepFP = f"./control_{job_id}/0/faulty_step.txt"
-with open(falutyStepFP, 'r') as file:
-    faulty_step = file.readline()
-# faulty_epoch = math.floor(faulty_step / 47)
+try:
+    with open(falutyStepFP, 'r') as file:
+        faulty_step = file.readline().strip()
+except (FileNotFoundError, ValueError):
+    faulty_step = 0
+
+# faulty_epoch = math.floor(faulty_step / 47) if faulty_step > 0 else 0
 # local_faulty_step = faulty_step % 47
 
 logFP = f"./control_{job_id}/0/output.log"
 with open(logFP, "a") as file:
     file.write(f"{faulty_step}\n")
     
-# cutlass control file
 controlFP = f"./control_{job_id}/0/perform.txt"
 cutlassFP = f"./control_{job_id}/0/cutlass.txt"
 SMChkFP = f"./control_{job_id}/0/split.txt"
 
-MODEL_ID = "meta-llama/Llama-3.2-1B-Instruct"
-TEMP_OUTPUT_DIR = "./tmp_mmlu_epoch_eval_logs"
+# --- 模型配置 ---
+# 目标模型：Gemma 3 1B Instruct
+MODEL_ID = "google/gemma-3-1b-it" 
+TEMP_OUTPUT_DIR = "./tmp_gemma3_mmlu_logs"
 
 PREFERRED_TRAIN_SPLIT = "test"       
 PREFERRED_EVAL_SPLIT = "validation"  
@@ -53,11 +70,12 @@ NUM_SUBJECTS_TO_LOAD = 20
 NUM_TRAIN_SAMPLES = 4000 
 SEED = 42
 
-BATCH_SIZE = 8
+# 1B 模型很小，可以适当增大 Batch Size
+BATCH_SIZE = 8 
 GRAD_ACCUMULATION = 2
-LEARNING_RATE = 2e-5
+LEARNING_RATE = 1e-5 
 MAX_SEQ_LENGTH = 1024 
-NUM_EPOCHS = 3          # <--- 跑 3 个 epoch 以观察变化
+NUM_EPOCHS = 3          
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,7 +99,9 @@ def load_mmlu_subset(preferred_split, num_subjects=20):
     try:
         all_subjects = get_dataset_config_names("cais/mmlu")
     except Exception:
-        all_subjects = ["abstract_algebra", "anatomy", "astronomy", "business_ethics", "clinical_knowledge"] # Fallback
+        # Fallback list
+        all_subjects = ["abstract_algebra", "anatomy", "astronomy", "business_ethics", "clinical_knowledge", 
+                        "college_biology", "college_chemistry", "college_computer_science", "college_mathematics", "college_physics"]
 
     all_subjects = [s for s in all_subjects if s != "all"]
     selected_subjects = all_subjects[:num_subjects]
@@ -101,7 +121,7 @@ def load_mmlu_subset(preferred_split, num_subjects=20):
     return full_ds
 
 # ==========================================
-# 3. 预处理逻辑
+# 3. 预处理逻辑 (Gemma 3 Multimodal 适配)
 # ==========================================
 
 def format_mmlu_prompt(example):
@@ -109,17 +129,29 @@ def format_mmlu_prompt(example):
     choices = example['choices']
     answer_idx = example['answer'] 
     
-    # 防止脏数据导致 crash
     if answer_idx is None or not isinstance(answer_idx, int) or not (0 <= answer_idx <= 3):
         return None, None
 
     answer_char = ["A", "B", "C", "D"][answer_idx]
     options_text = f"A. {choices[0]}\nB. {choices[1]}\nC. {choices[2]}\nD. {choices[3]}"
     
+    user_text = f"{question}\n\n{options_text}\n\nAnswer:"
+    
+    # Gemma 3 是多模态模型，推荐使用结构化的 content 列表
+    # 格式: {"type": "text", "text": "..."}
     messages = [
-        {"role": "system", "content": "You are a helpful assistant. Analyze the following multiple-choice question and provide the correct answer. Output ONLY the corresponding letter (A, B, C, or D)."},
-        {"role": "user", "content": f"{question}\n\n{options_text}\n\nAnswer:"},
-        {"role": "assistant", "content": answer_char}
+        {
+            "role": "system", 
+            "content": [{"type": "text", "text": "You are a helpful assistant. Analyze the following multiple-choice question and provide the correct answer. Output ONLY the corresponding letter (A, B, C, or D)."}]
+        },
+        {
+            "role": "user", 
+            "content": [{"type": "text", "text": user_text}]
+        },
+        {
+            "role": "assistant", 
+            "content": [{"type": "text", "text": answer_char}]
+        }
     ]
     return messages, answer_char
 
@@ -133,8 +165,9 @@ def preprocess_function(examples, tokenizer):
             'answer': examples['answer'][i]
         }
         messages, ans_char = format_mmlu_prompt(single_example)
-        if messages is None: continue # 跳过脏数据
+        if messages is None: continue 
         
+        # 1. Full Text Tokenization
         full_text = tokenizer.apply_chat_template(messages, tokenize=False)
         tokenized_full = tokenizer(
             full_text, truncation=True, max_length=MAX_SEQ_LENGTH, padding="max_length", add_special_tokens=False
@@ -142,18 +175,22 @@ def preprocess_function(examples, tokenizer):
         input_ids = tokenized_full["input_ids"]
         labels = copy.deepcopy(input_ids)
         
-        prompt_messages = messages[:-1]
+        # 2. Prompt Only Tokenization (for masking)
+        prompt_messages = messages[:-1] # Remove assistant answer
+        # add_generation_prompt=True ensures correct closing tags for user turn
         prompt_text = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
         tokenized_prompt = tokenizer(
             prompt_text, truncation=True, max_length=MAX_SEQ_LENGTH, padding=False, add_special_tokens=False
         )
         prompt_len = len(tokenized_prompt["input_ids"])
         
+        # Mask prompt labels
         if prompt_len < len(labels):
             labels[:prompt_len] = [-100] * prompt_len
         else:
             labels = [-100] * len(labels)
             
+        # Mask padding labels
         for j in range(len(labels)):
             if tokenized_full["attention_mask"][j] == 0: labels[j] = -100
 
@@ -164,10 +201,11 @@ def preprocess_function(examples, tokenizer):
     return model_inputs
 
 # ==========================================
-# 4. 评估逻辑 (封装为函数以便 Callback 调用)
+# 4. 评估逻辑
 # ==========================================
 
 def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
+    # Initialize control file state
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("f")
@@ -175,12 +213,10 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     print(f"\n[Callback] Starting evaluation on {num_samples} samples...")
     model.eval()
     
-    # 显存清理：防止 OOM
     torch.cuda.empty_cache()
     
-    # 临时开启 cache 加速推理
     original_use_cache = model.config.use_cache
-    model.config.use_cache = False
+    model.config.use_cache = True # Enable cache for faster generation
     
     correct_count = 0
     total_count = 0
@@ -192,17 +228,22 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
         if messages is None: continue 
         
         prompt_messages = messages[:-1] 
+        # 使用 add_generation_prompt=True 自动添加 model start token
         prompt = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+        
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs, 
                 max_new_tokens=1, 
-                pad_token_id=tokenizer.eos_token_id, 
+                pad_token_id=tokenizer.pad_token_id, 
+                eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,
-                use_cache=False
+                use_cache=True
             )
+        
+        # Decode only the new token
         new_token_id = outputs[0][inputs.input_ids.shape[1]:]
         generated_char = tokenizer.decode(new_token_id, skip_special_tokens=True).strip().upper()
         
@@ -214,7 +255,7 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     accuracy = correct_count / total_count if total_count > 0 else 0
     print(f"\n[Callback] Epoch Result | Accuracy: {accuracy:.2%} ({correct_count}/{total_count})")
     
-    # 恢复训练状态
+    # Reset states
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("t")
@@ -225,14 +266,13 @@ def run_accuracy_evaluation(model, tokenizer, eval_dataset, num_samples=200):
     with open(logFP, "a") as f:
         f.write(f"{accuracy:.4f} ")
     
-    # 再次清理显存
     torch.cuda.empty_cache()
     gc.collect()
     
     return accuracy
 
 # ==========================================
-# 5. 自定义 Callback 类
+# 5. 自定义 Callback
 # ==========================================
 
 class EpochEvalCallback(TrainerCallback):
@@ -269,20 +309,24 @@ class EpochEvalCallback(TrainerCallback):
             model = kwargs['model']
             self._perform_eval(model, state.global_step)
 
-
 # ==========================================
 # 6. 主程序
 # ==========================================
 
 def main():
+    # --- Tokenizer 加载 ---
+    print(f"Loading Tokenizer: {MODEL_ID}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    tokenizer.pad_token = tokenizer.eos_token
+    
+    # Gemma 3 作为一个多模态模型，通常使用 EOS token 作为 PAD token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right" # 训练时通常使用 right padding
     
     # --- A. 加载数据 ---
     print(f"Loading training data (Preferred: {PREFERRED_TRAIN_SPLIT})...")
     partial_train_dataset = load_mmlu_subset(PREFERRED_TRAIN_SPLIT, num_subjects=NUM_SUBJECTS_TO_LOAD)
     
-    # 过滤脏数据
     print("Filtering invalid samples...")
     partial_train_dataset = partial_train_dataset.filter(
         lambda x: x['answer'] is not None and isinstance(x['answer'], int) and 0 <= x['answer'] <= 3
@@ -314,20 +358,23 @@ def main():
     )
 
     # --- D. 加载模型 ---
-    print("Loading Model...")
+    print(f"Loading Model: {MODEL_ID}...")
+    # 注意: Gemma 3 是多模态模型，但可以通过 AutoModelForCausalLM 加载进行文本生成
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        attn_implementation="eager", # H100 可以改回 flash_attention_2
-        use_cache=False 
+        attn_implementation="eager", # 或 "flash_attention_2" 如果硬件支持且安装了 FlashAttn
+        use_cache=False,
+        # 如果需要相信远程代码（通常 Gemma 3 需要），请取消注释下方:
+        # trust_remote_code=True 
     )
 
     # --- E. 初始化 Callback ---
     eval_callback = EpochEvalCallback(
         tokenizer=tokenizer,
         eval_dataset=partial_eval_dataset,
-        num_samples=200, # 每个 epoch 结束测 200 条
+        num_samples=200, 
         eval_steps=250
     )
 
@@ -338,16 +385,12 @@ def main():
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
-        # num_train_epochs=NUM_EPOCHS, # 3 个 Epoch
-        # num_train_epochs = 1,
-        max_steps=1000,
-        bf16=True,
+        max_steps=10,
+        bf16=True, # Gemma 强烈建议使用 bf16
         
-        # logging_strategy="epoch",
         logging_strategy="steps",
-        logging_steps=1, # 每 250 步打印一次 log
+        logging_steps=1, 
         
-        # 关键设置：关闭内置 eval，使用 callback
         eval_strategy="no", 
         save_strategy="no",
         
@@ -362,38 +405,40 @@ def main():
         train_dataset=tokenized_train_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
-        callbacks=[eval_callback] # <--- 注入 Callback
+        callbacks=[eval_callback] 
     )
 
     print("Starting Training...")
+
     with open(cutlassFP, 'w') as file:
         file.truncate(0)
         file.write("f")
+
     with open(SMChkFP, 'w') as file:
         file.truncate(0)
         file.write("f")
     
-    # 可选：训练前先跑一次 Baseline
+    # Baseline Check
     print("Running baseline evaluation...")
     run_accuracy_evaluation(model, tokenizer, partial_eval_dataset, num_samples=200)
 
+    # Initialize external control files
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("t")
 
-    # 开始训练 loop
+    # Start Training
     trainer.train()
 
     with open(controlFP, 'w') as file:
         file.truncate(0)
         file.write("f")
-
+    
     log = trainer.state.log_history
     smchk_loss = [str(e.get("loss", "")) for e in log if "loss" in e]
     grad_norm = [str(e.get("grad_norm", "")) for e in log if "grad_norm" in e]
 
     torch.cuda.empty_cache()
-
 
     with open(logFP, "a") as file:
         file.write("\n")
@@ -401,9 +446,7 @@ def main():
         file.write("\n")
         file.write(" ".join(grad_norm))
         file.write("\n")
-        # file.write(str(final_F1_score))
-        # file.write("\n")
-
+    
     with open(falutyStepFP, "r") as file:
         lines = file.readlines()
     lines.pop(0)
