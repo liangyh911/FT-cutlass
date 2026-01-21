@@ -2292,7 +2292,6 @@ void update_checksum_T_wmma_v2(typename Operator::Params params, int matrix_SM, 
   } 
 }
 
-
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 CUTLASS_GLOBAL
 void update_checksum_T_wmma_v3(typename Operator::Params params, int matrix_SM, int monitored_batched_count, int num_sms, int *SM_local_blk_flg){
@@ -2794,7 +2793,6 @@ void update_checksum_T_wmma_v4(typename Operator::Params params, int matrix_SM, 
   } 
 }
 
-
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 CUTLASS_GLOBAL
 void update_checksum_T_wmma_v5(typename Operator::Params params, int matrix_SM, int monitored_batched_count, int num_sms){
@@ -3023,7 +3021,474 @@ void update_checksum_T_wmma_v5(typename Operator::Params params, int matrix_SM, 
   } 
 }
 
+template <typename Operator, int tiled_K, int tiled_N, int num_stages, typename Dtype>
+CUTLASS_GLOBAL
+void update_checksum_T_wmma_v7(typename Operator::Params params, int matrix_SM, int monitored_batched_count, int num_sms){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
 
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  int tid = threadIdx.x;
+  int blockdim = blockDim.x;
+  int warp_id = tid / 32;
+  int lane_id = tid % 32;
+  int num_warps = blockdim >> 5;
+
+  extern __shared__ Dtype SharedMem[];
+
+  auto group = cooperative_groups::this_thread_block();
+  constexpr auto scope = cuda::thread_scope_block;
+  __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
+  auto pipeline = cuda::make_pipeline(group, &shared_state);
+
+  // Accumulator Frag
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_acc;
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  int checksum_stride = 16 * K;
+  int semeB_stride = tiled_K * tiled_N;
+  int semeB_ld = tiled_K + 8;
+  // int semeB_ld = tiled_K;
+  int stageB_stride = semeB_ld * tiled_N;
+
+  int checksum_load_stride = 2 * K;
+
+  // shared memory for A
+  Dtype* As = SharedMem;
+  // shared memory for B
+  Dtype* Bs = As + checksum_stride;
+
+  int mk = M * K;
+  int mn = M * N;
+  int m1n = (M + 1) * N;
+  
+  int chk_step = num_sms - matrix_SM;
+  int local_smid = real_smid - matrix_SM;
+
+  int chk_iter = monitored_batched_count / chk_step;
+  int tiled_iter = K / tiled_K;
+  int N_iter = N / tiled_N;
+
+  unsigned long long init_clock, t;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = local_smid + b_iter * chk_step;
+    // if(batch_idx < params.batch_count){
+    if(batch_idx < monitored_batched_count){                    
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      int stride_b = (batch_idx * params.stride_B);
+
+      // load checksum to share memroy
+      // __syncthreads();
+      // if(tid == 0 && local_smid == 0){
+      //   init_clock = clock64();
+      //   printf("batch idx: %d, init clock: %llu\n", batch_idx, init_clock);
+      // }
+      if(tid < checksum_load_stride){
+        As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      }
+      __syncthreads();
+
+      // if(tid == 0 && local_smid == 0){
+      //   t = clock64();
+      //   printf("batch idx: %d, load A tile, clock: %llu, overhead: %llu\n", batch_idx, t, (t - init_clock));
+      //   init_clock = t;
+      // }
+      
+      for(int i_iter = 0; i_iter < N_iter; i_iter++){
+        // FIX 2: Reset Accumulator inside the loop
+        wmma::fill_fragment(c_acc, 0.0f);
+        
+        int n_start = i_iter * tiled_N;
+        // load first stage
+        pipeline.producer_acquire();
+        Dtype *ref_b = params.ref_B.data()+ stride_b;
+        for(int c = warp_id; c < tiled_N; c+=num_warps){
+          int smem_idx = c * semeB_ld + lane_id;
+          int global_k_idx = lane_id;
+          cuda::memcpy_async(&Bs[smem_idx], (ref_b + (n_start + c) * K + global_k_idx), sizeof(Dtype), pipeline);
+
+          smem_idx = smem_idx + 32;
+          global_k_idx = lane_id + 32;
+          cuda::memcpy_async(&Bs[smem_idx], (ref_b + (n_start + c) * K + global_k_idx), sizeof(Dtype), pipeline);
+        }
+
+        // __syncthreads();
+        // if(tid == 0 && local_smid == 0){
+        //   t = clock64();
+        //   printf("batch idx: %d, load B tile %d, clock: %llu, overhead: %llu\n", batch_idx, 0, t, (t - init_clock));
+        //   init_clock = t;
+        // }
+
+        pipeline.producer_commit();
+
+        for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
+          // load second stage
+          int load_stage_idx = tile_i % num_stages;
+          int k_start = tile_i * tiled_K;
+
+          // load second stage
+          pipeline.producer_acquire();
+          Dtype *buf = Bs + load_stage_idx * stageB_stride;
+          Dtype *ref_b = params.ref_B.data()+ stride_b;
+          for(int c = warp_id; c < tiled_N; c+=num_warps){
+            int smem_idx = c * semeB_ld + lane_id;
+            int global_k_idx = k_start + lane_id;
+            cuda::memcpy_async(&buf[smem_idx], (ref_b + (c + n_start) * K + global_k_idx), sizeof(Dtype), pipeline);
+
+            smem_idx = smem_idx + 32;
+            global_k_idx = global_k_idx + 32;
+            cuda::memcpy_async(&buf[smem_idx], (ref_b + (c + n_start) * K + global_k_idx), sizeof(Dtype), pipeline);
+          }
+          // __syncthreads();
+          // if(tid == 0&& local_smid == 0){
+          //   t = clock64();
+          //   printf("batch idx: %d, load B tile %d, clock: %llu, overhead: %llu\n", batch_idx, tile_i, t, (t - init_clock));
+          //   init_clock = t;
+          // }
+
+          pipeline.producer_commit();
+          pipeline.consumer_wait();
+          
+          // computation
+          buf = Bs + ((tile_i - 1) % num_stages) * stageB_stride;
+          // int k_b = tid * (tiled_K + 1);
+          int k_a_stride = (tile_i - 1) * tiled_K;
+          // int tile_b_stride = stageB_stride / 2;
+
+          __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
+          __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
+
+          wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+          wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag;
+
+          int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
+          
+          #pragma unroll
+          for(int k = 0; k < tiled_K; k += 16){
+            // Load A
+            wmma::load_matrix_sync(a_frag, (a+k), K);
+
+            // Compute Tile 0 (Col 0 ~ 511)
+            // int b_offset_0 = warp_id * (semeB_ld * 16) + k; // Row 0, Col offset
+            wmma::load_matrix_sync(b_frag, (b + b_offset_0 + k), semeB_ld);
+            wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
+          }
+
+          // __syncthreads();
+          // if(tid == 0&& local_smid == 0){
+          //   unsigned long long t = clock64();
+          //   printf("batch idx: %d, compute C tile %d, clock: %llu, overhead: %llu\n", batch_idx, (tile_i-1), t, (t - init_clock));
+          //   init_clock = t;
+          // }
+
+          pipeline.consumer_release();
+        }
+
+        pipeline.consumer_wait();
+        // last stage computation
+        Dtype *buf = (Bs + ((tiled_iter - 1) % num_stages) * stageB_stride);
+        int k_a_stride = (tiled_iter - 1) * tiled_K;
+        // int tile_b_stride = stageB_stride / 2;
+        
+        __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
+        __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
+
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag;
+        
+        int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
+
+        #pragma unroll
+        for(int k = 0; k < tiled_K; k += 16){
+          // Load A
+          wmma::load_matrix_sync(a_frag, (a+k), K);
+
+          // Compute Tile 0 (Col 0 ~ 511)
+          // int b_offset_0 = warp_id * (semeB_ld * 16) + k; // Row 0, Col offset
+          wmma::load_matrix_sync(b_frag, (b + b_offset_0 + k), semeB_ld);
+          wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
+        }
+        // __syncthreads();
+        // if(tid == 0&& local_smid == 0){
+        //   t = clock64();
+        //   printf("batch idx: %d, compute C tile %d, clock: %llu, overhead: %llu\n", batch_idx, (tiled_iter-1), t, (t - init_clock));
+        //   init_clock = t;
+        // }
+        
+        pipeline.consumer_release();
+        // 
+        __syncthreads();
+
+        // Store
+        float* smem_base = reinterpret_cast<float*>(Bs);
+        int warp_offset_0 = warp_id * 16;
+        wmma::store_matrix_sync((smem_base + warp_offset_0), c_acc, tiled_N, wmma::mem_row_major);
+        __syncthreads();
+                
+        if(tid < N) {
+          int row_idx = tid / tiled_N;           
+          int local_col = tid % tiled_N;
+          int global_col = (i_iter * tiled_N) + local_col;
+
+          float val_f32 = smem_base[tid];
+
+          int row_base_offset = (row_idx == 0) ? mn : m1n;          
+          int idx_chk = (batch_idx * params.stride_D) + row_base_offset + global_col;
+
+          *(params.ref_D.data() + idx_chk) = static_cast<Dtype>(val_f32);
+        }
+      }
+    }
+  } 
+}
+
+template <typename Operator, int tiled_K, int tiled_N, int num_stages, typename Dtype>
+CUTLASS_GLOBAL
+void update_checksum_T_wmma_v8(typename Operator::Params params, int matrix_SM, int monitored_batched_count, int num_sms){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+
+  if(real_smid < matrix_SM) return;
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  int tid = threadIdx.x;
+  int blockdim = blockDim.x;
+  int warp_id = tid / 32;
+  int lane_id = tid % 32;
+  int num_warps = blockdim >> 5;
+
+  extern __shared__ Dtype SharedMem[];
+
+  auto group = cooperative_groups::this_thread_block();
+  constexpr auto scope = cuda::thread_scope_block;
+  __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
+  auto pipeline = cuda::make_pipeline(group, &shared_state);
+
+  // Accumulator Frag
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_acc[2];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+  int checksum_stride = 16 * K;
+  int semeB_stride = tiled_K * tiled_N;
+  int semeB_ld = tiled_K + 8;
+  // int semeB_ld = tiled_K;
+  int stageB_stride = semeB_ld * tiled_N;
+
+  int checksum_load_stride = 2 * K;
+
+  // shared memory for A
+  Dtype* As = SharedMem;
+  // shared memory for B
+  Dtype* Bs = As + checksum_stride;
+
+  int mk = M * K;
+  int mn = M * N;
+  int m1n = (M + 1) * N;
+  
+  int chk_step = num_sms - matrix_SM;
+  int local_smid = real_smid - matrix_SM;
+
+  int chk_iter = monitored_batched_count / chk_step;
+  int tiled_iter = (K / tiled_K) * (N / tiled_N);
+  // int N_iter = N / tiled_N;
+  // int K_iter = K / tiled_K;
+
+  unsigned long long init_clock, t;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    int batch_idx = local_smid + b_iter * chk_step;
+    // if(batch_idx < params.batch_count){
+    if(batch_idx < monitored_batched_count){                    
+      int idx_a_1 = (batch_idx * params.stride_A) + mk;
+      int stride_b = (batch_idx * params.stride_B);
+
+      // FIX 2: Reset Accumulator inside the loop
+      wmma::fill_fragment(c_acc[0], 0.0f);
+      wmma::fill_fragment(c_acc[1], 0.0f);
+
+      // load checksum to share memroy
+      // __syncthreads();
+      // if(tid == 0 && local_smid == 0){
+      //   init_clock = clock64();
+      //   printf("batch idx: %d, init clock: %llu\n", batch_idx, init_clock);
+      // }
+      if(tid < checksum_load_stride){
+        As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      }
+      __syncthreads();
+
+      // if(tid == 0 && local_smid == 0){
+      //   t = clock64();
+      //   printf("batch idx: %d, load A tile, clock: %llu, overhead: %llu\n", batch_idx, t, (t - init_clock));
+      //   init_clock = t;
+      // }
+      
+      // load first stage
+      pipeline.producer_acquire();
+      Dtype *ref_b = params.ref_B.data()+ stride_b;
+      for(int c = warp_id; c < tiled_N; c+=num_warps){
+        int smem_idx = c * semeB_ld + lane_id;
+        int global_k_idx = lane_id;
+        cuda::memcpy_async(&Bs[smem_idx], (ref_b + c * K + global_k_idx), sizeof(Dtype), pipeline);
+
+        smem_idx = smem_idx + 32;
+        global_k_idx = lane_id + 32;
+        cuda::memcpy_async(&Bs[smem_idx], (ref_b + c * K + global_k_idx), sizeof(Dtype), pipeline);
+      }
+
+      // __syncthreads();
+      // if(tid == 0 && local_smid == 0){
+      //   t = clock64();
+      //   printf("batch idx: %d, load B tile %d, clock: %llu, overhead: %llu\n", batch_idx, 0, t, (t - init_clock));
+      //   init_clock = t;
+      // }
+
+      pipeline.producer_commit();
+
+      for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
+        // load second stage
+        int load_stage_idx = tile_i % num_stages;
+        int k_start = (tile_i % 2) * tiled_K;
+        int n_start = (tile_i / 2) * tiled_N;
+
+        // load second stage
+        pipeline.producer_acquire();
+        Dtype *buf = Bs + load_stage_idx * stageB_stride;
+        Dtype *ref_b = params.ref_B.data()+ stride_b;
+        for(int c = warp_id; c < tiled_N; c+=num_warps){
+          int smem_idx = c * semeB_ld + lane_id;
+          int global_k_idx = k_start + lane_id;
+          cuda::memcpy_async(&buf[smem_idx], (ref_b + (c + n_start) * K + global_k_idx), sizeof(Dtype), pipeline);
+
+          smem_idx = smem_idx + 32;
+          global_k_idx = global_k_idx + 32;
+          cuda::memcpy_async(&buf[smem_idx], (ref_b + (c + n_start) * K + global_k_idx), sizeof(Dtype), pipeline);
+        }
+        // __syncthreads();
+        // if(tid == 0&& local_smid == 0){
+        //   t = clock64();
+        //   printf("batch idx: %d, load B tile %d, clock: %llu, overhead: %llu\n", batch_idx, tile_i, t, (t - init_clock));
+        //   init_clock = t;
+        // }
+
+        pipeline.producer_commit();
+        pipeline.consumer_wait();
+        
+        // computation
+        buf = Bs + ((tile_i - 1) % num_stages) * stageB_stride;
+        // int k_b = tid * (tiled_K + 1);
+        // int k_a_stride = (tile_i - 1) * tiled_K;
+        int k_a_stride = ((tile_i - 1) % 2) * tiled_K;
+        // int tile_b_stride = stageB_stride / 2;
+
+        __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
+        __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
+
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag;
+
+        int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
+        // K_iter
+        int c_acc_idx = (tile_i-1) / 2;
+        
+        #pragma unroll
+        for(int k = 0; k < tiled_K; k += 16){
+          // Load A
+          wmma::load_matrix_sync(a_frag, (a+k), K);
+
+          // Compute Tile 0 (Col 0 ~ 511)
+          wmma::load_matrix_sync(b_frag, (b + b_offset_0 + k), semeB_ld);
+          wmma::mma_sync(c_acc[c_acc_idx], a_frag, b_frag, c_acc[c_acc_idx]);
+        }
+
+        // __syncthreads();
+        // if(tid == 0&& local_smid == 0){
+        //   unsigned long long t = clock64();
+        //   printf("batch idx: %d, compute C tile %d, clock: %llu, overhead: %llu\n", batch_idx, (tile_i-1), t, (t - init_clock));
+        //   init_clock = t;
+        // }
+
+        pipeline.consumer_release();
+      }
+
+      pipeline.consumer_wait();
+      // last stage computation
+      Dtype *buf = (Bs + ((tiled_iter - 1) % num_stages) * stageB_stride);
+      // int k_a_stride = (tiled_iter - 1) * tiled_K;
+      int k_a_stride = ((tiled_iter - 1) % 2) * tiled_K;
+      // int tile_b_stride = stageB_stride / 2;
+      
+      __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
+      __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
+
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a_frag;
+      wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b_frag;
+      
+      int b_offset_0 = warp_id * (semeB_ld * 16); // Row 0, Col offset
+
+      #pragma unroll
+      for(int k = 0; k < tiled_K; k += 16){
+        // Load A
+        wmma::load_matrix_sync(a_frag, (a+k), K);
+
+        // Compute Tile 0 (Col 0 ~ 511)
+        wmma::load_matrix_sync(b_frag, (b + b_offset_0 + k), semeB_ld);
+        wmma::mma_sync(c_acc[1], a_frag, b_frag, c_acc[1]);
+      }
+      // __syncthreads();
+      // if(tid == 0&& local_smid == 0){
+      //   t = clock64();
+      //   printf("batch idx: %d, compute C tile %d, clock: %llu, overhead: %llu\n", batch_idx, (tiled_iter-1), t, (t - init_clock));
+      //   init_clock = t;
+      // }
+      
+      pipeline.consumer_release();
+      // 
+      __syncthreads();
+
+      // Store
+      float* smem_base = reinterpret_cast<float*>(SharedMem);
+      
+      int warp_offset_0 = warp_id * 16;
+      int warp_offset_1 = warp_offset_0 + (N / 2);
+      
+      wmma::store_matrix_sync((smem_base + warp_offset_0), c_acc[0], N, wmma::mem_row_major);
+      wmma::store_matrix_sync((smem_base + warp_offset_1), c_acc[1], N, wmma::mem_row_major);
+      
+      __syncthreads();
+
+      float val_f32_1 = smem_base[tid];
+      float val_f32_2 = smem_base[tid + N];
+
+      int idx_chk_1 = (batch_idx * params.stride_D + mn) + (tid);
+      int idx_chk_2 = (batch_idx * params.stride_D + m1n) + (tid); 
+      
+      *(params.ref_D.data() + idx_chk_1) = static_cast<Dtype>(val_f32_1);
+      *(params.ref_D.data() + idx_chk_2) = static_cast<Dtype>(val_f32_2);
+    }
+  } 
+}
 
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 CUTLASS_GLOBAL
