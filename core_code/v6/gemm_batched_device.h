@@ -503,7 +503,7 @@ public:
     cudaStreamCreate(&stream_colchk);
 
     bool deBug = true;
-    int iterations = 500;
+    int iterations = 0;
     
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -611,14 +611,18 @@ public:
         // update_smem_size = (8 * params_.problem_size.k() + 80 * params_.problem_size.n()) * sizeof(ElementA);
         // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v5<GemmKernel, 32, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         // cutlass::update_checksum_T_wmma_v5<GemmKernel, 32, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+        
+        update_smem_size = (8 * params_.problem_size.k() + 80 * params_.problem_size.n()) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v6<GemmKernel, 32, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        cutlass::update_checksum_T_wmma_v6<GemmKernel, 32, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
         // update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
         // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_7<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         // cutlass::update_checksum_T_wmma_v7<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
-        update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-        cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+        // update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
         // cudaError_t err;
         // update_smem_size = (16 * 32 + 40 * params_.problem_size.n()) * sizeof(ElementA);
@@ -732,13 +736,17 @@ public:
           // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v5<GemmKernel, 32, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
           // cutlass::update_checksum_T_wmma_v5<GemmKernel, 32, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
+          update_smem_size = (8 * params_.problem_size.k() + 80 * params_.problem_size.n()) * sizeof(ElementA);
+          cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v6<GemmKernel, 32, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+          cutlass::update_checksum_T_wmma_v6<GemmKernel, 32, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
           // update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
           // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v7<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
           // cutlass::update_checksum_T_wmma_v7<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
           
-          update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
-          cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
-          cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+          // update_smem_size = (16 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+          // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+          // cutlass::update_checksum_T_wmma_v8<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
           // void *kernelArgs_update[] = {&params_update, &if_split_phase, &SM_check_res, &partion, &matrix_SM, &monitored_batched_count};
           // cudaLaunchCooperativeKernel((void*)cutlass::Kernel_Update<GemmUpdateKernel>, grid_updatechk, block_update, kernelArgs_update, smem_size_update, stream_colchk);
