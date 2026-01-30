@@ -360,7 +360,7 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
 
 template <typename Operator, typename Dtype>
 CUTLASS_GLOBAL
-void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms){
+void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int monitored_batched_count){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -415,7 +415,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
     int load_init_batch_idx = start_bid + b_iter * chk_step; 
     for(int t = 0; t < TB_per_batch; t++){
       int load_batch_idx = load_init_batch_idx + t;
-      if(load_batch_idx < params.batch_count){
+      if(load_batch_idx < monitored_batched_count){
         int load_offset = t * checksum_stride;
         int idx_a = (load_batch_idx * params.stride_A) + mk;
         for(int i = 0; i < load_iter; i++){
@@ -437,7 +437,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
     
     // update checksum
     int batch_idx = init_batch + b_iter * chk_step; 
-    if(batch_idx < params.batch_count && thread_group_idx < TB_per_batch){
+    if(batch_idx < monitored_batched_count && thread_group_idx < TB_per_batch){
       // Dtype accum1 = static_cast<Dtype>(0.f);
       // Dtype accum2 = static_cast<Dtype>(0.f);
       float accum1 = 0.f;
@@ -784,8 +784,6 @@ void update_checksum_wmma_v2(typename Operator::Params params, int matrix_SM, in
     __syncthreads();
   } 
 }
-
-
 
 template <typename Operator, typename Dtype>
 CUTLASS_GLOBAL
@@ -4048,6 +4046,7 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
   int K = params.problem_size.k();
   int N = params.problem_size.n();
   int K_i32 = K / 2;
+  int tiled_K_i32 = tiled_K / 2;
 
   int checksum_stride = 8 * K;
   int semeB_stride = tiled_K * tiled_N;
@@ -4071,9 +4070,9 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
   int local_smid = real_smid - matrix_SM;
 
   int chk_iter = monitored_batched_count / chk_step;
-  int tiled_iter = (K / tiled_K) * (N / tiled_N);
   int N_iter = N / tiled_N;
   int K_iter = K / tiled_K;
+  int tiled_iter = K_iter * N_iter;
 
   int warp_offset_0 = warp_id * 32;
   int b_offset_0 = warp_offset_0 * semeB_ld; // Row 0, Col offset
@@ -4130,8 +4129,8 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
       for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
         // load second stage
         int load_stage_idx = tile_i % num_stages;
-        int k_start = (tile_i % 2) * (tiled_K / 2);
-        int n_start = (tile_i / 2) * tiled_N;
+        int k_start = (tile_i % K_iter) * tiled_K_i32;
+        int n_start = (tile_i / K_iter) * tiled_N;
 
         // load second stage
         pipeline.producer_acquire();
@@ -4155,10 +4154,11 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
         
         // computation
         if(warp_offset_0 < tiled_N){
-          buf = Bs + ((tile_i - 1) % num_stages) * stageB_stride;
+          int computation_stage = tile_i - 1;
+          buf = Bs + (computation_stage % num_stages) * stageB_stride;
           // int k_b = tid * (tiled_K + 1);
           // int k_a_stride = (tile_i - 1) * tiled_K;
-          int k_a_stride = ((tile_i - 1) % K_iter) * tiled_K;
+          int k_a_stride = (computation_stage % K_iter) * tiled_K;
           // int tile_b_stride = stageB_stride / 2;
 
           __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
@@ -4169,7 +4169,7 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
 
           // int b_offset_0 = warp_id * (semeB_ld * 32); // Row 0, Col offset
           // K_iter
-          int c_acc_idx = (tile_i-1) / 2;
+          int c_acc_idx = computation_stage / K_iter;
           
           #pragma unroll
           for(int k = 0; k < tiled_K; k += 16){
@@ -4195,9 +4195,10 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
 
       if(warp_offset_0 < tiled_N){
         // last stage computation
-        Dtype *buf = (Bs + ((tiled_iter - 1) % num_stages) * stageB_stride);
+        int computation_stage = tiled_iter - 1;
+        Dtype *buf = (Bs + (computation_stage % num_stages) * stageB_stride);
         // int k_a_stride = (tiled_iter - 1) * tiled_K;
-        int k_a_stride = ((tiled_iter - 1) % K_iter) * tiled_K;
+        int k_a_stride = (computation_stage % K_iter) * tiled_K;
         // int tile_b_stride = stageB_stride / 2;
         
         __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
