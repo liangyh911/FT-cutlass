@@ -415,11 +415,11 @@ def main():
         file.write(" ".join(grad_norm))
         file.write("\n")
     
-    # with open(falutyStepFP, "r") as file:
-    #     lines = file.readlines()
-    # lines.pop(0)
-    # with open(falutyStepFP, "w") as file:
-    #     file.writelines(lines)
+    with open(falutyStepFP, "r") as file:
+        lines = file.readlines()
+    lines.pop(0)
+    with open(falutyStepFP, "w") as file:
+        file.writelines(lines)
 
 if __name__ == "__main__":
     main()
