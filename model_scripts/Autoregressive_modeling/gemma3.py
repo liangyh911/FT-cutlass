@@ -1,8 +1,10 @@
+import os
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
 import torch
 import copy
 import logging
 import gc
-import os
 import math
 import collections
 import string
@@ -25,56 +27,51 @@ from tqdm import tqdm
 # 1. 配置 (Configuration)
 # ==========================================
 
-# Job id
 job_id = os.getenv('SLURM_JOB_ID') or "local_dev" 
 
-# Faulty step select corresponding checkpoint
 try:
     falutyStepFP = f"./control_{job_id}/0/faulty_step.txt"
     if not os.path.exists(os.path.dirname(falutyStepFP)):
         os.makedirs(os.path.dirname(falutyStepFP), exist_ok=True)
         if not os.path.exists(falutyStepFP):
             with open(falutyStepFP, 'w') as f: f.write("0")
-
     with open(falutyStepFP, 'r') as file:
         faulty_step = file.readline().strip()
-except Exception as e:
+except Exception:
     faulty_step = "0"
-    # print(f"Warning: Could not read faulty_step, default to 0. Error: {e}")
 
 logFP = f"./control_{job_id}/0/output.log"
 if not os.path.exists(os.path.dirname(logFP)):
     os.makedirs(os.path.dirname(logFP), exist_ok=True)
-
 with open(logFP, "a") as file:
-    file.write(f"Start Job: {faulty_step}\n")
+    file.write(f"Start Job (Gemma3 Batch): {faulty_step}\n")
     
-# cutlass control file
 controlFP = f"./control_{job_id}/0/perform.txt"
 cutlassFP = f"./control_{job_id}/0/cutlass.txt"
 SMChkFP = f"./control_{job_id}/0/split.txt"
 
-MODEL_ID = "meta-llama/Llama-3.2-1B-Instruct"
-TEMP_OUTPUT_DIR = "./tmp_llama_batch_logs"
+# Model Config
+MODEL_ID = "google/gemma-3-1b-it"
+TEMP_OUTPUT_DIR = "./tmp_gemma3_batch_logs"
 
-# 训练配置
+# Training Config
 NUM_TRAIN_SAMPLES = 4000 
 SEED = 42
 BATCH_SIZE = 8
 GRAD_ACCUMULATION = 2
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-5 
 MAX_SEQ_LENGTH = 1024 
 MAX_STEPS = 1000 
 
-# 推理配置
-INFERENCE_BATCH_SIZE = 16  # 显存允许的话可以开到 16 或 32
+# Inference Config
+INFERENCE_BATCH_SIZE = 16 # Batch size for evaluation
 EVAL_SAMPLES = 480
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 2. 通用数据集加载与处理 (Alpaca)
+# 2. General Dataset Loading (Alpaca)
 # ==========================================
 
 def load_general_dataset():
@@ -97,10 +94,11 @@ def format_general_prompt(example):
     else:
         user_content = instruction
 
+    # Gemma 3 Structured Format
     messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": user_content},
-        {"role": "assistant", "content": output}
+        {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
+        {"role": "user", "content": [{"type": "text", "text": user_content}]},
+        {"role": "assistant", "content": [{"type": "text", "text": output}]}
     ]
     return messages
 
@@ -122,6 +120,7 @@ def preprocess_general_function(examples, tokenizer):
         input_ids = tokenized_full["input_ids"]
         labels = copy.deepcopy(input_ids)
         
+        # Mask Prompt
         prompt_messages = messages[:-1]
         prompt_text = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
         tokenized_prompt = tokenizer(
@@ -144,7 +143,7 @@ def preprocess_general_function(examples, tokenizer):
     return model_inputs
 
 # ==========================================
-# 3. Batch Inference: MMLU
+# 3. Batch Inference Logic: MMLU
 # ==========================================
 
 def evaluate_mmlu_batch(model, tokenizer, num_samples=500):
@@ -170,7 +169,6 @@ def evaluate_mmlu_batch(model, tokenizer, num_samples=500):
     total = 0
     
     batch_size = INFERENCE_BATCH_SIZE
-    
     for i in tqdm(range(0, len(subset), batch_size), desc="MMLU Batch"):
         batch_items = subset[i : i + batch_size]
         batch_prompts = []
@@ -179,39 +177,30 @@ def evaluate_mmlu_batch(model, tokenizer, num_samples=500):
         for j in range(len(batch_items['question'])):
             q = batch_items['question'][j]
             c = batch_items['choices'][j]
-            a_idx = batch_items['answer'][j]
-            truth = ["A", "B", "C", "D"][a_idx]
+            truth = ["A", "B", "C", "D"][batch_items['answer'][j]]
             batch_truths.append(truth)
             
             opts = f"A. {c[0]}\nB. {c[1]}\nC. {c[2]}\nD. {c[3]}"
+            user_text = f"{q}\n\n{opts}\n\nAnswer:"
+            
             messages = [
-                {"role": "system", "content": "You are a helpful assistant. Analyze the following multiple-choice question and provide the correct answer. Output ONLY the corresponding letter (A, B, C, or D)."},
-                {"role": "user", "content": f"{q}\n\n{opts}\n\nAnswer:"}
+                {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant. Output ONLY the letter."}]},
+                {"role": "user", "content": [{"type": "text", "text": user_text}]}
             ]
             batch_prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
             
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
         
         with torch.no_grad():
-            outputs = model.generate(
-                **inputs, max_new_tokens=5, pad_token_id=tokenizer.eos_token_id, do_sample=False
-            )
+            outputs = model.generate(**inputs, max_new_tokens=5, pad_token_id=tokenizer.eos_token_id, do_sample=False)
             
         generated_tokens = outputs[:, inputs.input_ids.shape[1]:]
-        decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
-        for pred_text, truth in zip(decoded_preds, batch_truths):
+        for pred_text, truth in zip(preds, batch_truths):
             match = re.search(r'\b([A-D])\b', pred_text.upper())
-            if match:
-                pred_char = match.group(1)
-            else:
-                if len(pred_text) > 0 and pred_text[0].upper() in ['A', 'B', 'C', 'D']:
-                    pred_char = pred_text[0].upper()
-                else:
-                    pred_char = "Z"
-            
-            if pred_char == truth:
-                correct += 1
+            pred_char = match.group(1) if match else "Z"
+            if pred_char == truth: correct += 1
             total += 1
             
     acc = correct / total if total > 0 else 0
@@ -219,9 +208,8 @@ def evaluate_mmlu_batch(model, tokenizer, num_samples=500):
     return acc
 
 # ==========================================
-# 4. Batch Inference: SQuAD v2
+# 4. Batch Inference Logic: SQuAD
 # ==========================================
-
 def normalize_text(s):
     def remove_articles(text): return re.sub(r'\b(a|an|the)\b', ' ', text)
     def white_space_fix(text): return ' '.join(text.split())
@@ -251,7 +239,6 @@ def evaluate_squad_batch(model, tokenizer, num_samples=500):
     f1_scores = []
     
     batch_size = INFERENCE_BATCH_SIZE
-    
     for i in tqdm(range(0, len(subset), batch_size), desc="SQuAD Batch"):
         batch_items = subset[i : i + batch_size]
         batch_prompts = []
@@ -260,17 +247,13 @@ def evaluate_squad_batch(model, tokenizer, num_samples=500):
         for j in range(len(batch_items['context'])):
             ctx = batch_items['context'][j]
             qn = batch_items['question'][j]
-            
-            if 'answers' in batch_items:
-                ans_list = batch_items['answers'][j]['text']
-            else:
-                ans_list = []
-            if not ans_list: ans_list = [""]
-            batch_golds.append(ans_list)
+            ans = batch_items['answers'][j]['text'] if 'answers' in batch_items else []
+            if not ans: ans = [""]
+            batch_golds.append(ans)
             
             messages = [
-                {"role": "system", "content": "You are a helpful assistant. Read the context and answer the question. Keep it concise."},
-                {"role": "user", "content": f"Context: {ctx}\n\nQuestion: {qn}\n\nAnswer:"}
+                {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant. Read the context and answer the question. Keep it concise."}]},
+                {"role": "user", "content": [{"type": "text", "text": f"Context: {ctx}\n\nQuestion: {qn}\n\nAnswer:"}]}
             ]
             batch_prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
             
@@ -283,8 +266,7 @@ def evaluate_squad_batch(model, tokenizer, num_samples=500):
         preds = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
         
         for pred, golds in zip(preds, batch_golds):
-            pred_clean = pred.strip()
-            score = max([compute_f1(g, pred_clean) for g in golds])
+            score = max([compute_f1(g, pred.strip()) for g in golds])
             f1_scores.append(score)
             
     avg_f1 = np.mean(f1_scores) if f1_scores else 0.0
@@ -292,9 +274,8 @@ def evaluate_squad_batch(model, tokenizer, num_samples=500):
     return avg_f1
 
 # ==========================================
-# 5. Batch Inference: WMT16
+# 5. Batch Inference Logic: WMT16
 # ==========================================
-
 def simple_bleu(ref, hyp):
     def tokenize(text): return [t.lower() for t in re.findall(r'\w+', text)]
     ref_t, hyp_t = tokenize(ref), tokenize(hyp)
@@ -322,8 +303,8 @@ def evaluate_wmt16_batch(model, tokenizer, num_samples=500):
             src, ref = trans['de'], trans['en']
             batch_refs.append(ref)
             messages = [
-                {"role": "system", "content": "You are a professional translator. Translate the following German text into English."},
-                {"role": "user", "content": f"German: {src}\n\nEnglish Translation:"}
+                {"role": "system", "content": [{"type": "text", "text": "You are a professional translator. Translate the following German text into English."}]},
+                {"role": "user", "content": [{"type": "text", "text": f"German: {src}\n\nEnglish Translation:"}]}
             ]
             batch_prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
             
@@ -343,81 +324,15 @@ def evaluate_wmt16_batch(model, tokenizer, num_samples=500):
     return avg_bleu
 
 # ==========================================
-# 6. Batch Inference: GSM8K
+# 6. Batch Inference Logic: GSM8K
 # ==========================================
-
 def extract_gsm_num(text):
     if "####" in text: return text.split("####")[-1].strip().replace(",", "")
     nums = re.findall(r"[-+]?\d*\.\d+|\d+", text)
     return nums[-1].replace(",", "") if nums else None
 
-GSM8K_FEW_SHOT = """Question: There are 15 trees in the grove. Grove workers will plant trees in the grove today. After they are done, there will be 21 trees. How many trees did the grove workers plant today?
-Let's think step by step.
-There are 15 trees originally.
-Then workers plant some trees.
-Now there are 21 trees.
-So the workers planted 21 - 15 = 6 trees.
-The answer is #### 6
-
-Question: If there are 3 cars in the parking lot and 2 more cars arrive, how many cars are in the parking lot?
-Let's think step by step.
-There are originally 3 cars.
-2 more cars arrive.
-3 + 2 = 5.
-The answer is #### 5
-
-Question: Leah had 32 chocolates and her sister had 42. If they ate 35, how many pieces do they have left in total?
-Let's think step by step.
-Leah had 32 chocolates.
-Her sister had 42.
-Total number of chocolates initially is 32 + 42 = 74.
-They ate 35.
-Remaining chocolates = 74 - 35 = 39.
-The answer is #### 39
-
-Question: Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny?
-Let's think step by step.
-Jason started with 20 lollipops.
-He has 12 left.
-So he gave Denny 20 - 12 = 8 lollipops.
-The answer is #### 8
-
-Question: Shawn has five toys. For Christmas, he got two toys each from his mom and dad. How many toys does he have now?
-Let's think step by step.
-Shawn started with 5 toys.
-He got 2 toys from his mom.
-He got 2 toys from his dad.
-Total new toys = 2 + 2 = 4.
-Total toys now = 5 + 4 = 9.
-The answer is #### 9
-
-Question: There were 9 computers in the server room. Five more computers were installed each day for 4 days. How many computers are now in the server room?
-Let's think step by step.
-Originally there were 9 computers.
-5 computers were installed each day for 4 days.
-Total computers installed = 5 * 4 = 20.
-Total computers now = 9 + 20 = 29.
-The answer is #### 29
-
-Question: Michael had 58 golf balls. On tuesday, he lost 23 golf balls. On wednesday, he lost 2 more. How many golf balls did he have at the end of wednesday?
-Let's think step by step.
-Michael started with 58 balls.
-On Tuesday he lost 23, so he had 58 - 23 = 35.
-On Wednesday he lost 2 more, so he had 35 - 2 = 33.
-The answer is #### 33
-
-Question: Olivia has $23. She bought five bagels for $3 each. How much money does she have left?
-Let's think step by step.
-Olivia started with $23.
-She bought 5 bagels.
-Each bagel cost $3.
-Total cost = 5 * 3 = $15.
-Money left = 23 - 15 = 8.
-The answer is #### 8
-"""
-
 def evaluate_gsm8k_batch(model, tokenizer, num_samples=500):
-    print("\n" + "="*30 + "\nStarting GSM8K Inference (8-Shot CoT)\n" + "="*30)
+    print("\n" + "="*30 + "\nStarting GSM8K Inference (BATCH)\n" + "="*30)
     try: ds = load_dataset("openai/gsm8k", "main", split="test")
     except: return 0.0
     
@@ -426,8 +341,6 @@ def evaluate_gsm8k_batch(model, tokenizer, num_samples=500):
     total = 0
     
     batch_size = INFERENCE_BATCH_SIZE
-    
-    # 进度条
     for i in tqdm(range(0, len(subset), batch_size), desc="GSM8K Batch"):
         batch_items = subset[i : i + batch_size]
         batch_prompts = []
@@ -438,27 +351,16 @@ def evaluate_gsm8k_batch(model, tokenizer, num_samples=500):
             ans = batch_items['answer'][j]
             batch_golds.append(extract_gsm_num(ans))
             
-            # --- 关键修改：拼接 Few-Shot 示例 ---
-            # 注意：对于 Llama 3.2，我们将示例放在 user content 里效果通常更好
-            prompt_content = f"{GSM8K_FEW_SHOT}\n\nQuestion: {qn}\nLet's think step by step."
-            
             messages = [
-                {"role": "system", "content": "You are a math expert. Solve the problem step by step following the examples."},
-                {"role": "user", "content": prompt_content}
+                {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant specialized in math. Solve step by step. End response with 'The answer is #### <number>'."}]},
+                {"role": "user", "content": [{"type": "text", "text": f"Question: {qn}"}]}
             ]
             batch_prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
             
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
         
         with torch.no_grad():
-            outputs = model.generate(
-                **inputs, 
-                max_new_tokens=256, # 数学题需要写步骤，稍微给长一点
-                pad_token_id=tokenizer.eos_token_id, 
-                do_sample=False,
-                temperature=None,
-                top_p=None
-            )
+            outputs = model.generate(**inputs, max_new_tokens=256, pad_token_id=tokenizer.eos_token_id, do_sample=False)
             
         gen_tokens = outputs[:, inputs.input_ids.shape[1]:]
         preds = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
@@ -466,11 +368,9 @@ def evaluate_gsm8k_batch(model, tokenizer, num_samples=500):
         for pred, gold in zip(preds, batch_golds):
             pred_num = extract_gsm_num(pred)
             try:
-                # 尝试转 float 比较，避免 120.0 != 120
-                if pred_num and gold and abs(float(pred_num) - float(gold)) < 1e-6:
-                    correct += 1
+                if pred_num and gold and float(pred_num) == float(gold): correct += 1
             except: 
-                if str(pred_num) == str(gold): correct += 1
+                if pred_num == gold: correct += 1
             total += 1
             
     acc = correct / total if total > 0 else 0
@@ -478,9 +378,8 @@ def evaluate_gsm8k_batch(model, tokenizer, num_samples=500):
     return acc
 
 # ==========================================
-# 7. Batch Inference: XLSum (Llama 3.2 Optimized)
+# 7. Batch Inference Logic: XLSum
 # ==========================================
-
 def evaluate_xlsum_batch(model, tokenizer, num_samples=500):
     print("\n" + "="*30 + "\nStarting XLSum Inference (BATCH)\n" + "="*30)
     try: 
@@ -493,45 +392,30 @@ def evaluate_xlsum_batch(model, tokenizer, num_samples=500):
     refs_all = []
     
     batch_size = INFERENCE_BATCH_SIZE
-    
     for i in tqdm(range(0, len(subset), batch_size), desc="XLSum Batch"):
         batch_items = subset[i : i + batch_size]
         batch_prompts = []
         
-        # Add references
         refs_all.extend(batch_items['summary'])
         
         for article in batch_items['text']:
-            # Llama 3.2 Optimized Prompt: 禁止 "Here is a summary"
             messages = [
-                {"role": "system", "content": "You are a professional editor. Summarize the news article below into a single, short headline. Output ONLY the summary text. Do not start with 'Here is a summary'."},
-                {"role": "user", "content": f"Article: {article}\n\nHeadline:"}
+                {"role": "system", "content": [{"type": "text", "text": "You are a professional news editor. Summarize the news below into a single sentence."}]},
+                {"role": "user", "content": [{"type": "text", "text": f"Article: {article}\n\nSummary:"}]}
             ]
             batch_prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
         
-        # 截断以支持 Batch 处理 (Llama 上下文限制)
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(model.device)
         
         with torch.no_grad():
-            # 限制输出长度为 64，防止废话
             outputs = model.generate(**inputs, max_new_tokens=64, pad_token_id=tokenizer.eos_token_id, do_sample=False)
             
         gen_tokens = outputs[:, inputs.input_ids.shape[1]:]
         decoded = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
         
-        # Post-process batch
-        cleaned_preds = []
-        for text in decoded:
-            t = text.strip()
-            # 简单清洗，切除第一行之后的内容
-            if "\n" in t: t = t.split("\n")[0]
-            # 去除可能的废话前缀
-            if t.lower().startswith("here is"):
-                 if ":" in t: t = t.split(":", 1)[1].strip()
-            cleaned_preds.append(t)
-        
-        preds_all.extend(cleaned_preds)
-        
+        for t in decoded:
+            preds_all.append(t.strip())
+            
     res = rouge.compute(predictions=preds_all, references=refs_all, use_stemmer=True)
     score = res['rougeL']
     print(f"XLSum ROUGE-L: {score:.4f}")
@@ -547,43 +431,15 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
-    # --- [关键] 设置 Padding Side 为 Left ---
-    # Batch 推理必须用 Left Padding，否则生成结果会错位
-    tokenizer.padding_side = "left"
-    
-    # 保持原有的 Date Locked Template (仅 Llama 需要)
-    LLAMA_3_TIME_LOCKED_TEMPLATE = (
-        "{% set loop_messages = messages %}"
-        "{{ bos_token }}"
-        "{% for message in loop_messages %}"
-            "{% set content = message['content'] %}"
-            "{% if message['role'] == 'user' %}"
-                "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + content + '<|eot_id|>' }}"
-            "{% elif message['role'] == 'assistant' %}"
-                "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + content + '<|eot_id|>' }}"
-            "{% elif message['role'] == 'system' %}"
-                "{{ '<|start_header_id|>system<|end_header_id|>\n\n' }}"
-                "{{ 'Cutting Knowledge Date: December 2023\n' }}"
-                "{{ 'Today Date: 23 Jan 2026\n\n' }}" 
-                "{{ content + '<|eot_id|>' }}"
-            "{% endif %}"
-        "{% endfor %}"
-        "{% if add_generation_prompt %}"
-            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
-        "{% endif %}"
-    )
-    tokenizer.chat_template = LLAMA_3_TIME_LOCKED_TEMPLATE
-
-    # --- A. 加载数据 ---
-    print("Loading training data (General)...")
+    # --- A. Load Training Data ---
+    print("Loading training data...")
     raw_dataset = load_general_dataset()
     actual_train_samples = min(NUM_TRAIN_SAMPLES, len(raw_dataset))
     train_subset = raw_dataset.shuffle(seed=SEED).select(range(actual_train_samples))
 
-    # --- B. 预处理 (Switch to Right Padding for Training) ---
+    # --- B. Preprocess (Switch to Right Padding for Training) ---
     print("Tokenizing training data...")
-    # 训练时通常用 Right Padding，为了兼容 Trainer 和 DataCollator
-    tokenizer.padding_side = "right" 
+    tokenizer.padding_side = "right" # Training uses Right Padding
     
     tokenized_train_dataset = train_subset.map(
         lambda x: preprocess_general_function(x, tokenizer),
@@ -596,7 +452,7 @@ def main():
         tokenizer=tokenizer, model=None, padding=False
     )
 
-    # --- C. 加载模型 ---
+    # --- C. Load Model ---
     print("Loading Model...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
@@ -606,7 +462,7 @@ def main():
         use_cache=False 
     )
 
-    # --- D. Trainer 配置 ---
+    # --- D. Trainer ---
     training_args = TrainingArguments(
         output_dir=TEMP_OUTPUT_DIR,
         overwrite_output_dir=True,
@@ -614,6 +470,7 @@ def main():
         gradient_accumulation_steps=GRAD_ACCUMULATION,
         learning_rate=LEARNING_RATE,
         max_steps=MAX_STEPS,
+        warmup_ratio=0.1,
         bf16=True,
         logging_strategy="steps",
         logging_steps=1,
@@ -632,9 +489,8 @@ def main():
         tokenizer=tokenizer
     )
 
-    # --- E. 训练 ---
-    print("Starting Training on General Dataset...")
-    
+    # --- E. Train ---
+    print("Starting Training...")
     with open(cutlassFP, 'w') as file: file.write("f")
     with open(SMChkFP, 'w') as file: file.write("f")
     with open(controlFP, 'w') as file: file.write("t") 
@@ -642,16 +498,15 @@ def main():
     trainer.train()
 
     with open(controlFP, 'w') as file: file.write("f") 
-
     log = trainer.state.log_history
     loss_history = [str(e.get("loss", "")) for e in log if "loss" in e]
     
-    # --- F. Batch Inference Phase ---
+    # --- F. Batch Inference ---
     torch.cuda.empty_cache()
     gc.collect()
     model.config.use_cache = True
     
-    # [关键] 切换回 Left Padding 进行 Batch 推理
+    # [CRITICAL] Switch to Left Padding for Batch Gen
     tokenizer.padding_side = "left"
 
     mmlu_acc = evaluate_mmlu_batch(model, tokenizer, EVAL_SAMPLES)
@@ -660,7 +515,6 @@ def main():
     gsm_score = evaluate_gsm8k_batch(model, tokenizer, EVAL_SAMPLES)
     xlsum_score = evaluate_xlsum_batch(model, tokenizer, EVAL_SAMPLES)
 
-    # Write Logs
     with open(logFP, "a") as file:
         file.write("\n--- Training Losses ---\n")
         file.write(" ".join(loss_history))
@@ -669,7 +523,7 @@ def main():
         file.write(f"SQuAD F1: {squad_f1:.4f}\n")
         file.write(f"WMT16 BLEU: {wmt_score:.4f}\n")
         file.write(f"GSM8K Acc: {gsm_score:.4f}\n")
-        file.write(f"XLSum_ROUGE: {xlsum_score:.4f}\n")
+        file.write(f"XLSum ROUGE: {xlsum_score:.4f}\n")
 
     print("Job Finished Successfully.")
 
