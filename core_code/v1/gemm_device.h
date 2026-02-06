@@ -514,16 +514,16 @@ public:
     cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
     
     cudaMalloc((void**)&d_head, sizeof(int) * num_queues);
-    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
+    cudaMemset(d_head, 0, sizeof(int) * num_queues);
     
     cudaMalloc((void**)&d_tail, sizeof(int) * num_queues);
-    cudaMemset(final_sum, 0, sizeof(int) * num_queues);
+    cudaMemset(d_tail, 0, sizeof(int) * num_queues);
 
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
 
     // cudaMalloc((void**)&d_queues, sizeof(RingQueue)*num_queues);
 
-    // printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
+    printf("grid_tile_m: %d, grid_tile_n: %d \n", params_.grid_tiled_shape.m(), params_.grid_tiled_shape.n());
 
     // allocate chksum signature
     // cudaMalloc((void**)&ChkSum_Signature_A_Col, size);
@@ -554,7 +554,7 @@ public:
     int if_split_phase = 0;
 
     bool deBug = true;
-    int iterations = 1;
+    int iterations = 10;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -571,6 +571,12 @@ public:
       cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
                                                                       Lock_Signature, final_sum, if_split_phase, 
                                                                       d_queues, SM_JOBS);
+      
+      cudaMemset(Signature_Array, 255, size);
+      cudaMemset(d_tail, 0, sizeof(int) * num_queues);
+      cudaMemset(d_head, 0, sizeof(int) * num_queues);
+      cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
+      initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
     }
     if(deBug){
       cudaEventRecord(stop, stream);
