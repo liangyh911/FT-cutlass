@@ -176,6 +176,7 @@ __device__ int *d_buffer, *d_head, *d_tail;
 
 __device__ uint8_t *SM_JOBS;
 // __device__ uint8_t *ChkSum_Signature_A_Col;
+__device__ int *Task_Status;
 
 template <
     /// Element type for A matrix operand
@@ -508,7 +509,7 @@ public:
 
     // ring queues for each SM
     int num_queues = 132;
-    int capacity = 8;
+    int capacity = 20;
     cudaMalloc((void**)&d_queues, sizeof(RingQueue_v2));
     cudaMalloc((void**)&d_buffer, sizeof(int) * num_queues * capacity);
     cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
@@ -520,6 +521,9 @@ public:
     cudaMemset(d_tail, 0, sizeof(int) * num_queues);
 
     initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
+
+    cudaMalloc((void**)&Task_Status, sizeof(int) * block_num);
+    cudaMemset(Task_Status, 0, sizeof(int) * block_num);
 
     // cudaMalloc((void**)&d_queues, sizeof(RingQueue)*num_queues);
 
@@ -563,20 +567,43 @@ public:
     cutlass::arch::synclog_setup();
     // Grdi: (4, 3, 1); Blocks: (128, 1, 1) when (386, 384, 384)
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
+    
+    // Group Launch
+    cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+                                                            Lock_Signature, final_sum, if_split_phase, 
+                                                            d_queues, SM_JOBS, Task_Status);
+    
+    // Queue Launch                                                        
+    // for (int i = 0; i < 2; i++){
+    //   cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+    //                                                         Lock_Signature, final_sum, if_split_phase, 
+    //                                                         d_queues, SM_JOBS, Task_Status);
+    // }
+
     cudaDeviceSynchronize();
     if(deBug){
       cudaEventRecord(start, stream);
     }
     for(int i = 0; i < iterations; i++){
-      cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                                      Lock_Signature, final_sum, if_split_phase, 
-                                                                      d_queues, SM_JOBS);
+      // printf("%d\n", i);    
       
-      cudaMemset(Signature_Array, 255, size);
-      cudaMemset(d_tail, 0, sizeof(int) * num_queues);
-      cudaMemset(d_head, 0, sizeof(int) * num_queues);
-      cudaMemset(d_buffer, 0, sizeof(int) * num_queues * capacity);
-      initQueues<<<1,1>>>(d_queues, d_buffer, d_head, d_tail, capacity);
+      cudaMemsetAsync(Signature_Array, 255, block_num * sizeof(uint8_t), stream);
+      // Lanch for Group Implmentation
+      cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+                                                            Lock_Signature, final_sum, if_split_phase, 
+                                                            d_queues, SM_JOBS, Task_Status);
+      // Lanch for Queue Implmentation
+      // cudaMemsetAsync(d_tail, 0, sizeof(int) * num_queues, stream);
+      // cudaMemsetAsync(d_head, 0, sizeof(int) * num_queues, stream);
+      // cudaMemsetAsync(d_buffer, 0, sizeof(int) * num_queues * capacity, stream);
+      // cudaMemsetAsync(Task_Status, 0, sizeof(int) * block_num, stream);
+      // initQueues<<<1,1,0, stream>>>(d_queues, d_buffer, d_head, d_tail, capacity);
+      // for (int j = 0; j < 2; j++){
+      //   cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+      //                                                                   Lock_Signature, final_sum, if_split_phase, 
+      //                                                                   d_queues, SM_JOBS, Task_Status);
+      // }
+      cudaStreamSynchronize(stream);
     }
     if(deBug){
       cudaEventRecord(stop, stream);
@@ -609,6 +636,7 @@ public:
     cudaFree(d_queues);
     cudaFree(Signature_Array);
     cudaFree(Lock_Signature);
+    cudaFree(Task_Status);
 
     if(deBug){
       printf("computer kernel time: %f, check kernel time: %f\n", t_compute/iterations, t_check);

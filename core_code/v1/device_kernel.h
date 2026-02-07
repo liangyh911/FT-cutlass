@@ -84,7 +84,8 @@ __global__ void initQueues(RingQueue_v2* d_queues, int *d_buffer, int* d_head, i
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel(typename Operator::Params params, uint8_t *Signature_Array, 
-            int *Lock_Signature, int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, uint8_t *SM_JOBS) {
+            int *Lock_Signature, int *final_sum, int if_split_phase, 
+            RingQueue_v2 *d_queues, uint8_t *SM_JOBS, int *Task_Status) {
   // Dynamic shared memory base pointer
   extern __shared__ int SharedStorageBase[];
   // Declare pointer to dynamic shared memory.
@@ -93,7 +94,7 @@ void Kernel(typename Operator::Params params, uint8_t *Signature_Array,
 
   Operator op;
 
-  op(params, *shared_storage, Signature_Array, Lock_Signature, final_sum, if_split_phase, d_queues, SM_JOBS);
+  op(params, *shared_storage, Signature_Array, Lock_Signature, final_sum, if_split_phase, d_queues, SM_JOBS, Task_Status);
   cutlass::arch::synclog_print();
 }
 

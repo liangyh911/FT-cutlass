@@ -222,17 +222,18 @@ struct Gemm {
     return val; // note: only thread 0 will return full sum
   }
 
-  __device__ void find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+  __device__ bool find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
       uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
       unsigned int smid, int block_idx){
     if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
       // Signature for Matrxi SM
       *(Signature_Array + block_idx) = (uint8_t)smid;
+      __threadfence();
       
       // Find Finished (Naive: get next)
       unsigned int next_matrix_smid, next_chk_smid;
-      uint8_t matrix_block_idx = block_idx;
-      uint8_t chk_block_idx;
+      int matrix_block_idx = block_idx;
+      int chk_block_idx;
       // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
       // __syncthreads();
 
@@ -243,14 +244,29 @@ struct Gemm {
       }
       int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
       chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-      while(true){
-        if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
-          next_matrix_smid = *(Signature_Array + matrix_block_idx);
-          next_chk_smid = *(Signature_Array + chk_block_idx);
+      
+      volatile uint8_t* sig_ptr = Signature_Array;
 
-          tmp_matrix_blk = matrix_block_idx;
-          tmp_chk_blk = chk_block_idx;
-          break;
+      while(true){
+        unsigned int m_val = (unsigned int)sig_ptr[matrix_block_idx];
+        unsigned int c_val = (unsigned int)sig_ptr[chk_block_idx];
+        if (m_val != 255 && c_val != 255){
+          if(smid != m_val && smid != c_val && m_val != c_val){
+            next_matrix_smid =  m_val;
+            next_chk_smid =  c_val;
+
+            tmp_matrix_blk = matrix_block_idx;
+            tmp_chk_blk = chk_block_idx;
+            break;
+          }
+          else{
+            matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+            if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+              matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+            }
+            int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+            chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+          }
         }
       }
 
@@ -290,7 +306,8 @@ struct Gemm {
       // Check chksum smid == matrix smid
       if(next_chk_smid == next_matrix_smid){
         tmp_flag = 0;
-        // printf("Recompute chksum using current SM\n");
+        printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+              block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
       }
       // SM ids are not the same
       else{
@@ -303,21 +320,24 @@ struct Gemm {
     else{
       // Signature for Checksum (encoded) SM
       *(Signature_Array + block_idx) = (uint8_t)smid;
+      __threadfence();
       // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
       //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
     }
+    return true;
   }
 
-  __device__ void group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+  __device__ bool group_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
     uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
     unsigned int smid, int block_idx, int num_blk_per_group){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
     // Signature for Matrxi SM
     *(Signature_Array + block_idx) = (uint8_t)smid;
+    __threadfence();
     
     // Find Finished (Naive: get next)
     unsigned int next_matrix_smid, next_chk_smid;
-    uint8_t matrix_block_idx, chk_block_idx;
+    int matrix_block_idx, chk_block_idx;
     // printf("SM id:%d, SM array: %d, 1st next: %d\n", smid, *(Signature_Array + smid), next_matrix_smid);
     // __syncthreads();
 
@@ -356,10 +376,14 @@ struct Gemm {
     }
     int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
     chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+    
+    volatile uint8_t* sig_ptr = Signature_Array;
     while(true){
-      if (*(Signature_Array + matrix_block_idx) != 255 && *(Signature_Array + chk_block_idx) != 255){
-        next_matrix_smid = *(Signature_Array + matrix_block_idx);
-        next_chk_smid = *(Signature_Array + chk_block_idx);
+      uint8_t m_val = sig_ptr[matrix_block_idx];
+      uint8_t c_val = sig_ptr[chk_block_idx];
+      if (m_val != 255 && c_val != 255){
+        next_matrix_smid = (unsigned int)m_val;
+        next_chk_smid = (unsigned int)c_val;
 
         tmp_matrix_blk = matrix_block_idx;
         tmp_chk_blk = chk_block_idx;
@@ -367,50 +391,12 @@ struct Gemm {
       }
     }
 
-    // 
-    // int next_local_blk_idx = local_blk_idx;
-    // bool need_lock = true;
-    // while (need_lock) {
-    //   // matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-    //   next_local_blk_idx = (next_local_blk_idx + 1) % num_blk_per_group;
-    //   int next_global_blk_idx = next_local_blk_idx + (group_idx * num_blk_per_group);
-    //   matrix_block_idx = next_global_blk_idx + threadblock_tile_offset.n();
-    //   //
-    //   // lock for matrix SM selection
-    //   if (atomicCAS((Lock_Signature + matrix_block_idx), 0, 1) == 0) {
-    //     // get the corresponding chksum SM blk index
-    //     int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-    //     chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-    //     // lock for the chksum SM
-    //     // if (atomicCAS((Lock_Signature + chk_block_idx), 0, 1) == 0) {
-    //       if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() != 0 &&
-    //           *(Signature_Array + matrix_block_idx) != 255 && 
-    //           *(Signature_Array + chk_block_idx) != 255 &&
-    //           *(Signature_Array + chk_block_idx) != smid) {
-            
-    //         next_matrix_smid = *(Signature_Array + matrix_block_idx);
-    //         next_chk_smid = *(Signature_Array + chk_block_idx);
-
-    //         tmp_matrix_blk = matrix_block_idx;
-    //         tmp_chk_blk = chk_block_idx;
-
-    //         *(Signature_Array + matrix_block_idx) = 255;
-    //         need_lock = false;
-    //       }
-    //       // Release the lock
-    //       // atomicExch((Lock_Signature + chk_block_idx), 0);
-    //       // printf("current SM: %d, next SM: %d\n", smid, next_matrix_smid);
-    //     // }
-    //     atomicExch((Lock_Signature + matrix_block_idx), 0);
-    //   }
-    // }
-
     // Check chksum smid == matrix smid
     if(next_chk_smid == next_matrix_smid){
-      tmp_flag = 1;
+      tmp_flag = 0;
       // printf("Recompute chksum using current SM\n");
-      // printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
-      //   block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
+      printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
+              block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
 
     }
     // SM ids are not the same
@@ -424,15 +410,17 @@ struct Gemm {
   else{
     // Signature for Checksum (encoded) SM
     *(Signature_Array + block_idx) = (uint8_t)smid;
+    __threadfence();
     // printf("chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
   }
+  return true;
 }
 
-__device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
+__device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord threadblock_tile_offset,
                                 uint8_t *Signature_Array, int *Lock_Signature, int &tmp_matrix_blk, int &tmp_chk_blk, int &tmp_flag,
                                 unsigned int smid, int block_idx, int num_blk_per_group, RingQueue_v2 *d_queues, uint8_t *SM_JOBS,
-                                int checksumblk_per_col){
+                                int checksumblk_per_col, int *Task_Status){
   if (threadblock_tile_offset.m() != (params.grid_tiled_shape.m() - 1)){
     // *(SM_JOBS + smid) = 1;
     // *(Signature_Array + block_idx) = (uint8_t)smid;
@@ -441,13 +429,10 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     int n = (block_idx) / params.grid_tiled_shape.m();
     int chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
     unsigned int next_chk_smid, next_matrix_smid;
-
-    int count = 0;
-    bool perform_chk = true;
     
     unsigned long long sig_wait_count = 0;
     unsigned long long wait_counter = 0;
-    const unsigned long long STUCK_THRESHOLD = 10000000;
+    const unsigned long long STUCK_THRESHOLD = 1;
 
     while(true){
       // printf("wait 1\n");
@@ -465,67 +450,30 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         break;
       }
       sig_wait_count++;
-      if (sig_wait_count > STUCK_THRESHOLD && (sig_wait_count % STUCK_THRESHOLD == 0)) {
-         printf("SIG STUCK: SM %d (Block %d) waiting for Signature at index %d to update.Signature \n", 
-                 smid, block_idx, chk_block_idx);
+      if (sig_wait_count > STUCK_THRESHOLD) {
+        //  printf("SIG STUCK: SM %d (Block %d) waiting for Signature at index %d to update.Signature \n", 
+        //          smid, block_idx, chk_block_idx);
+        return false;
       }
-
-
-      // if(count > 1){
-      //   d_queues->enqueue(smid, block_idx);
-      //   perform_chk = false;
-      //   break;
-      // }
-      // count++;
-
-      // if (atomicAdd((unsigned int*)&Signature_Array[chk_block_idx], 0) != 255) {
-      //   if(d_queues->enqueue(smid, block_idx)) {
-      //     // dependency_met = true;
-      //     break;
-      //   }
-      // }
     }
 
     // Select from next SM's queue
-    // int count = 0;
     next_matrix_smid = (smid + 1) % 132;
-    count = 0;
-    // RingQueue *next_queue;
     while(true){
       wait_counter++;
-      if (wait_counter > STUCK_THRESHOLD && (wait_counter % STUCK_THRESHOLD == 0)) {
+      if (wait_counter > STUCK_THRESHOLD) {
           // 读取目标队列的状态，看看是不是真的空的
           // 注意：这里只是为了打印调试，不要用 atomic 修改它
-          int target_head = *(d_queues->head + next_matrix_smid);
-          int target_tail = *(d_queues->tail + next_matrix_smid);
+          // int target_head = *(d_queues->head + next_matrix_smid);
+          // int target_tail = *(d_queues->tail + next_matrix_smid);
+          // printf("DEADLOCK ALERT: SM %d (Block %d) is STUCK waiting for SM %d.\n"
+          //        "    -> Target Queue Status: Head=%d, Tail=%d, \n"
+          //        "    -> Cycles: %llu\n", 
+          //        smid, block_idx, next_matrix_smid, target_head, target_tail, wait_counter);
           
-          printf("DEADLOCK ALERT: SM %d (Block %d) is STUCK waiting for SM %d.\n"
-                 "    -> Target Queue Status: Head=%d, Tail=%d, \n"
-                 "    -> Cycles: %llu\n", 
-                 smid, block_idx, next_matrix_smid, target_head, target_tail, wait_counter);
-
-          // printf("    -> Queue Content (SM %d): [ ", next_matrix_smid);
-          // int curr = target_head;
-          // int safety_guard = 0; // 防止指针损坏导致的死循环
-          // int cap = d_queues->capacity;
-
-          // // 遍历从 Head 到 Tail 的所有元素
-          // while (curr != target_tail && safety_guard < cap + 1) {
-          //     // 计算在全局 buffer 中的真实索引
-          //     // 公式：局部下标 + (容量 * 队列ID)
-          //     int val = d_queues->buffer[curr + cap * next_matrix_smid];
-              
-          //     printf("%d ", val);
-
-          //     // 环形移动指针
-          //     curr = (curr + 1) % cap;
-          //     safety_guard++;
-          // }
-          // printf("]\n");
+          return false;
       }
-      // d_queues->dequeue(next_matrix_smid, &tmp_matrix_blk);
-      // break;
-      printf("wait 2 %d %d\n", smid, next_matrix_smid);
+
       if (d_queues->dequeue(next_matrix_smid, &tmp_matrix_blk)){
         int tmp = (tmp_matrix_blk) / params.grid_tiled_shape.m();
         tmp_chk_blk = params.grid_tiled_shape.m() * (tmp + 1) - 1;
@@ -546,47 +494,11 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         }
         break;
       }
-      // if(count > 1){
-      //   tmp_matrix_blk = block_idx;
-      //   int tmp = (tmp_matrix_blk) / params.grid_tiled_shape.m();
-      //   tmp_chk_blk = params.grid_tiled_shape.m() * (tmp + 1) - 1;
-      //   next_chk_smid = *(Signature_Array + tmp_chk_blk);
-      //   perform_chk = false;
-      //   break;
-      // }
-      // count++;
     }
-
-    // printf("%d\n", count);
-
-    // *(Signature_Array + chk_block_idx) = (uint8_t)255;
-
-
-    // next_matrix_smid = smid;
-    // while(true){
-    //   next_matrix_smid = (next_matrix_smid + 1) % 132;
-    //   if(*(SM_JOBS + next_matrix_smid) == 1){
-    //     RingQueue *next_queue = &d_queues[next_matrix_smid];
-    //     if(next_queue->dequeue(&tmp_matrix_blk)){
-    //       n = (tmp_matrix_blk) / params.grid_tiled_shape.m();
-    //       tmp_chk_blk = params.grid_tiled_shape.m() * (n + 1) - 1;
-    //       next_chk_smid = *(Signature_Array + tmp_chk_blk);
-    //       if(tmp_matrix_blk == tmp_chk_blk){
-    //         continue;
-    //       }
-    //       break;
-    //     }
-    //   }
-    // }
-
-    // if(!F){
-    //   printf("------Empty queue. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
-    //     block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
-    // }
     
     // Check chksum smid == matrix smid
     if(next_chk_smid == next_matrix_smid){
-      tmp_flag = 1;
+      tmp_flag = 0;
       // printf("Recompute chksum using current SM\n");
       // printf("---Recompute chksum using current SM. block idx: %d, tile_offset.m: %d, title_offset.n: %d, current SM: %d, next matrix SM: (%d, %d), next chk SM: (%d, %d)\n", 
       //   block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), smid, next_matrix_smid, tmp_matrix_blk, next_chk_smid, tmp_chk_blk);
@@ -615,26 +527,16 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
       if(!pushed) __threadfence(); // 稍微缓一下，虽然生产者一般不会遇到满队列
     }
     
-    // d_queues->enqueue(smid, block_idx);
-    // __threadfence();
-
-    // atomicExch((unsigned int*)&Signature_Array[block_idx], (unsigned int)smid);
-    // __threadfence();
-    // int enqueue_retry = 0;
-    // while (!d_queues->enqueue(smid, block_idx) && enqueue_retry < 100) {
-    //     enqueue_retry++;
-    // }
-    
-    printf("after chksum. block_idx: %d, tile_offset.m: %d, title_offset.n: %d, SM: %d, \n", 
-            block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), *(Signature_Array + block_idx));
   }
+
+  return true;
 }
 
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   uint8_t *Signature_Array, int *Lock_Signature, 
-                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, uint8_t *SM_JOBS
+                  int *final_sum, int if_split_phase, RingQueue_v2 *d_queues, uint8_t *SM_JOBS, int *Task_Status
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
@@ -763,6 +665,10 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     //         threadblock_offset.row(), threadblock_offset.column());
 
     int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * params.grid_tiled_shape.m();
+    // this block has been finished
+    // if (Task_Status[block_idx] == 1){
+    //   return;
+    // }
 
     // printf("block_idx: %d, tile_offset.m: %d, title_offset.n: %d, grid_tile_shape.m: %d, grid_tile_shape.n: %d\n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), params.grid_tiled_shape.m(), params.grid_tiled_shape.n());
@@ -873,15 +779,20 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // RingQueue *queue = &d_queues[smid];
         // queue->enqueue(smid);
 
-        int group_partition = 2;
-        // find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        // group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
-        queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS, checksumblk_per_col);
-        
-        next_matrix_block_idx = tmp_matrix_blk;
-        next_chk_block_idx = tmp_chk_blk;
-        flag = tmp_flag;
+        int group_partition = 8;
+        bool is_finished = find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        // bool is_finished = group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
+        // bool is_finished = queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS, checksumblk_per_col, Task_Status);
 
+        // if (is_finished) {
+        //   Task_Status[block_idx] = 1;
+        //   next_matrix_block_idx = tmp_matrix_blk;
+        //   next_chk_block_idx = tmp_chk_blk;
+        //   flag = tmp_flag;
+        // } 
+        // else {
+        //   flag = -1;
+        // }
         // int value; 
         // if(queue->dequeue(&value)){
         //   printf("SM %d dequeued value: %d\n", smid, value);
@@ -920,8 +831,8 @@ __device__ void queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         
           if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
             diff = 1;
-            // printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-            //           smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+            printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+                      smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
           }
           // __syncthreads();
           // if(thread_idx == 0 && smid == 0){
