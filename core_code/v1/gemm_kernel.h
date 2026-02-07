@@ -860,20 +860,26 @@ __device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
           float recomputed_chksum = 0;
           int diff = 0;
           
-          // #pragma unroll 1
+          #pragma unroll
           for(int r = 0; r < 128; r++){
             int idx = matrix_start_idx + r * params.problem_size.n();
-            recomputed_chksum += *(params.ref_D.data() + idx);
+            recomputed_chksum += static_cast<float>(*(params.ref_D.data() + idx));
           }
           // __syncthreads();
           // if(thread_idx == 0 && smid == 0){
           //   *(recompute) = clock();
           // }
-        
-          if(fabs(recomputed_chksum - (*(params.ref_D.data() + chk_start_idx))) > (float)1e3){
+          
+          float updated_chksum = static_cast<float>(*(params.ref_D.data() + chk_start_idx));
+          if(fabs(recomputed_chksum - updated_chksum) > (float)1e1){
             diff = 1;
-            printf("Difference detected at (%d, %d). matrix sum: (%d, %f), next chk: (%d, %f)\n", 
-                      smid, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
+            float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+            float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+            printf("recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+                    recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+            
+            // printf("Difference detected at (%d, %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f)\n", 
+            //           smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx));
           }
           // __syncthreads();
           // if(thread_idx == 0 && smid == 0){
