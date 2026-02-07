@@ -569,9 +569,11 @@ public:
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", grid.x, grid.y, grid.z, block.x, block.y, block.z);
     
     // Group Launch
-    cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                            Lock_Signature, final_sum, if_split_phase, 
-                                                            d_queues, SM_JOBS, Task_Status);
+    for (int i = 0; i < 2; i++){
+      cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+                                                              Lock_Signature, final_sum, if_split_phase, 
+                                                              d_queues, SM_JOBS, Task_Status);
+    }
     
     // Queue Launch                                                        
     // for (int i = 0; i < 2; i++){
@@ -588,10 +590,15 @@ public:
       // printf("%d\n", i);    
       
       cudaMemsetAsync(Signature_Array, 255, block_num * sizeof(uint8_t), stream);
+      cudaMemsetAsync(Lock_Signature, 0, block_num * sizeof(uint8_t), stream);
+      cudaMemsetAsync(final_sum, 0, block_num * sizeof(int), stream);
       // Lanch for Group Implmentation
-      cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
-                                                            Lock_Signature, final_sum, if_split_phase, 
-                                                            d_queues, SM_JOBS, Task_Status);
+      for (int i = 0; i < 2; i++){
+        cutlass::Kernel<GemmKernel><<<grid, block, (smem_size), stream>>>(params_, Signature_Array, 
+                                                              Lock_Signature, final_sum, if_split_phase, 
+                                                              d_queues, SM_JOBS, Task_Status);
+      }
+
       // Lanch for Queue Implmentation
       // cudaMemsetAsync(d_tail, 0, sizeof(int) * num_queues, stream);
       // cudaMemsetAsync(d_head, 0, sizeof(int) * num_queues, stream);

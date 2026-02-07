@@ -244,30 +244,42 @@ struct Gemm {
       }
       int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
       chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
+
+      int retry_count = 0;
+      const int TIMEOUT = 100;
+      bool found_task = false;
       
       volatile uint8_t* sig_ptr = Signature_Array;
 
-      while(true){
+      while(retry_count < TIMEOUT){
         unsigned int m_val = (unsigned int)sig_ptr[matrix_block_idx];
         unsigned int c_val = (unsigned int)sig_ptr[chk_block_idx];
         if (m_val != 255 && c_val != 255){
           if(smid != m_val && smid != c_val && m_val != c_val){
-            next_matrix_smid =  m_val;
-            next_chk_smid =  c_val;
-
-            tmp_matrix_blk = matrix_block_idx;
-            tmp_chk_blk = chk_block_idx;
-            break;
-          }
-          else{
-            matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
-            if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
-              matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+            int old_val = atomicCAS(&Lock_Signature[matrix_block_idx], 0, 1);
+            if (old_val == 0) {
+              next_matrix_smid =  m_val;
+              next_chk_smid =  c_val;
+              tmp_matrix_blk = matrix_block_idx;
+              tmp_chk_blk = chk_block_idx;
+              found_task = true;
+              break;
             }
-            int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
-            chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
           }
+          matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+          if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+            matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+          }
+          int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+          chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
         }
+        retry_count++;
+      }
+
+      if (!found_task) {
+        // 超时了！说明依赖的 Block (可能是 pending 的) 迟迟不来。
+        // 主动退出，释放 SM。
+        return false; 
       }
 
       // 
@@ -666,9 +678,9 @@ __device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
 
     int block_idx = threadblock_tile_offset.m() + threadblock_tile_offset.n() * params.grid_tiled_shape.m();
     // this block has been finished
-    // if (Task_Status[block_idx] == 1){
-    //   return;
-    // }
+    if (Task_Status[block_idx] == 1){
+      return;
+    }
 
     // printf("block_idx: %d, tile_offset.m: %d, title_offset.n: %d, grid_tile_shape.m: %d, grid_tile_shape.n: %d\n", 
     //         block_idx, threadblock_tile_offset.m(), threadblock_tile_offset.n(), params.grid_tiled_shape.m(), params.grid_tiled_shape.n());
@@ -784,15 +796,15 @@ __device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // bool is_finished = group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
         // bool is_finished = queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS, checksumblk_per_col, Task_Status);
 
-        // if (is_finished) {
-        //   Task_Status[block_idx] = 1;
-        //   next_matrix_block_idx = tmp_matrix_blk;
-        //   next_chk_block_idx = tmp_chk_blk;
-        //   flag = tmp_flag;
-        // } 
-        // else {
-        //   flag = -1;
-        // }
+        if (is_finished) {
+          Task_Status[block_idx] = 1;
+          next_matrix_block_idx = tmp_matrix_blk;
+          next_chk_block_idx = tmp_chk_blk;
+          flag = tmp_flag;
+        } 
+        else {
+          flag = -1;
+        }
         // int value; 
         // if(queue->dequeue(&value)){
         //   printf("SM %d dequeued value: %d\n", smid, value);
