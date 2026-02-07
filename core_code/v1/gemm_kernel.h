@@ -246,7 +246,7 @@ struct Gemm {
       chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
 
       int retry_count = 0;
-      const int TIMEOUT = 100;
+      const int TIMEOUT = 5;
       bool found_task = false;
       
       volatile uint8_t* sig_ptr = Signature_Array;
@@ -388,19 +388,48 @@ struct Gemm {
     }
     int n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
     chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
-    
+
+    int retry_count = 0;
+    const int TIMEOUT = 5;
+    bool found_task = false;
+
     volatile uint8_t* sig_ptr = Signature_Array;
-    while(true){
+    while(retry_count < TIMEOUT){
       uint8_t m_val = sig_ptr[matrix_block_idx];
       uint8_t c_val = sig_ptr[chk_block_idx];
       if (m_val != 255 && c_val != 255){
-        next_matrix_smid = (unsigned int)m_val;
-        next_chk_smid = (unsigned int)c_val;
+        if(smid != m_val && smid != c_val && m_val != c_val){
+          int old_val = atomicCAS(&Lock_Signature[matrix_block_idx], 0, 1);
+          if (old_val == 0) {
+            next_matrix_smid = (unsigned int)m_val;
+            next_chk_smid = (unsigned int)c_val;
+            tmp_matrix_blk = matrix_block_idx;
+            tmp_chk_blk = chk_block_idx;
 
-        tmp_matrix_blk = matrix_block_idx;
-        tmp_chk_blk = chk_block_idx;
-        break;
+            found_task = true;
+            break;
+          }
+        }
+
+        new_blk_idx = matrix_block_idx - threadblock_tile_offset.n();
+        local_blk_idx = new_blk_idx % previous_blk_size;
+        next_local_blk_idx = (local_blk_idx + 1) % num_blk_per_group;
+        next_global_blk_idx = next_local_blk_idx + (group_idx * previous_blk_size);
+        new_offset_n = next_global_blk_idx / (params.grid_tiled_shape.m() - 1);
+        matrix_block_idx = next_global_blk_idx + new_offset_n;
+        if ((matrix_block_idx + 1) % params.grid_tiled_shape.m() == 0){
+          matrix_block_idx = (matrix_block_idx + 1) % (params.grid_tiled_shape.m() * params.grid_tiled_shape.n());
+        }
+        n = (matrix_block_idx + 1) / params.grid_tiled_shape.m();
+        chk_block_idx = params.grid_tiled_shape.m() * (n + 1) - 1;
       }
+      retry_count++;
+    }
+
+    if (!found_task) {
+      // 超时了！说明依赖的 Block (可能是 pending 的) 迟迟不来。
+      // 主动退出，释放 SM。
+      return false; 
     }
 
     // Check chksum smid == matrix smid
@@ -444,7 +473,7 @@ __device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
     
     unsigned long long sig_wait_count = 0;
     unsigned long long wait_counter = 0;
-    const unsigned long long STUCK_THRESHOLD = 1;
+    const unsigned long long STUCK_THRESHOLD = 5;
 
     while(true){
       // printf("wait 1\n");
@@ -792,8 +821,8 @@ __device__ bool queue_find_SM(Params const &params, cutlass::gemm::GemmCoord thr
         // queue->enqueue(smid);
 
         int group_partition = 8;
-        bool is_finished = find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
-        // bool is_finished = group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
+        // bool is_finished = find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx);
+        bool is_finished = group_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition);
         // bool is_finished = queue_find_SM(params, threadblock_tile_offset,Signature_Array, Lock_Signature, tmp_matrix_blk, tmp_chk_blk, tmp_flag, smid, block_idx, group_partition, d_queues, SM_JOBS, checksumblk_per_col, Task_Status);
 
         if (is_finished) {
