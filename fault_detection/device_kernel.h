@@ -511,18 +511,27 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   int local_col_idx = tid % N;
   // int local_col_dim = blockDim.x / batch_per_TB;
 
-  int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
-  int start_bid = local_smid * TB_per_batch;
+  // origin_case
+  // int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  // int start_bid = local_smid * TB_per_batch;
 
+  // only consider N=1024
 
   int shared_offset = thread_group_idx * checksum_stride;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     // load checksum to share memroy
     // int load_init_batch_idx = local_smid + b_iter * chk_step; 
-    int load_init_batch_idx = start_bid + b_iter * chk_step; 
+    
+    // origin_case
+    // int load_init_batch_idx = start_bid + b_iter * chk_step; 
+    
+    // only consider N=1024
+    // int batch_idx = local_smid + b_iter * chk_step;
+    int batch_idx = ((local_smid + b_iter) % chk_step) + b_iter * chk_step;
+    
     for(int t = 0; t < TB_per_batch; t++){
-      int load_batch_idx = load_init_batch_idx + t;
+      int load_batch_idx = batch_idx + t;
       if(load_batch_idx < monitored_batched_count){
         int load_offset = t * checksum_stride;
         int idx_a = (load_batch_idx * params.stride_A) + mk;
@@ -533,18 +542,12 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
           }
         }
       }
-      // if(load_batch_idx < params.batch_count && col_idx < K){
-      //   int load_offset = t * checksum_stride;
-      //   int idx_a = (load_batch_idx * params.stride_A) + mk;
-      //   int idx = col_idx + K;
-      //   SharedMem[col_idx + load_offset] = *(params.ref_A.data() + idx_a + col_idx);
-      //   SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
-      // }
     }
     __syncthreads();
     
     // update checksum
-    int batch_idx = init_batch + b_iter * chk_step; 
+    // origin_case
+    // int batch_idx = init_batch + b_iter * chk_step; 
     if(batch_idx < monitored_batched_count && thread_group_idx < TB_per_batch){
       // Dtype accum1 = static_cast<Dtype>(0.f);
       // Dtype accum2 = static_cast<Dtype>(0.f);
@@ -1035,7 +1038,8 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
   unsigned long long init_clock, t;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-    int batch_idx = local_smid + b_iter * chk_step;
+    // int batch_idx = local_smid + b_iter * chk_step;
+    int batch_idx = ((local_smid + b_iter) % chk_step) + b_iter * chk_step;
     // if(batch_idx < params.batch_count){
     if(batch_idx < monitored_batched_count){                    
       int idx_a_1 = (batch_idx * params.stride_A) + mk;

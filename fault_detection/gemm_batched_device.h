@@ -658,48 +658,48 @@ public:
         // Absolute Path
         // fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
         // Relative Path
-        fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
-        std::ifstream stepFile(StepPath);
-        if (stepFile.is_open()) {
-          std::string line;
-          if (std::getline(stepFile, line)) {
-            // std::cout << line << std::endl;
-            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
-            int step = std::stoi(line);
-            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-            ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
+        // fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
+        // std::ifstream stepFile(StepPath);
+        // if (stepFile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(stepFile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     int step = std::stoi(line);
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
 
-            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
-            // ofs << std::endl << line << " ";
-            // std::cout << std::endl << line << " ";
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << std::endl << line << " ";
+        //     // std::cout << std::endl << line << " ";
 
-            ofs.close();
-          } 
-        }
-        stepFile.close();
+        //     ofs.close();
+        //   } 
+        // }
+        // stepFile.close();
 
         // current component
         // Absolute Path
         // fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
         // Relative Path
-        fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
-        std::ifstream compfile(componentPath);
-        if (compfile.is_open()) {
-          std::string line;
-          if (std::getline(compfile, line)) {
-            // std::cout << line << std::endl;
-            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
-            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-            ofs.write(line.data(), 2);
+        // fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
+        // std::ifstream compfile(componentPath);
+        // if (compfile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(compfile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(line.data(), 2);
 
-            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
-            // ofs << line << " ";
-            // std::cout << line << " ";
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << line << " ";
+        //     // std::cout << line << " ";
 
-            ofs.close();
-          } 
-        }
-        compfile.close();
+        //     ofs.close();
+        //   } 
+        // }
+        // compfile.close();
       }
       // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << " " << "faulty_bit = " << faulty_bit << std::endl;
     }
@@ -752,7 +752,7 @@ public:
     // for(int i = 0; i < iterations; i++){
 
     if(if_split_phase == 0 || if_split_phase == 1) {
-      printf("update kernel\n");
+      // printf("update kernel\n");
       // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       if(transb == 't'){
@@ -837,6 +837,26 @@ public:
     // dup2(saved_stdout_fd, fileno(stdout)); // restore
     // close(saved_stdout_fd);
     // }
+
+    // copy back SM check results
+    int *h_SM_check_res;
+    h_SM_check_res = (int*)malloc(num_sms * sizeof(int));
+    cudaMemcpy(h_SM_check_res, SM_check_res, num_sms*sizeof(int), cudaMemcpyDeviceToHost);
+    // record checking results
+    // int gpu_dev = -1;
+    // cudaGetDevice(&gpu_dev);
+    // char *job_id = getenv("SLURM_JOB_ID");
+    fs::path SMCheckResPath = fs::path("/home/yuhangl/control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "SM_checking_results.txt";
+    std::ofstream ofs(SMCheckResPath, std::ios::out | std::ios::app);
+    // ofs.write(reinterpret_cast<const char*>(h_SM_check_res), sizeof(int) * num_sms);
+    for (int i = 0; i < num_sms; i++) {
+        ofs << h_SM_check_res[i];
+        if (i != num_sms - 1)
+            ofs << " ";
+    }
+    ofs << "\n";
+    free(h_SM_check_res);
+
 
     if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 

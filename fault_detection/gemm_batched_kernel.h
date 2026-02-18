@@ -900,7 +900,7 @@ struct GemmBatched {
         int check_step = ((int)(floor((double)SM_per_batch / (double)check_req_SM))) * batch_step;
         int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
         int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
-
+        
         int last_iter_batch = monitored_batched_count % batch_step;
         
         for(int i = 0; i < check_iter; i += 1){
@@ -921,9 +921,20 @@ struct GemmBatched {
             // if(threadIdx.x == 0) printf("iter: %d, real smid: %d, local smid: %d, check_iter: %d, init_batch_idx: %d, checked_init_batch_idx: %d, checked_batch_idx: %d\n", i, real_smid, local_smid, check_iter, init_batch_idx, checked_init_batch_idx, checked_batch_idx);
 
             int diff = 0, loc = -1;
-            int col_idx = thread_idx + smid * blockDim.x;
+    
+            // int check_offset = 1;
+            // int target_smid = (smid + check_offset) % SM_per_batch;
+            // int col_idx = thread_idx + (target_smid / params.grid_tiled_shape.m()) * blockDim.x;
+            // int row_idx = (target_smid % params.grid_tiled_shape.m()) * 128;
+
+            int col_idx = thread_idx + (smid % check_req_SM) * blockDim.x;
+            // int col_idx = thread_idx + (smid) * blockDim.x;
+            
             if(col_idx < params.problem_size.n()){
               check_phase_v2(params, checked_batch_idx, thread_idx, col_idx, SM_check_res, SM_per_batch, batch_step, diff, loc);
+              // global in-batch idx
+              // int global_idx = row_idx * params.problem_size.n() + col_idx;
+              // check_phase_v2(params, checked_batch_idx, thread_idx, global_idx, SM_check_res, SM_per_batch, batch_step, diff, loc);
               
               if(diff != 0){
                 // Locate corrupted SM
@@ -933,14 +944,18 @@ struct GemmBatched {
                 int error_smid = error_local_smid + ((init_batch_idx + 1) % batch_step) * SM_per_batch;
       
                 // printf("%d Error detected at SM %d by checker SM %d (%d)\n", i, error_smid, real_smid, checked_batch_idx);
-                int checksum_smid = (checked_batch_idx % (n_smid - nSM)) + nSM;
+                int checksum_SM = n_smid - nSM;
+                int chksum_iter = checked_batch_idx / checksum_SM;
+                int checksum_smid = ((checked_batch_idx % checksum_SM) + (chksum_iter % checksum_SM)) + nSM;
+                
+                // int checksum_smid = (checked_batch_idx % (n_smid - nSM)) + nSM;
                 printf("%d Error detected at SM %d by checker SM %d. Checksum SM %d (%d)\n", i, error_smid, real_smid, checksum_smid, checked_batch_idx);
 
                 // record results
                 // Atomic sum
-                atomicAdd((SM_check_res + error_smid), diff);
-                atomicAdd((SM_check_res + smid), diff);
+                atomicAdd((SM_check_res + real_smid), diff);
                 atomicAdd((SM_check_res + checksum_smid), diff);
+                if (error_smid < n_smid && error_smid >-1) atomicAdd((SM_check_res + error_smid), diff);
               }
               __syncthreads();
             }
