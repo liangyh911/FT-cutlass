@@ -701,12 +701,12 @@ struct GemmBatched {
             int fault_m = faulty_elements[i] % 8;
             int fault_n = faulty_elements[i] / 8;
             int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+            force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
 
             // index of 2nd faulty element (gap is 64)
             fault_m += 8;
             idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-            force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+            force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
           }
         }
         __syncthreads();
