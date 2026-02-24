@@ -21,7 +21,7 @@ FAULTY_STEP=490
 FAULTY_DURATION=20
 
 # directory
-MODEL_DIR="/projects"
+MODEL_DIR="/mnt"
 DS_DIR="/mnt"
 
 # set TP and PP

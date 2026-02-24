@@ -14,7 +14,7 @@ FAULTY_STEP=150
 FAULTY_DURATION=20
 
 # directory
-MODEL_DIR="/projects"
+MODEL_DIR="/mnt"
 DS_DIR="/mnt"
 
 # set TP and PP
@@ -25,7 +25,7 @@ PP=2
 MODEL_Size="7B"
 
 # set the faulty GPU
-FAULTY_GPU="0"
+FAULTY_GPU="-1"
 printf "%d" "$FAULTY_GPU" > "./control_$JOB_ID/faulty_GPU.txt"
 
 # set the faulty bit
