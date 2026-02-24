@@ -30,20 +30,19 @@ printf "%d" "$FAULTY_GPU" > "./control_$JOB_ID/faulty_GPU.txt"
 
 # set the faulty bit
 if [[ "$FAULTY_GPU" != "-1" ]]; then
-  FAULTY_BIT=14
+  FAULTY_BIT=12
   printf "%d" "$FAULTY_BIT" > "./control_$JOB_ID/$FAULTY_GPU/bit.txt"
   FAULTY_UNIT=5
   printf "%d" "$FAULTY_UNIT" > "./control_$JOB_ID/$FAULTY_GPU/total_faulty_steps.txt"
 fi
 
-for i in {1..1}; do 
+for i in {1..33}; do 
   echo "--- Iteration $i ---" >> "./control_$JOB_ID/eval_results.txt"
 
   # Get time stamp
   # TIME_STAMP=$EPOCHSECONDS
-  TIME_STAMP=$(date +%s)
-  echo "$TIME_STAMP" >> "./control_$JOB_ID/eval_results.txt"
-
+  # TIME_STAMP=$(date +%s)
+  # echo "$TIME_STAMP" >> "./control_$JOB_ID/eval_results.txt"
 
   # init control files for trainning
   for d in ./control_$JOB_ID/*; do
@@ -138,7 +137,7 @@ for i in {1..1}; do
     printf "$current_iter" > "$ckpt_abs_path/latest_checkpointed_iteration.txt"
 
     # convert the checkpoint
-    cd ./Pai-Megatron-Patch/toolkits/distributed_checkpoints_convertor || exit 1
+    cd ./Pai-Megatron-Patch/toolkits/distributed_checkpoints_convertor
     bash scripts/qwen2_5/run_8xH20.sh \
       "$MODEL_Size" \
       "$ckpt_abs_path" \
@@ -151,7 +150,7 @@ for i in {1..1}; do
       "$PP"
 
     # evaluation
-    cd /workspace || exit 1
+    cd /workspace
     # CUDA_VISIBLE_DEVICES=0 python ./model_evaluation_scripts/qwen2_5_GE_eval.py
     CUDA_VISIBLE_DEVICES=0 python ./model_evaluation_scripts/qwen2_5_multi_tasks.py
 
@@ -159,19 +158,23 @@ for i in {1..1}; do
     rm -rf $MODEL_DIR/qwen-ckpts/Qwen2.5-7B-mcore-to-hf-cutlass
   done
 
+  # Read Loss and Grad norm from tensorboard
+  SRC="$MODEL_DIR/logs/output_mcore_qwen2.5_finetune/tensorboard"
+  python read_tensorboard.py $SRC
+
   # add new line to validation file
   printf "\n" >> "/workspace/control_$JOB_ID/eval_results.txt"
 
-  # collect the tensorboard log
-  SRC="$MODEL_DIR/logs/output_mcore_qwen3_finetune/tensorboard"
-  DEST_BASE="/workspace/tensorboards_log"
-  NEW_NAME="finetune-mcore-qwen3-moe-megatron-8B-$TIME_STAMP"
+  # # collect the tensorboard log
+  # SRC="$MODEL_DIR/logs/output_mcore_qwen2.5_finetune/tensorboard"
+  # DEST_BASE="/workspace/tensorboards_log"
+  # NEW_NAME="finetune-mcore-qwen2.5-moe-megatron-8B-$TIME_STAMP"
 
-  mkdir -p "$DEST_BASE"
+  # mkdir -p "$DEST_BASE"
 
-  RUN_DIR=$(ls -d "$SRC"/*/ | head -n 1)
+  # RUN_DIR=$(ls -d "$SRC"/*/ | head -n 1)
 
-  mv "$RUN_DIR" "$DEST_BASE/$NEW_NAME"
+  # mv "$RUN_DIR" "$DEST_BASE/$NEW_NAME"
 
   # delete all checkpoints for this experiment
   rm -r $MODEL_DIR/logs/output_mcore_qwen2.5_finetune

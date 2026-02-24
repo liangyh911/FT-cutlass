@@ -36,13 +36,13 @@ if [[ "$FAULTY_GPU" != "-1" ]]; then
   printf "%d" "$FAULTY_UNIT" > "./control_$JOB_ID/$FAULTY_GPU/total_faulty_steps.txt"
 fi
 
-for i in {1..20}; do 
+for i in {1..5}; do 
   echo "--- Iteration $i ---" >> "./control_$JOB_ID/eval_results.txt"
 
   # Get time stamp
   # TIME_STAMP=$EPOCHSECONDS
-  TIME_STAMP=$(date +%s)
-  echo "$TIME_STAMP" >> "./control_$JOB_ID/eval_results.txt"
+  # TIME_STAMP=$(date +%s)
+  # echo "$TIME_STAMP" >> "./control_$JOB_ID/eval_results.txt"
 
   # init control files for trainning
   for d in ./control_$JOB_ID/*; do
@@ -148,20 +148,24 @@ for i in {1..20}; do
     rm -r $MODEL_DIR/qwen-ckpts/Qwen3-8B-mcore-to-hf-cutlass
   done
 
+  # Read Loss and Grad norm from tensorboard
+  SRC="$MODEL_DIR/logs/output_mcore_qwen3_finetune/tensorboard"
+  python read_tensorboard.py $SRC
+
   # add new line to validation file
   printf "\n" >> "/workspace/control_$JOB_ID/eval_results.txt"
 
   # collect the tensorboard log
   # mv $MODEL_DIR/logs/output_mcore_qwen3_finetune/tensorboard/* /workspace/tensorboards_log/finetune-mcore-qwen3-moe-megatron-8B-${TIME_STAMP}
-  SRC="$MODEL_DIR/logs/output_mcore_qwen3_finetune/tensorboard"
-  DEST_BASE="/workspace/tensorboards_log"
-  NEW_NAME="finetune-mcore-qwen3-moe-megatron-8B-$TIME_STAMP"
+  # SRC="$MODEL_DIR/logs/output_mcore_qwen3_finetune/tensorboard"
+  # DEST_BASE="/workspace/tensorboards_log"
+  # NEW_NAME="finetune-mcore-qwen3-moe-megatron-8B-$TIME_STAMP"
 
-  mkdir -p "$DEST_BASE"
+  # mkdir -p "$DEST_BASE"
 
-  RUN_DIR=$(ls -d "$SRC"/*/ | head -n 1)
+  # RUN_DIR=$(ls -d "$SRC"/*/ | head -n 1)
 
-  mv "$RUN_DIR" "$DEST_BASE/$NEW_NAME"
+  # mv "$RUN_DIR" "$DEST_BASE/$NEW_NAME"
 
   # delete all checkpoints for this experiment
   rm -r $MODEL_DIR/logs/output_mcore_qwen3_finetune
