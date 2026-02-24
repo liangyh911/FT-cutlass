@@ -19,7 +19,8 @@ bf16
 
 # download the dataset
 cd /mnt/qwen-datasets
-wget --no-check-certificate https://atp-modelzoo-wlcb-pai.oss-cn-wulanchabu.aliyuncs.com/release/models/pai-megatron-patch/qwen-datasets/qwen_sft.json
+# wget --no-check-certificate https://atp-modelzoo-wlcb-pai.oss-cn-wulanchabu.aliyuncs.com/release/models/pai-megatron-patch/qwen-datasets/qwen_sft.json
+wget https://raw.githubusercontent.com/tatsu-lab/stanford_alpaca/main/alpaca_data.json
 
 # make the datasets
 cd /workspace/Pai-Megatron-Patch/toolkits/sft_data_preprocessing
