@@ -469,9 +469,8 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
 }
 
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
-__launch_bounds__(1024)
 CUTLASS_GLOBAL
-void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int warps_per_batch){
+void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int warps_per_batch, int monitored_batched_count){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -525,15 +524,12 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
   int valid_A_elements = (8 * tiled_K) / 2;
   int valid_B_elements = (tiled_K * N) / 2;
 
-  // int checksum_stride = 8 * tiled_K;
-  // int stageB_stride = tiled_K * N;
-
   Dtype *As = SharedMem + warp_group_idx * (checksum_stride + stageB_stride) * num_stages;
   Dtype *Bs = As + (num_stages * checksum_stride);
 
   int chk_step = chk_SM * TB_per_batch;
-  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
-  // int chk_iter = (int)(ceil((double)monitored_batched_count / (double)chk_step));
+  // int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int chk_iter = (int)(ceil((double)monitored_batched_count / (double)chk_step));
   int local_smid = real_smid - matrix_SM;
   int local_tid = tid % num_threads_per_warp_group;
 
@@ -557,7 +553,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
     // load checksum to share memroy
     int batch_idx = init_batch + b_iter * chk_step; 
     // update checksum
-    if(batch_idx < params.batch_count && warp_group_idx < TB_per_batch){
+    // if(batch_idx < monitored_batched_count && warp_group_idx < TB_per_batch){
+    if(batch_idx < monitored_batched_count){
       wmma::fill_fragment(c_acc, 0.0f);
       
       int stride_checksum = (batch_idx * params.stride_A) + mk;
@@ -573,9 +570,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         if (idx < valid_A_elements) {
           int A_col = idx % tiled_K_i32;
           int A_row = idx / tiled_K_i32;
-          // cuda::memcpy_async(&As[idx], (params.ref_A.data() + stride_checksum + (A_col + A_row * K)), sizeof(Dtype), pipeline);
           int smem_a_idx = A_row * padding_K_i32 + A_col;
-          cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + (A_col + A_row * K_i32)), sizeof(Dtype), pipeline);
+          cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + (A_col + A_row * K_i32)), sizeof(int), pipeline);
         }
       }
 
@@ -587,9 +583,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         if (idx < valid_B_elements){
           int B_col = idx % N_i32;
           int B_row = idx / N_i32;
-          // cuda::memcpy_async(&Bs[idx], (params.ref_B.data()+ stride_b + (B_col + B_row * N)), sizeof(Dtype), pipeline);
           int smem_b_idx = B_row * padding_N_i32 + B_col;
-          cuda::memcpy_async(&Bs_i32[smem_b_idx], (ref_B_i32 + (B_col + B_row * N_i32)), sizeof(Dtype), pipeline);
+          cuda::memcpy_async(&Bs_i32[smem_b_idx], (ref_B_i32 + (B_col + B_row * N_i32)), sizeof(int), pipeline);
         }
       }
       pipeline.producer_commit();
@@ -612,9 +607,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
           if (idx < valid_A_elements) {
             int A_col = idx % tiled_K_i32;
             int A_row = idx / tiled_K_i32;
-            // cuda::memcpy_async(&As[idx + stage_checksum_offset], (params.ref_A.data() + stride_checksum + ((A_col + k_start) + A_row * K)), sizeof(Dtype), pipeline);
             int smem_a_idx = A_row * padding_K_i32 + A_col;
-            cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + ((A_col + k_start_i32) + A_row * K_i32)), sizeof(Dtype), pipeline);
+            cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + ((A_col + k_start_i32) + A_row * K_i32)), sizeof(int), pipeline);
           }
         }
         // load B
@@ -626,9 +620,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
           if(idx < valid_B_elements){
             int B_col = idx % N_i32;
             int B_row = idx / N_i32;
-            // cuda::memcpy_async(&buf[idx], (params.ref_B.data()+ stride_b + (B_col + (B_row + k_start) * N)), sizeof(Dtype), pipeline);
             int smem_b_idx = B_row * padding_N_i32 + B_col;
-            cuda::memcpy_async(&buf_i32[smem_b_idx],  (ref_B_i32 + (B_col + (B_row + k_start) * N_i32)), sizeof(Dtype), pipeline);
+            cuda::memcpy_async(&buf_i32[smem_b_idx],  (ref_B_i32 + (B_col + (B_row + k_start) * N_i32)), sizeof(int), pipeline);
           }
         }
         pipeline.producer_commit();
@@ -648,10 +641,6 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
 
           #pragma unroll
           for(int k = 0; k < tiled_K; k += 16){
-            // Load A
-            // wmma::load_matrix_sync(a_frag, (a + k), tiled_K);
-            // wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * N)), N);
-
             wmma::load_matrix_sync(a_frag, (a + k), padding_K);
             wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * padding_N)), padding_N);
             wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
@@ -675,13 +664,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         
         #pragma unroll
         for(int k = 0; k < tiled_K; k += 16){
-          // Load A
-          // wmma::load_matrix_sync(a_frag, (a + k), tiled_K);
-          // wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * N)), N);
-
           wmma::load_matrix_sync(a_frag, (a + k), padding_K);
           wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * padding_N)), padding_N);
-
           wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
         }
       }
@@ -4854,8 +4838,11 @@ void update_checksum_T_wmma_v9_3(typename Operator::Params params, int matrix_SM
       //   init_clock = clock64();
       //   printf("batch idx: %d, init clock: %llu\n", batch_idx, init_clock);
       // }
-      if(tid < checksum_load_stride){
-        As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      // if(tid < checksum_load_stride){
+      //   As[tid] = *(params.ref_A.data() + idx_a_1 + tid);
+      // }
+      for(int i = tid; i < checksum_load_stride; i += blockDim.x){
+          As[i] = *(params.ref_A.data() + idx_a_1 + i);
       }
       __syncthreads();
 

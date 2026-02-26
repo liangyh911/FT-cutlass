@@ -249,57 +249,140 @@ struct GemmBatched {
     }
   }
 
+  __device__ int get_checksum_smid(int chk_blk, int grid_tiled_shape_m, int matrix_shape_m, int matrix_SM, int chksum_SM){
+    
+  }
+
+  __device__ void SM_based_schedule_v2(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
+                                  int &tmp_matrix_blk, int &tmp_chk_blk,
+                                  unsigned int smid, int block_idx, int matrix_SM, int checksumblk_per_col, int offset){
+  
+    int new_blk_idx = block_idx - threadblock_tile_offset_n * checksumblk_per_col;
+    int group_idx = new_blk_idx / matrix_SM;
+
+    int grid_tile_m = params.grid_tiled_shape.m() + 1;
+
+    // int local_blk_idx = new_blk_idx % matrix_SM;
+    // int next_local_blk_idx = (local_blk_idx + 1) % matrix_SM;
+    int next_global_blk_idx = (new_blk_idx % matrix_SM + offset) % matrix_SM + (group_idx * matrix_SM);
+    int new_offset_n = (next_global_blk_idx / (grid_tile_m - checksumblk_per_col)) * checksumblk_per_col;
+    tmp_matrix_blk = next_global_blk_idx + new_offset_n;
+
+    tmp_chk_blk = get_corresponding_chk_idx(grid_tile_m, tmp_matrix_blk, threadblock_tile_offset_m, (grid_tile_m - checksumblk_per_col));
+  }
+
   __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
                                         int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
                                         int thread_idx, int batch_idx){
-    int offset = blockDim.x;
+    int grid_tile_m = params.grid_tiled_shape.m() + checksumblk_per_col;
+    
+    int MatrixColBlkOffset = next_matrix_block_idx / grid_tile_m;
+    int MatrixRowBlkOffset = next_matrix_block_idx % grid_tile_m;
+    matrix_start_idx = (batch_idx * params.stride_D) + (MatrixColBlkOffset *  blockDim.x) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-    int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
-    int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
-    matrix_start_idx = (batch_idx * params.stride_D) + (MatrixColBlkOffset * offset) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
-
-    int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
-    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - checksumblk_per_col);
-    chk_start_idx = (batch_idx * params.stride_D) + (ChkColBlkOffset * offset) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+    int ChkColBlkOffset = next_chk_block_idx / grid_tile_m;
+    int ChkRowBlkOffset = (grid_tile_m - checksumblk_per_col);
+    chk_start_idx = (batch_idx * params.stride_D) + (ChkColBlkOffset *  blockDim.x) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
   }
 
-  __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
-                              int iter, 
-                              unsigned int smid, int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, 
-                              int block_idx, int batch_idx, int threadblock_tile_offset_n){
+  // __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
+  //                             int iter, 
+  //                             unsigned int smid, int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, 
+  //                             int block_idx, int batch_idx, int threadblock_tile_offset_n){
+  //   float recomputed_chksum = 0;
+  //   int diff = 0;
+  //   int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
+  //   // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
+
+  //   if(col_idx < params.problem_size.n()){
+  //     int N = params.problem_size.n();
+  //     // void *p = params.ref_D.data();
+  //     #pragma unroll
+  //     for(int r = 0; r < 128; r++){
+  //       int idx = matrix_start_idx + r * N;
+  //       recomputed_chksum += *(params.ref_D.data() + idx);
+  //     }
+      
+  //     float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
+  //     if(fabs(recomputed_chksum - check_sum_val) > (float)1e1){
+  //       diff = 1;
+  //       printf("%d %d Difference detected at ((%d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
+  //                 iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
+  //     }
+
+  //     // Atomic sum
+  //     if(diff != 0){
+  //       atomicAdd((SM_check_res + smid), diff);
+  //     }
+  //   }
+  //   __syncthreads();
+
+  //   // if(*(SM_check_res + smid)!=0){
+  //   //   if(thread_idx == 0){
+  //   //     // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+  //   //     // *(SM_check_res+smid) = 0;
+  //   //   }
+  //   // }
+  // }
+
+  __device__ void check_phase(Params const &params, int checked_batch_idx, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
+                              unsigned int smid, unsigned int target_smid, unsigned int chksum_smid,
+                              int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, int block_idx
+                            ){
     float recomputed_chksum = 0;
     int diff = 0;
-    int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
-    // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
-
-    if(col_idx < params.problem_size.n()){
-      int N = params.problem_size.n();
-      // void *p = params.ref_D.data();
+    
+    // if use group, not unroll
+    int N = params.problem_size.n();
+    // void *p = params.ref_D.data();
+    if(thread_idx < N){
       #pragma unroll
       for(int r = 0; r < 128; r++){
         int idx = matrix_start_idx + r * N;
-        recomputed_chksum += *(params.ref_D.data() + idx);
+        recomputed_chksum += static_cast<float>(*(params.ref_D.data() + idx));
+        // float temp = params.ref_D.data(idx);
       }
       
-      float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
-      if(fabs(recomputed_chksum - check_sum_val) > (float)1e1){
+      // __syncthreads();
+      // if(thread_idx == 0 && smid == 0){
+      //   *(recompute + iter) = clock();
+      // }
+      
+      float updated_chksum = static_cast<float>(*(params.ref_D.data() + chk_start_idx));
+      if(fabs(recomputed_chksum - updated_chksum) > (float)1){
         diff = 1;
-        printf("%d %d Difference detected at ((%d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
-                  iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
+        float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+        float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+        printf("Batch %d, Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+                checked_batch_idx, target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
       }
+      // __syncthreads();
+      // if(thread_idx == 0 && smid == 0){
+      //   *(compare + iter) = clock();
+      // }
 
       // Atomic sum
       if(diff != 0){
+        // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+        // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d)\n",
+        //         target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx);
         atomicAdd((SM_check_res + smid), diff);
+        atomicAdd((SM_check_res + target_smid), diff);
+        atomicAdd((SM_check_res + chksum_smid), diff);
       }
     }
     __syncthreads();
+    // if(*(SM_check_res+smid)!=0){
+      // if(threadIdx.x == 0){
+      //   printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+      //   // *(SM_check_res+smid) = 0;
+      // }
+    // }
 
-    // if(*(SM_check_res + smid)!=0){
-    //   if(thread_idx == 0){
-    //     // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
-    //     // *(SM_check_res+smid) = 0;
-    //   }
+    // __syncthreads();
+    // if(thread_idx == 0 && smid == 0){
+    //   *(checking + iter) = clock();
+    //   // printf("checking: %d\n", *(checking + iter));
     // }
   }
 
@@ -469,8 +552,8 @@ struct GemmBatched {
     // get SM id
     unsigned int real_smid;
     asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
-    // int n_smid;
-    // asm volatile("mov.u32 %0, %nsmid;" : "=r"(n_smid));
+    int n_smid;
+    asm volatile("mov.u32 %0, %nsmid;" : "=r"(n_smid));
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
     
     // int nSM = 128;
@@ -642,6 +725,35 @@ struct GemmBatched {
         // }
       }
     // }
+    
+    #if 1
+    if(if_split_phase == 1){
+      int checksum_SM = n_smid - nSM;
+
+      int check_step = SM_per_batch * batch_step;
+      int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
+      int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / SM_per_batch) * batch_step;
+      int last_iter_batch = monitored_batched_count % batch_step;
+
+      for(int i = 0; i < check_iter; i += 1){
+        int checked_batch_idx = checked_init_batch_idx + i * check_step;
+        if(checked_batch_idx < monitored_batched_count){
+          int target_sm_offset = 0;
+          int target_smid = (real_smid + SM_per_batch + target_sm_offset) % nSM;
+          
+          int next_matrix_block_idx = 0, next_chk_block_idx = 0;
+          SM_based_schedule_v2(params, threadblock_tile_offset_m, threadblock_tile_offset_n, next_matrix_block_idx, next_chk_block_idx, smid, block_idx, nSM, 1, target_sm_offset);
+          
+          int chksum_iter = checked_batch_idx / checksum_SM;
+          int chksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+
+          int matrix_start_idx = 0, chk_start_idx = 0;
+          curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 1, thread_idx, checked_batch_idx);
+          check_phase(params, checked_batch_idx, matrix_start_idx, chk_start_idx, SM_check_res, real_smid, target_smid, chksum_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
+        }
+      }
+    }
+    #endif
 
     #if 0
     if(if_split_phase == 1){
