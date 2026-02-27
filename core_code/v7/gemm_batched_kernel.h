@@ -732,7 +732,7 @@ struct GemmBatched {
 
       int check_step = SM_per_batch * batch_step;
       int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
-      int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / SM_per_batch) * batch_step;
+      int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step)+ (smid / SM_per_batch) * batch_step;
       int last_iter_batch = monitored_batched_count % batch_step;
 
       for(int i = 0; i < check_iter; i += 1){

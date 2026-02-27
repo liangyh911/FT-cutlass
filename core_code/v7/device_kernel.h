@@ -469,6 +469,7 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
 }
 
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
+__launch_bounds__(1024) 
 CUTLASS_GLOBAL
 void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int warps_per_batch, int monitored_batched_count){
   // get SM id
@@ -496,15 +497,15 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
   extern __shared__ Dtype SharedMem[];
 
   // auto block = cooperative_groups::this_thread_block();
-  // auto batch_group = cooperative_groups::tiled_partition<256>(block);
+  // auto tile_group = cooperative_groups::tiled_partition<256>(block);
   // cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
 
-  auto group = cooperative_groups::this_thread_block();
-  constexpr auto scope = cuda::thread_scope_block;
-  __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
-  auto pipeline = cuda::make_pipeline(group, &shared_state);
+  // auto group = cooperative_groups::this_thread_block();
+  // constexpr auto scope = cuda::thread_scope_block;
+  // __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
+  // auto pipeline = cuda::make_pipeline(group, &shared_state);
 
-  // cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
+  cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
 
   int mk = M * K;
   int mn = M * N;
@@ -547,6 +548,14 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
   // int shared_offset = thread_group_idx * checksum_stride;
   int shared_offset = warp_group_idx * checksum_stride;
 
+  int A_col = local_tid % tiled_K_i32; 
+  int A_row_base = local_tid / tiled_K_i32;
+  int A_row_stride = num_threads_per_warp_group / tiled_K_i32;
+
+  int B_col = local_tid % N_i32;
+  int B_row_base = local_tid / N_i32;
+  int B_row_stride = num_threads_per_warp_group / N_i32;
+
   wmma::fragment<wmma::accumulator, 8, 32, 16, float> c_acc;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
@@ -568,22 +577,24 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
       for(int i = 0; i < loadA_iter_i32; i++){
         int idx = local_tid + i * num_threads_per_warp_group;
         if (idx < valid_A_elements) {
-          int A_col = idx % tiled_K_i32;
-          int A_row = idx / tiled_K_i32;
+          int A_row = A_row_base + i * A_row_stride;
           int smem_a_idx = A_row * padding_K_i32 + A_col;
           cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + (A_col + A_row * K_i32)), sizeof(int), pipeline);
         }
       }
-
       // load B
       int *Bs_i32 = reinterpret_cast<int*>(Bs);
       int *ref_B_i32 = reinterpret_cast<int*>(params.ref_B.data() + stride_b);
       for(int i = 0; i < loadB_iter_i32; i++){
         int idx = local_tid + i * num_threads_per_warp_group;
         if (idx < valid_B_elements){
-          int B_col = idx % N_i32;
-          int B_row = idx / N_i32;
+          // int B_col = idx % N_i32;
+          // int B_row = idx / N_i32;
+          // int smem_b_idx = B_row * padding_N_i32 + B_col;
+          
+          int B_row = B_row_base + i * B_row_stride;
           int smem_b_idx = B_row * padding_N_i32 + B_col;
+
           cuda::memcpy_async(&Bs_i32[smem_b_idx], (ref_B_i32 + (B_col + B_row * N_i32)), sizeof(int), pipeline);
         }
       }
@@ -605,8 +616,7 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         for(int i = 0; i < loadA_iter_i32; i++){
           int idx = local_tid + i * num_threads_per_warp_group;
           if (idx < valid_A_elements) {
-            int A_col = idx % tiled_K_i32;
-            int A_row = idx / tiled_K_i32;
+            int A_row = A_row_base + i * A_row_stride;
             int smem_a_idx = A_row * padding_K_i32 + A_col;
             cuda::memcpy_async(&As_i32[smem_a_idx], (ref_A_i32 + ((A_col + k_start_i32) + A_row * K_i32)), sizeof(int), pipeline);
           }
@@ -618,8 +628,12 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         for(int i = 0; i < loadB_iter_i32; i++){
           int idx = local_tid + i * num_threads_per_warp_group;
           if(idx < valid_B_elements){
-            int B_col = idx % N_i32;
-            int B_row = idx / N_i32;
+            // int B_col = idx % N_i32;
+            // int B_row = idx / N_i32;
+            // int smem_b_idx = B_row * padding_N_i32 + B_col;
+            // cuda::memcpy_async(&buf_i32[smem_b_idx],  (ref_B_i32 + (B_col + (B_row + k_start_i32) * N_i32)), sizeof(int), pipeline);
+
+            int B_row = B_row_base + i * B_row_stride;
             int smem_b_idx = B_row * padding_N_i32 + B_col;
             cuda::memcpy_async(&buf_i32[smem_b_idx],  (ref_B_i32 + (B_col + (B_row + k_start) * N_i32)), sizeof(int), pipeline);
           }
@@ -672,6 +686,7 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
       pipeline.consumer_release();
 
       __syncthreads();
+      // tile_group.sync();
 
       // Store
       float* smem_base = reinterpret_cast<float*>(As);
@@ -680,6 +695,7 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         wmma::store_matrix_sync((smem_base + warp_offset_0), c_acc, N, wmma::mem_row_major);
       }
       __syncthreads();
+      // tile_group.sync();
 
 
       int offset_D = batch_idx * params.stride_D + mn;
@@ -695,6 +711,7 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
       }
     }
     __syncthreads();
+    // tile_group.sync();
   } 
 }
 
