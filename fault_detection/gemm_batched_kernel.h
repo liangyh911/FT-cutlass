@@ -249,59 +249,59 @@ struct GemmBatched {
     }
   }
 
-  __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
-                                        int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
-                                        int thread_idx, int batch_idx){
-    int offset = blockDim.x;
+  // __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+  //                                       int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
+  //                                       int thread_idx, int batch_idx){
+  //   int offset = blockDim.x;
 
-    int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
-    int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
-    matrix_start_idx = (batch_idx * params.stride_D) + (MatrixColBlkOffset * offset) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+  //   int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
+  //   int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
+  //   matrix_start_idx = (batch_idx * params.stride_D) + (MatrixColBlkOffset * offset) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
 
-    int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
-    int ChkRowBlkOffset = (params.grid_tiled_shape.m() - checksumblk_per_col);
-    chk_start_idx = (batch_idx * params.stride_D) + (ChkColBlkOffset * offset) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
-  }
+  //   int ChkColBlkOffset = next_chk_block_idx / params.grid_tiled_shape.m();
+  //   int ChkRowBlkOffset = (params.grid_tiled_shape.m() - checksumblk_per_col);
+  //   chk_start_idx = (batch_idx * params.stride_D) + (ChkColBlkOffset * offset) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+  // }
 
-  __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
-                              int iter, 
-                              unsigned int smid, int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, 
-                              int block_idx, int batch_idx, int threadblock_tile_offset_n){
-    float recomputed_chksum = 0;
-    int diff = 0;
-    int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
-    // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
+  // __device__ void check_phase(Params const &params, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
+  //                             int iter, 
+  //                             unsigned int smid, int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, 
+  //                             int block_idx, int batch_idx, int threadblock_tile_offset_n){
+  //   float recomputed_chksum = 0;
+  //   int diff = 0;
+  //   int col_idx = ((next_matrix_block_idx / params.grid_tiled_shape.m()) * blockDim.x) + threadIdx.x; 
+  //   // int col_idx = (threadblock_tile_offset_n * blockDim.x) + threadIdx.x; 
 
-    if(col_idx < params.problem_size.n()){
-      int N = params.problem_size.n();
-      // void *p = params.ref_D.data();
-      #pragma unroll
-      for(int r = 0; r < 128; r++){
-        int idx = matrix_start_idx + r * N;
-        recomputed_chksum += *(params.ref_D.data() + idx);
-      }
+  //   if(col_idx < params.problem_size.n()){
+  //     int N = params.problem_size.n();
+  //     // void *p = params.ref_D.data();
+  //     #pragma unroll
+  //     for(int r = 0; r < 128; r++){
+  //       int idx = matrix_start_idx + r * N;
+  //       recomputed_chksum += *(params.ref_D.data() + idx);
+  //     }
       
-      float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
-      if(fabs(recomputed_chksum - check_sum_val) > (float)1e1){
-        diff = 1;
-        printf("%d %d Difference detected at ((%d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
-                  iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
-      }
+  //     float check_sum_val = (*(params.ref_D.data() + chk_start_idx));
+  //     if(fabs(recomputed_chksum - check_sum_val) > (float)1e1){
+  //       diff = 1;
+  //       // printf("%d %d Difference detected at ((%d), %d, %d). next matrix sum: (%d, %f), next chk: (%d, %f), diff: %f\n", 
+  //       //           iter, batch_idx, smid, block_idx, thread_idx, next_matrix_block_idx, recomputed_chksum, next_chk_block_idx, *(params.ref_D.data() + chk_start_idx), (recomputed_chksum-((*(params.ref_D.data() + chk_start_idx)))));
+  //     }
 
-      // Atomic sum
-      if(diff != 0){
-        atomicAdd((SM_check_res + smid), diff);
-      }
-    }
-    __syncthreads();
+  //     // Atomic sum
+  //     if(diff != 0){
+  //       atomicAdd((SM_check_res + smid), diff);
+  //     }
+  //   }
+  //   __syncthreads();
 
-    if(*(SM_check_res + smid)!=0){
-      if(thread_idx == 0){
-        // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
-        // *(SM_check_res+smid) = 0;
-      }
-    }
-  }
+  //   if(*(SM_check_res + smid)!=0){
+  //     if(thread_idx == 0){
+  //       // printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+  //       // *(SM_check_res+smid) = 0;
+  //     }
+  //   }
+  // }
 
   __device__ void update_col_v3(Params const &params, int thread_idx, int batch_idx){
 
@@ -341,128 +341,103 @@ struct GemmBatched {
     return error_smid;
   }
 
-  // __device__ void check_phase_v2(Params const &params, int batch_idx, int thread_idx, int col_idx, int *SM_check_res, int matrix_SM, int batch_step, int &diff, int &loc){
-    
-  //   int M = params.problem_size.m();
-  //   int K = params.problem_size.k();
-  //   int N = params.problem_size.n();
-  //   float E = 100;
-  //   // int loc = -1;
-  //   float MAX = 0;
-  //   // int diff = 0;
+  __device__ void SM_based_schedule_v2(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
+                                  int &tmp_matrix_blk, int &tmp_chk_blk,
+                                  unsigned int smid, int block_idx, int matrix_SM, int checksumblk_per_col, int offset){
+  
+    int new_blk_idx = block_idx - threadblock_tile_offset_n * checksumblk_per_col;
+    int group_idx = new_blk_idx / matrix_SM;
 
-  //   // recompute checksum (no weighted, weighted)
-  //   float dA_col_r1 = 0.f;
-  //   float dA_col_r2 = 0.f;
+    int grid_tile_m = params.grid_tiled_shape.m() + 1;
+
+    // int local_blk_idx = new_blk_idx % matrix_SM;
+    // int next_local_blk_idx = (local_blk_idx + 1) % matrix_SM;
+    int next_global_blk_idx = (new_blk_idx % matrix_SM + offset) % matrix_SM + (group_idx * matrix_SM);
+    int new_offset_n = (next_global_blk_idx / (grid_tile_m - checksumblk_per_col)) * checksumblk_per_col;
+    tmp_matrix_blk = next_global_blk_idx + new_offset_n;
+
+    tmp_chk_blk = get_corresponding_chk_idx(grid_tile_m, tmp_matrix_blk, threadblock_tile_offset_m, (grid_tile_m - checksumblk_per_col));
+  }
+
+  __device__ void curr_iter_chk_offsets(Params const &params, int &matrix_start_idx, int &chk_start_idx,
+                                        int next_matrix_block_idx, int next_chk_block_idx, int checksumblk_per_col, 
+                                        int thread_idx, int batch_idx){
+    int grid_tile_m = params.grid_tiled_shape.m() + checksumblk_per_col;
     
-  //   int start_idx = (params.stride_D * batch_idx) + col_idx;
+    int MatrixColBlkOffset = next_matrix_block_idx / grid_tile_m;
+    int MatrixRowBlkOffset = next_matrix_block_idx % grid_tile_m;
+    matrix_start_idx = (batch_idx * params.stride_D) + (MatrixColBlkOffset *  blockDim.x) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+    int ChkColBlkOffset = next_chk_block_idx / grid_tile_m;
+    int ChkRowBlkOffset = (grid_tile_m - checksumblk_per_col);
+    chk_start_idx = (batch_idx * params.stride_D) + (ChkColBlkOffset *  blockDim.x) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+  }
+  
+  __device__ void check_phase(Params const &params, int checked_batch_idx, int matrix_start_idx, int chk_start_idx, int *SM_check_res, 
+                              unsigned int smid, unsigned int target_smid, unsigned int chksum_smid,
+                              int thread_idx, int next_matrix_block_idx, int next_chk_block_idx, int block_idx
+                            ){
+    float recomputed_chksum = 0;
+    int diff = 0;
     
-  //   #pragma unroll 128
-  //   for(int r = 0; r < M; r++){
-  //     int idx = start_idx + r * N;
-  //     float element = (float)*(params.ref_D.data() + idx);
+    // if use group, not unroll
+    int N = params.problem_size.n();
+    // void *p = params.ref_D.data();
+    if(thread_idx < N){
+      #pragma unroll
+      for(int r = 0; r < 128; r++){
+        int idx = matrix_start_idx + r * N;
+        recomputed_chksum += static_cast<float>(*(params.ref_D.data() + idx));
+        // float temp = params.ref_D.data(idx);
+      }
       
-  //     dA_col_r1 += element;
-  //     dA_col_r2 += (float)(r+1) * element;
-  //   }
+      // __syncthreads();
+      // if(thread_idx == 0 && smid == 0){
+      //   *(recompute + iter) = clock();
+      // }
+      
+      float updated_chksum = static_cast<float>(*(params.ref_D.data() + chk_start_idx));
+      
+      float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+      float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
 
-  //   // detect error
-  //   float dA_col_1 = *(params.ref_D.data() + start_idx + (M*N));
-  //   float dA_col_2 = *(params.ref_D.data() + start_idx + (M+1)*N);
+      // if(fabs(recomputed_chksum - updated_chksum) > (float)1){
+      if(rel_err > 0.01){
+        diff = 1;
+        printf("Batch %d, Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+                checked_batch_idx, target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+      }
+      // __syncthreads();
+      // if(thread_idx == 0 && smid == 0){
+      //   *(compare + iter) = clock();
+      // }
 
-  //   float d1 = (float)(dA_col_1 - dA_col_r1);
-  //   float d2 = (float)(dA_col_2 - dA_col_r2);
-  //   float abs_d1 = fabs(d1);
+      // Atomic sum
+      if(diff != 0){
+        // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
+        // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d)\n",
+        //         target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx);
+        atomicAdd((SM_check_res + smid), diff);
+        atomicAdd((SM_check_res + target_smid), diff);
+        atomicAdd((SM_check_res + chksum_smid), diff);
+      }
+    }
+    __syncthreads();
+    // if(*(SM_check_res+smid)!=0){
+      // if(threadIdx.x == 0){
+      //   printf("%d,  Difference detected at SM %d. Reduced Sum: %d\n", iter, smid, *(SM_check_res+smid));
+      //   // *(SM_check_res+smid) = 0;
+      // }
+    // }
 
-  //   // printf("tid: %d, batch_idx: %d, row_idx: %d, updated: (%f, %f), recomputed: (%f, %f)\n", thread_idx, batch_idx, row_idx, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
-    
-  //   if(abs_d1 > E){
-  //     if(!std::isinf(d2)){
-  //       loc = round(d2 / d1) - 1;
-  //       printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f)\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
-  //       diff = 1;
-  //     }
-  //     else{
-  //       MAX = 0;
-	// 			int counter = 0;
-	// 			for(int i = 0; i < N; i++) {
-	// 				if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
-	// 					MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
-	// 					loc = i;
-	// 				}
-	// 				if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
-	// 					counter++;
-	// 					if(counter > 1){
-	// 						printf("[col check]col chksum error, more than one large number. (d1 = %.6f, d2 = %.6f)\n",(float)d1, (float)d2);
-	// 						return;
-	// 					}
-	// 				}
-	// 			}
-	// 			printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
-  //       diff = 1;        
-  //     }
-  //     return;
-  //   }
-  //   // abs == inf
-  //   if(std::isinf(abs_d1)){
-  //     MAX = 0;
-  //     int64_t counter = 0;
-  //     for(int i = 0; i < N; i++) {
-  //       if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > MAX){
-  //         MAX = fabs((float)*(params.ref_D.data() + start_idx + i * N));
-  //         loc = i;
-  //       }
-  //       if(std::isinf(*(params.ref_D.data() + start_idx + i * N)) || fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
-  //         counter++;
-  //         if(counter > 1){
-  //           printf("[col check]Multi INFs or Large Number detected in one column.(d1 = %.6f, d2 = %.6f, iter = %d)\n", (float)d1, (float)d2, i);
-  //           return;
-  //         }
-  //       }
-  //     }
-  //     if(counter == 0){
-  //       printf("[col chk]No INF or Large Number found.\n");
-  //       return;
-  //     }
-  //     printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
-  //     diff = 1;
-  //   }
-  //   // abs == nan
-	//   if(std::isnan(abs_d1)){
-  //     int64_t counter = 0;
-  //     for(int i = 0; i < N; i++) {
-  //       if (std::isnan(*(params.ref_D.data() + start_idx + i * N))) {
-  //         loc = i;
-  //         counter++;
-  //       }
-  //       if(std::isinf(*(params.ref_D.data() + start_idx + i * N))){
-  //         counter++;
-  //       }
-  //       if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
-  //         counter++;
-  //       }
-  //       if(counter > 1){
-  //         printf("[col check]Multi INF, NAN or Large Number detected in one column. (iter = %d)\n", i);
-  //         return;
-  //       }
-  //     }
-  //     printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
-  //     diff = 1;
-  //   }
-    
-  //   // if(diff != 0){
-  //   //   // Locate corrupted SM
-  //   //   int error_n_offset = row_idx / blockDim.x;
-  //   //   int error_m_offset = loc / 128;
-  //   //   int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
-  //   //   int error_smid = error_local_smid + matrix_SM * batch_idx % batch_step;
-
-  //   //   // record results
-  //   //   // Atomic sum
-  //   //   atomicAdd((SM_check_res + error_smid), diff);
-  //   // }
-  //   // __syncthreads();
-  // }
+    // __syncthreads();
+    // if(thread_idx == 0 && smid == 0){
+    //   *(checking + iter) = clock();
+    //   // printf("checking: %d\n", *(checking + iter));
+    // }
+  }
+  
+  
   __device__ void check_phase_v2(Params const &params, int batch_idx, int thread_idx, int col_idx, int *SM_check_res, int SM_per_batch, int batch_step, int &diff, int &loc, int init_batch_idx){
     
     int M = params.problem_size.m();
@@ -509,9 +484,9 @@ struct GemmBatched {
         // float max = (dA_col_1 > dA_col_r1) ? dA_col_1 : dA_col_r1;
         // float rel_err = abs_d1 / max;
 
-        int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
-        printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d ,error_smid: %d) update(%f, %f) recompute(%f, %f), rel_err: %f\n", 
-                                          (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2, rel_err);
+        // int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
+        // printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d ,error_smid: %d) update(%f, %f) recompute(%f, %f), rel_err: %f\n", 
+        //                                   (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2, rel_err);
         // printf("[col check]error detected (d1 = %.6f, d2 = %.6f, loc = %d) update(%f, %f) recompute(%f, %f), rel_err: %f\n", (float)d1, (float)d2, loc, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2, rel_err);
         diff = 1;
       }
@@ -526,15 +501,15 @@ struct GemmBatched {
 					if(fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
 						counter++;
 						if(counter > 1){
-							printf("[col check]col chksum error, more than one large number. (d1 = %.6f, d2 = %.6f)\n",(float)d1, (float)d2);
+							// printf("[col check]col chksum error, more than one large number. (d1 = %.6f, d2 = %.6f)\n",(float)d1, (float)d2);
 							return;
 						}
 					}
 				}
 
-        int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
-				printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
-                                                  (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
+        // int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
+				// printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
+        //                                           (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
 				// printf("[col check]chk inf error detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
         diff = 1;        
       }
@@ -552,20 +527,20 @@ struct GemmBatched {
         if(std::isinf(*(params.ref_D.data() + start_idx + i * N)) || fabs((float)*(params.ref_D.data() + start_idx + i * N)) > 1e10){
           counter++;
           if(counter > 1){
-            printf("[col check]Multi INFs or Large Number detected in one column.(d1 = %.6f, d2 = %.6f, iter = %d)\n", (float)d1, (float)d2, i);
+            // printf("[col check]Multi INFs or Large Number detected in one column.(d1 = %.6f, d2 = %.6f, iter = %d)\n", (float)d1, (float)d2, i);
             return;
           }
         }
       }
       if(counter == 0){
-        printf("[col chk]No INF or Large Number found.\n");
+        // printf("[col chk]No INF or Large Number found.\n");
         return;
       }
       // printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
       
-      int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
-      printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
-                                      (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
+      // int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
+      // printf("[col check]INF detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
+      //                                 (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
       diff = 1;
     }
     // abs == nan
@@ -583,14 +558,14 @@ struct GemmBatched {
           counter++;
         }
         if(counter > 1){
-          printf("[col check]Multi INF, NAN or Large Number detected in one column. (iter = %d)\n", i);
+          // printf("[col check]Multi INF, NAN or Large Number detected in one column. (iter = %d)\n", i);
           return;
         }
       }
       // printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d) \n", (float)d1, (float)d2, loc);
-      int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
-      printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
-                                      (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
+      // int error_smid = get_error_smid(params, col_idx, loc, SM_per_batch, init_batch_idx, batch_step);
+      // printf("[col check]NAN detected (d1 = %.6f, d2 = %.6f, loc = %d, col_idx: %d, batch: %d, error_smid: %d) \n", 
+      //                                 (float)d1, (float)d2, loc, col_idx, batch_idx, error_smid);
       diff = 1;
     }
     
@@ -923,8 +898,37 @@ struct GemmBatched {
         // __syncthreads();
       }
     // }
-    
+
     #if 1
+    if(if_split_phase == 0){
+      int checksum_SM = n_smid - nSM;
+
+      int check_step = SM_per_batch * batch_step;
+      int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
+      int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step)+ (smid / SM_per_batch) * batch_step;
+      int last_iter_batch = monitored_batched_count % batch_step;
+
+      for(int i = 0; i < check_iter; i += 1){
+        int checked_batch_idx = checked_init_batch_idx + i * check_step;
+        if(checked_batch_idx < monitored_batched_count){
+          int target_sm_offset = 0;
+          int target_smid = (real_smid + SM_per_batch + target_sm_offset) % nSM;
+          
+          int next_matrix_block_idx = 0, next_chk_block_idx = 0;
+          SM_based_schedule_v2(params, threadblock_tile_offset_m, threadblock_tile_offset_n, next_matrix_block_idx, next_chk_block_idx, smid, block_idx, nSM, 1, target_sm_offset);
+          
+          int chksum_iter = checked_batch_idx / checksum_SM;
+          int chksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+
+          int matrix_start_idx = 0, chk_start_idx = 0;
+          curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, 1, thread_idx, checked_batch_idx);
+          check_phase(params, checked_batch_idx, matrix_start_idx, chk_start_idx, SM_check_res, real_smid, target_smid, chksum_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
+        }
+      }
+    }
+    #endif
+    
+    #if 0
     if(if_split_phase == 0){
       // check checksum
       // using Dtype = typename decltype(params.ref_D)::Element;
@@ -980,7 +984,7 @@ struct GemmBatched {
                 // printf("%d Error detected at SM %d by checker SM %d (%d)\n", i, error_smid, real_smid, checked_batch_idx);
                 int checksum_SM = n_smid - nSM;
                 int chksum_iter = checked_batch_idx / checksum_SM;
-                int checksum_smid = ((checked_batch_idx % checksum_SM) + (chksum_iter % checksum_SM)) + nSM;
+                int checksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
                 
                 // int checksum_smid = (checked_batch_idx % (n_smid - nSM)) + nSM;
                 // printf("%d Error detected at SM %d by checker SM %d. Checksum SM %d (%d)\n", i, error_smid, real_smid, checksum_smid, checked_batch_idx);

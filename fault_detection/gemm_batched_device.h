@@ -563,7 +563,7 @@ public:
     if(FIFile.is_open()){
       FIFile.get(flag);
       if(flag == 't'){
-        injection = true;
+        injection = false;
         // printf("Perform Fault Injection.\n");
         
         // // read injected SM and thread
@@ -715,8 +715,13 @@ public:
     // // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
     // int update_smem_size;
 
+    // int update_smem_size = 0;
+    // int warps_per_TB = params_.problem_size.n() / 16;
+    // int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
+
     int update_smem_size = 0;
-    int warps_per_TB = params_.problem_size.n() / 16;
+    int wmma_warps_per_TB = params_.problem_size.n() / 32;
+    int warps_per_TB = 2 * wmma_warps_per_TB;
     int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
 
     // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
@@ -761,8 +766,11 @@ public:
         // cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
         // tensor core pipeline
+        // update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
         update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         
         if(deBug){
           cudaEventRecord(start, stream_colchk);
@@ -773,8 +781,10 @@ public:
         // cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
         
         // tensor core pipeline
-        cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
-        
+        // cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
+        cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -784,15 +794,19 @@ public:
         }
       }
       else{
-        batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
-        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
+        // update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        update_smem_size = batch_per_TB * (8 * 144 + 144 * params_.problem_size.n()) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
         if(deBug){
           cudaEventRecord(start, stream_colchk);
         }
         // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
-        cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, warps_per_TB, monitored_batched_count);
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -852,9 +866,9 @@ public:
     for (int i = 0; i < num_sms; i++) {
         ofs << h_SM_check_res[i];
         if (i != num_sms - 1)
-            ofs << " ";
+            ofs << " ";   // 空格分隔
     }
-    ofs << "\n";
+    ofs << "\n";          // 换行
     free(h_SM_check_res);
 
 

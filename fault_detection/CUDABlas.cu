@@ -1784,7 +1784,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
-  if(if_split_phase == 0) n1 += 2;
+  // batch wise
+  // if(if_split_phase == 0) n1 += 2;
+  // block wise
+  if(if_split_phase == 0) n1 += 8;
   int64_t strideb_check = ldb * n1;
   int64_t stridec_check = ldc * n1;
 
@@ -1831,17 +1834,32 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
     cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
     cublasSetStream(handle_main, stream_main);
 
-    Dtype *chk_vector, *d_chk_vector;
-    size_t size = sizeof(Dtype)* n * 2;
+    // Dtype *chk_vector, *d_chk_vector;
+    // size_t size = sizeof(Dtype)* n * 2;
+    // chk_vector = (Dtype*)malloc(size);
+    // cudaMalloc((void**)&d_chk_vector, size);
+    // for(int r = 0; r < n; r++){
+    //   chk_vector[r] = (Dtype)1;
+    //   chk_vector[n + r] = (Dtype)(r + 1);
+    // }
+    // cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+    // free(chk_vector);
+
+    Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
+    int partition = n / 128;
+    int nb = n / partition;
+    size_t size = sizeof(Dtype)* nb * 1;
     chk_vector = (Dtype*)malloc(size);
     cudaMalloc((void**)&d_chk_vector, size);
-    for(int r = 0; r < n; r++){
-      chk_vector[r] = (Dtype)1;
-      chk_vector[n + r] = (Dtype)(r + 1);
+    for(int r = 0; r < nb; r++){
+      chk_vector[r] = (Dtype)1.f;
     }
-
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-    
+    free(chk_vector);
+
+    size = sizeof(Dtype) * k * 8 * num_batches;
+    cudaMalloc((void**)&dB_rowchk, size);
+
     if constexpr (std::is_same<Dtype, float>::value) {
       cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
                                         &alpha, B, ldb, strideb_check,
@@ -1852,16 +1870,24 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
     else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
       float alpha_bf16 = static_cast<float>(alpha);
       float beta_bf16 = static_cast<float>(beta);
-      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
-                                  &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
-                                  reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
-                                  reinterpret_cast<__nv_bfloat16*>((B+(k*n))), CUDA_R_16BF, ldb, strideb_check,
-                                  num_batches, CUDA_R_32F,                
-                                  CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>((B+(k*n))), CUDA_R_16BF, ldb, strideb_check,
+      //                             num_batches, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // block wise checksum
+      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, k*nb,
+                            reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+                            reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
+                            (partition * num_batches), CUDA_R_32F,                
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
     }
 
     cudaFree(d_chk_vector);
-    free(chk_vector);
+    cudaFree(dB_rowchk);
   }
   
   // printf("B after:\n");
@@ -2045,7 +2071,10 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
-  if(if_split_phase == 0) n1 += 2;
+  // batch wise
+  // if(if_split_phase == 0) n1 += 2;
+  // block wise 
+  if(if_split_phase == 0) n1 += 8;
   int64_t strideb_check = ldb * n1;
   int64_t stridec_check = ldc * n1;
 
@@ -2092,17 +2121,28 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cublasSetStream(handle_main, stream_main);
 
     Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
-    size_t size = sizeof(Dtype)* n * 2;
+
+    // size_t size = sizeof(Dtype)* n * 2;
+    // chk_vector = (Dtype*)malloc(size);
+    // cudaMalloc((void**)&d_chk_vector, size);
+    // for(int r = 0; r < n; r++){
+    //   chk_vector[r] = (Dtype)1;
+    //   chk_vector[n + r] = (Dtype)(r + 1);
+    //   // printf("%f, %f\n", static_cast<float>(chk_vector[r]), static_cast<float>(chk_vector[n + r]));
+    // }
+    // cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+
+    int partition = n / 128;
+    int nb = n / partition;
+    size_t size = sizeof(Dtype)* nb * 1;
     chk_vector = (Dtype*)malloc(size);
     cudaMalloc((void**)&d_chk_vector, size);
-    for(int r = 0; r < n; r++){
-      chk_vector[r] = (Dtype)1;
-      chk_vector[n + r] = (Dtype)(r + 1);
-      // printf("%f, %f\n", static_cast<float>(chk_vector[r]), static_cast<float>(chk_vector[n + r]));
+    for(int r = 0; r < nb; r++){
+      chk_vector[r] = (Dtype)1.f;
     }
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-
-    size = sizeof(Dtype) * k * 2 * num_batches;
+    
+    size = sizeof(Dtype) * k * 8 * num_batches;
     cudaMalloc((void**)&dB_rowchk, size);
     
     if constexpr (std::is_same<Dtype, float>::value) {
@@ -2111,27 +2151,45 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       //                                   d_chk_vector, n, 0, &beta,
       //                                   (B+(k*n)), ldb, strideb_check,
       //                                   num_batches);
-      cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
-                                        &alpha, B, ldb, strideb_check,
-                                        d_chk_vector, n, 0, &beta,
-                                        dB_rowchk, ldb, (k * 2),
-                                        num_batches);
-      
+      // batch wise checksum
+      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+      //                                   &alpha, B, ldb, strideb_check,
+      //                                   d_chk_vector, n, 0, &beta,
+      //                                   dB_rowchk, ldb, (k * 2),
+      //                                   num_batches);
+      // block wise checksum
+      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, n,
+      //                                   &alpha, B, ldb, strideb_check,
+      //                                   d_chk_vector, n, 0, &beta,
+      //                                   dB_rowchk, ldb, (k * 2),
+      //                                   num_batches);      
       // copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
     }
     else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
       float alpha_bf16 = static_cast<float>(alpha);
       float beta_bf16 = static_cast<float>(beta);
-      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
-                                  &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
-                                  reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
-                                  reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, (k * 2),
-                                  num_batches, CUDA_R_32F,                
-                                  CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // batch wise checksum
+      // cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, (k * 2),
+      //                             num_batches, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+
+      // block wise checksum
+      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, k*nb,
+                            reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+                            reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
+                            (partition * num_batches), CUDA_R_32F,                
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP);
       // printf("dB_rowchk after:\n");
-      // outputChk(dB_rowchk, num_batches, ldb, (k * 2), k, 2);
+      // outputChk(dB_rowchk, (num_batches * partition), ldb, (k * 1), k, 1);
     }
-    copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
+    // batch wise
+    // copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
+    // batch wise
+    copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
 
     free(chk_vector);                                  
     cudaFree(d_chk_vector);
