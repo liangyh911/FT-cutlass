@@ -398,12 +398,14 @@ struct Gemm {
     // }
     
     float updated_chksum = static_cast<float>(*(params.ref_D.data() + chk_start_idx));
+    float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+    float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+    
     if(fabs(recomputed_chksum - updated_chksum) > (float)1){
+    //  if(rel_err > 0.01){
       diff = 1;
-      float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
-      float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
-      // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
-      //         target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+      printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+              target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
     }
     // __syncthreads();
     // if(thread_idx == 0 && smid == 0){
@@ -413,8 +415,8 @@ struct Gemm {
     // Atomic sum
     if(diff != 0){
       // printf("Difference detected at SM %d. Reduced Sum: %d\n", smid, *(SM_check_res+smid));
-      printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d)\n",
-              target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx);
+      // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d)\n",
+      //         target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx);
       atomicAdd((SM_check_res + smid), diff);
       atomicAdd((SM_check_res + target_smid), diff);
       atomicAdd((SM_check_res + chksum_smid), diff);

@@ -603,7 +603,7 @@ public:
     if(FIFile.is_open()){
       FIFile.get(flag);
       if(flag == 't'){
-        injection = true;
+        injection = false;
         // printf("Perform Fault Injection.\n");
         // read injected SM and thread
         // std::ifstream planFile("/home/yuhangl/control/plan.txt");

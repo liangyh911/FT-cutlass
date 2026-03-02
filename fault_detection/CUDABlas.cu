@@ -1644,6 +1644,19 @@ __global__ void copy_batched_matrix(Dtype *src, Dtype *dst, int64_t rows, int64_
   }
 }
 
+template <typename Dtype>
+__global__ void copy_batched_matrix_f32_to_bf16(float *src, Dtype *dst, int64_t rows, int64_t cols, int64_t strideSrc, int64_t strideDst){
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int batch = blockIdx.z;
+
+  if (row < rows && col < cols) {
+    int idx_src = batch * strideSrc + row * cols + col;
+    int idx_dst = batch * strideDst + row * cols + col;
+    dst[idx_dst] = static_cast<Dtype>(src[idx_src]);
+  }
+}
+
 void recordTime(std::string FP, float time, bool DEBUG){
   std::ofstream outFile(FP, std::ios::app);
   if(!outFile){
@@ -1845,7 +1858,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
     // cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
     // free(chk_vector);
 
-    Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
+    Dtype *chk_vector, *d_chk_vector;
     int partition = n / 128;
     int nb = n / partition;
     size_t size = sizeof(Dtype)* nb * 1;
@@ -1857,6 +1870,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
     free(chk_vector);
 
+    Dtype *dB_rowchk;
     size = sizeof(Dtype) * k * 8 * num_batches;
     cudaMalloc((void**)&dB_rowchk, size);
 
@@ -1876,16 +1890,25 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
       //                             reinterpret_cast<__nv_bfloat16*>((B+(k*n))), CUDA_R_16BF, ldb, strideb_check,
       //                             num_batches, CUDA_R_32F,                
       //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-      // block wise checksum
+      // // block wise checksum
       cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, k*nb,
                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
-                            reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
+                            dB_rowchk, CUDA_R_16BF, ldb, k,
                             (partition * num_batches), CUDA_R_32F,                
                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-      copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
-    }
+      copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16), 0, stream_main>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
 
+      // for(int batch = 0; batch < num_batches; batch++){
+      //   cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>((B + batch*strideb_check)), CUDA_R_16BF, ldb, (k*nb),
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>(B + batch*strideb_check + (k*n)), CUDA_R_16BF, ldb, k,
+      //                             partition, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // }
+    }
+    cudaStreamSynchronize(stream_main);
     cudaFree(d_chk_vector);
     cudaFree(dB_rowchk);
   }
@@ -2146,11 +2169,6 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cudaMalloc((void**)&dB_rowchk, size);
     
     if constexpr (std::is_same<Dtype, float>::value) {
-      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
-      //                                   &alpha, B, ldb, strideb_check,
-      //                                   d_chk_vector, n, 0, &beta,
-      //                                   (B+(k*n)), ldb, strideb_check,
-      //                                   num_batches);
       // batch wise checksum
       // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
       //                                   &alpha, B, ldb, strideb_check,
@@ -2158,11 +2176,11 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       //                                   dB_rowchk, ldb, (k * 2),
       //                                   num_batches);
       // block wise checksum
-      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, n,
-      //                                   &alpha, B, ldb, strideb_check,
-      //                                   d_chk_vector, n, 0, &beta,
-      //                                   dB_rowchk, ldb, (k * 2),
-      //                                   num_batches);      
+      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      //                                   &alpha_bf16, reinterpret_cast<float*>(b_), ldb, (k*nb),
+      //                                   reinterpret_cast<float*>(d_chk_vector), nb, 0, &beta_bf16,
+      //                                   reinterpret_cast<float*>(dB_rowchk), ldb, k,
+      //                                   (partition * num_batches));      
       // copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
     }
     else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
@@ -2178,11 +2196,12 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
 
       // block wise checksum
       cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
-                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, k*nb,
+                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, (k*nb),
                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
                             reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
                             (partition * num_batches), CUDA_R_32F,                
                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      
       // printf("dB_rowchk after:\n");
       // outputChk(dB_rowchk, (num_batches * partition), ldb, (k * 1), k, 1);
     }
@@ -2191,6 +2210,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     // batch wise
     copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
 
+    cudaStreamSynchronize(stream_main);
+    
     free(chk_vector);                                  
     cudaFree(d_chk_vector);
     cudaFree(dB_rowchk);

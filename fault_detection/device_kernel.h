@@ -579,6 +579,118 @@ void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_
   } 
 }
 
+template <typename Operator, typename Dtype>
+CUTLASS_GLOBAL
+void update_checksum_v3_2(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int monitored_batched_count){
+  // get SM id
+  unsigned int real_smid;
+  asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
+  if(real_smid < matrix_SM) return;
+  
+  // if(threadIdx.x == 0) {
+  //   printf("update smid: %d, gird size(%d, %d, %d), block size(%d, %d, %d), blk_idx: %d\n", 
+  //           real_smid, gridDim.x, gridDim.y, gridDim.z, blockDim.x, blockDim.y, blockDim.z, blockIdx.x);
+  // }
+
+  // return gemm SM (96)
+  // int matrix_SM = 128;
+  int chk_SM = num_sms - matrix_SM;
+  int tid = threadIdx.x;
+
+  extern __shared__ Dtype SharedMem[];
+  
+  // int thread_idx = threadIdx.x;
+  int M = params.problem_size.m();
+  int K = params.problem_size.k();
+  int N = params.problem_size.n();
+
+  int mk = M * K;
+  int mn = M * N;
+  // int m1k =(M + 1) * K;
+  int m1n = (M + 1) * N;
+  
+  // int TB_per_batch = (batch_per_TB > 6) ? 6 : batch_per_TB;
+  // int TB_per_batch = 1;
+
+  int chk_step = chk_SM * TB_per_batch;
+  int chk_iter = (int)(ceil((double)params.batch_count / (double)chk_step));
+  int local_smid = real_smid - matrix_SM;
+  int checksum_stride = 8 * K;
+
+  int col_idx = tid;
+  int load_iter = (int)(ceil((double)(checksum_stride)/ (double)blockDim.x));
+  
+  int thread_group_idx = tid / N;
+  int local_col_idx = tid % N;
+  // int local_col_dim = blockDim.x / batch_per_TB;
+
+  int init_batch = (local_smid * TB_per_batch) + thread_group_idx;
+  int start_bid = local_smid * TB_per_batch;
+
+
+  int shared_offset = thread_group_idx * checksum_stride;
+
+  for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
+    // load checksum to share memroy
+    // int load_init_batch_idx = local_smid + b_iter * chk_step; 
+    int load_init_batch_idx = start_bid + b_iter * chk_step; 
+    for(int t = 0; t < TB_per_batch; t++){
+      int load_batch_idx = load_init_batch_idx + t;
+      if(load_batch_idx < monitored_batched_count){
+        int load_offset = t * checksum_stride;
+        int idx_a = (load_batch_idx * params.stride_A) + mk;
+        for(int i = 0; i < load_iter; i++){
+          int idx = col_idx + blockDim.x * i;
+          if(idx < checksum_stride){
+            SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
+          }
+        }
+      }
+      // if(load_batch_idx < params.batch_count && col_idx < K){
+      //   int load_offset = t * checksum_stride;
+      //   int idx_a = (load_batch_idx * params.stride_A) + mk;
+      //   int idx = col_idx + K;
+      //   SharedMem[col_idx + load_offset] = *(params.ref_A.data() + idx_a + col_idx);
+      //   SharedMem[idx + load_offset] = *(params.ref_A.data() + idx_a + idx);
+      // }
+    }
+    __syncthreads();
+    
+    // update checksum
+    int batch_idx = init_batch + b_iter * chk_step; 
+    if(batch_idx < monitored_batched_count && thread_group_idx < TB_per_batch){
+      // Dtype accum1 = static_cast<Dtype>(0.f);
+      // Dtype accum2 = static_cast<Dtype>(0.f);
+      // float accum2 = 0.f;
+      int idx_b = (batch_idx * params.stride_B) + local_col_idx;
+
+      int offset_D = batch_idx * params.stride_D;
+      // int idx_chk_1 = (offset_D + mn) + local_col_idx;
+      // int idx_chk_2 = (offset_D + m1n) + local_col_idx;      
+      int weighted_offset = K + shared_offset;
+      
+      for(int i = 0; i < 8; i++){
+        float accum1 = 0.f;
+        #pragma unroll 128
+        for(int k = 0; k < K; k++){  
+          Dtype a1 = SharedMem[k + (shared_offset + K * i)];
+          // Dtype a2 = SharedMem[k + weighted_offset];
+
+          Dtype b = *(params.ref_B.data() + idx_b + k * N);
+          
+          accum1 += static_cast<float>(a1 * b);
+          // accum2 += static_cast<float>(a2 * b);
+        }
+        int idx_chk = offset_D + (M + i) * N + local_col_idx;
+        *(params.ref_D.data() + idx_chk) = static_cast<Dtype>(accum1);
+        // *(params.ref_D.data() + idx_chk_1) = static_cast<Dtype>(accum1);
+        // *(params.ref_D.data() + idx_chk_2) = static_cast<Dtype>(accum2);
+      }
+    }
+    __syncthreads();
+  } 
+}
+
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 __launch_bounds__(1024) 
 CUTLASS_GLOBAL
@@ -611,12 +723,12 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
   // auto tile_group = cooperative_groups::tiled_partition<256>(block);
   // cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
 
-  // auto group = cooperative_groups::this_thread_block();
-  // constexpr auto scope = cuda::thread_scope_block;
-  // __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
-  // auto pipeline = cuda::make_pipeline(group, &shared_state);
+  auto group = cooperative_groups::this_thread_block();
+  constexpr auto scope = cuda::thread_scope_block;
+  __shared__ cuda::pipeline_shared_state<scope, num_stages> shared_state;
+  auto pipeline = cuda::make_pipeline(group, &shared_state);
 
-  cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
+  // cuda::pipeline<cuda::thread_scope_thread> pipeline = cuda::make_pipeline();
 
   int mk = M * K;
   int mn = M * N;
