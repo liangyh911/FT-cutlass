@@ -248,11 +248,7 @@ struct GemmBatched {
       *(params.ref_D.data() + idx_chk) = accum;
     }
   }
-
-  __device__ int get_checksum_smid(int chk_blk, int grid_tiled_shape_m, int matrix_shape_m, int matrix_SM, int chksum_SM){
-    
-  }
-
+  
   __device__ void SM_based_schedule_v2(Params const &params, int threadblock_tile_offset_m, int threadblock_tile_offset_n,
                                   int &tmp_matrix_blk, int &tmp_chk_blk,
                                   unsigned int smid, int block_idx, int matrix_SM, int checksumblk_per_col, int offset){
@@ -725,8 +721,43 @@ struct GemmBatched {
         // }
       }
     // }
-    
+
     #if 1
+    if(if_split_phase == 1){
+      int checksum_SM = n_smid - nSM;
+
+      int check_step = batch_step;
+      int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
+      int checked_init_batch_idx = ((init_batch_idx + 1) % check_step);
+
+      // int block_offset_n = (params.problem_size.n() < blockDim.x) ? params.problem_size.n() : blockDim.x;
+
+      for(int i = 0; i < check_iter; i += 1){
+        int checked_batch_idx = checked_init_batch_idx + i * check_step;
+        if(checked_batch_idx < monitored_batched_count){
+          int target_sm_offset = 0;
+          int target_smid = (real_smid + SM_per_batch + target_sm_offset) % nSM;
+
+          int chksum_iter = checked_batch_idx / checksum_SM;
+          int chksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+          
+          int next_matrix_block_idx = (block_idx + target_sm_offset) % SM_per_batch;
+          int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
+          int MatrixRowBlkOffset = next_matrix_block_idx % params.grid_tiled_shape.m();
+          int matrix_start_idx = (params.stride_D * checked_batch_idx) + (MatrixColBlkOffset * blockDim.x) + (MatrixRowBlkOffset * 128) * params.problem_size.n() + thread_idx;
+
+          int ChkColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m(); 
+          int ChkRowBlkOffset = params.grid_tiled_shape.m();
+          int chk_start_idx = (params.stride_D * checked_batch_idx) + (ChkColBlkOffset * blockDim.x) + (ChkRowBlkOffset * 128 + 1 * MatrixRowBlkOffset) * params.problem_size.n() + thread_idx;
+          int next_chk_block_idx = ChkRowBlkOffset + ChkColBlkOffset * params.grid_tiled_shape.m();
+        
+          check_phase(params, checked_batch_idx, matrix_start_idx, chk_start_idx, SM_check_res, real_smid, target_smid, chksum_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
+        }
+      }
+    }
+    #endif
+    
+    #if 0
     if(if_split_phase == 1){
       int checksum_SM = n_smid - nSM;
 
