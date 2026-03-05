@@ -603,7 +603,7 @@ public:
     if(FIFile.is_open()){
       FIFile.get(flag);
       if(flag == 't'){
-        injection = true;
+        injection = false;
         // printf("Perform Fault Injection.\n");
         // read injected SM and thread
         // std::ifstream planFile("/home/yuhangl/control/plan.txt");
@@ -695,48 +695,48 @@ public:
         // Absolute Path
         // fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
         // Relative Path
-        fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
-        std::ifstream stepFile(StepPath);
-        if (stepFile.is_open()) {
-          std::string line;
-          if (std::getline(stepFile, line)) {
-            // std::cout << line << std::endl;
-            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
-            int step = std::stoi(line);
-            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-            ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
+        // fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
+        // std::ifstream stepFile(StepPath);
+        // if (stepFile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(stepFile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     int step = std::stoi(line);
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
 
-            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
-            // ofs << std::endl << line << " ";
-            // std::cout << std::endl << line << " ";
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << std::endl << line << " ";
+        //     // std::cout << std::endl << line << " ";
 
-            ofs.close();
-          } 
-        }
-        stepFile.close();
+        //     ofs.close();
+        //   } 
+        // }
+        // stepFile.close();
 
         // current component
         // Absolute Path
         // fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
         // Relative Path
-        fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
-        std::ifstream compfile(componentPath);
-        if (compfile.is_open()) {
-          std::string line;
-          if (std::getline(compfile, line)) {
-            // std::cout << line << std::endl;
-            // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
-            std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-            ofs.write(line.data(), 2);
+        // fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
+        // std::ifstream compfile(componentPath);
+        // if (compfile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(compfile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(line.data(), 2);
             
-            // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
-            // ofs << line << " ";
-            // std::cout << line << " ";
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << line << " ";
+        //     // std::cout << line << " ";
 
-            ofs.close();
-          } 
-        }
-        compfile.close();
+        //     ofs.close();
+        //   } 
+        // }
+        // compfile.close();
       }
       // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << " " << "faulty_bit = " << faulty_bit << std::endl;
     }
