@@ -404,8 +404,8 @@ struct Gemm {
     if(fabs(recomputed_chksum - updated_chksum) > (float)1){
     //  if(rel_err > 0.01){
       diff = 1;
-      printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
-              target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+      // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+      //         target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
     }
     // __syncthreads();
     // if(thread_idx == 0 && smid == 0){
@@ -1052,6 +1052,14 @@ struct Gemm {
             check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, target_smid, chksum_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
             // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, target_smid, chksum_smid);
           }
+
+          // // current iteration
+          // if(next_matrix_block_idx < matrix_block_count){
+          //   // check current iteration
+          //   curr_iter_chk_offsets(params, matrix_start_idx, chk_start_idx, next_matrix_block_idx, next_chk_block_idx, checksumblk_per_col, thread_idx);
+          //   // check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, ti, recompute, compare, checking, smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
+          //   check_phase(params, matrix_start_idx, chk_start_idx, SM_check_res, smid, target_smid, chksum_smid, thread_idx, next_matrix_block_idx, next_chk_block_idx, block_idx);
+          // }
         }
       // }
     }

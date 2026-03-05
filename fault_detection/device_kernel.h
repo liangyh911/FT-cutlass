@@ -103,7 +103,7 @@ void Kernel(typename Operator::Params params) {
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_Batched(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int matrix_SM, int monitored_batched_count,
+            int if_split_phase, int *SM_check_res, int matrix_SM, int batch_per_TB, int monitored_batched_count,
             int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
@@ -115,7 +115,7 @@ void Kernel_Batched(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM, monitored_batched_count,
+  op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM, batch_per_TB, monitored_batched_count,
      faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, counter, buf
     // all_start, compute, finding, recompute, compare, checking
   );
@@ -783,7 +783,8 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
     // load checksum to share memroy
-    int batch_idx = init_batch + b_iter * chk_step; 
+    // int batch_idx = init_batch + b_iter * chk_step;
+    int batch_idx = ((init_batch + b_iter) % chk_step) + b_iter * chk_step; 
     // update checksum
     // if(batch_idx < monitored_batched_count && warp_group_idx < TB_per_batch){
     if(batch_idx < monitored_batched_count){
@@ -1595,7 +1596,8 @@ void update_checksum_T_wmma_v9_3(typename Operator::Params params, int matrix_SM
   unsigned long long init_clock, t;
 
   for(int b_iter = 0; b_iter < chk_iter; b_iter += 1){
-    int batch_idx = local_smid + b_iter * chk_step;
+    // int batch_idx = local_smid + b_iter * chk_step;
+    int batch_idx = ((local_smid + b_iter) % chk_step) + b_iter * chk_step;
     // if(batch_idx < params.batch_count){
     if(batch_idx < monitored_batched_count){                    
       int idx_a_1 = (batch_idx * params.stride_A) + mk;

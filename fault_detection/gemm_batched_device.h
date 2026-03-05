@@ -59,6 +59,12 @@ void check(T result, char const *const func, const char *const file, int const l
     }
 }
 
+#include <cmath>
+#include <string>
+#include <fstream>
+#include <filesystem>
+namespace fs = std::filesystem;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -721,14 +727,15 @@ public:
 
     int update_smem_size = 0;
     int wmma_warps_per_TB = params_.problem_size.n() / 32;
-    int warps_per_TB = 2 * wmma_warps_per_TB;
+    // int warps_per_TB = 2 * wmma_warps_per_TB;
+    int warps_per_TB = (wmma_warps_per_TB < 16)? 2 * wmma_warps_per_TB : wmma_warps_per_TB;
     int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
 
     // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
     
     // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf};
     int monitored_batched_count = params_.batch_count;
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &monitored_batched_count, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf};
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &batch_per_TB, &monitored_batched_count, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf};
     
     // printf("SM: count: %d, m: %d, n: %d, k: %d, batch_per_TB: %d\n", num_sms, params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
@@ -767,10 +774,11 @@ public:
         // update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
         // cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
-        // tensor core pipeline
+        // tensor core pipeline batch wise check
         // update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
         // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
+        // tensor core pipeline block wise check
         update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
         cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         

@@ -401,14 +401,14 @@ struct GemmBatched {
       float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
       float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
 
-      if(fabs(recomputed_chksum - updated_chksum) > (float)3 && rel_err > 0.07){
+      if(fabs(recomputed_chksum - updated_chksum) > (float)1e3){
       // if(rel_err > 0.01){
       // float rtol = 0.05f; // 5% 相对容忍
       // float atol = 1.0f;  // 绝对容忍（给正负抵消留出的底线）
       // if (fabs(recomputed_chksum - updated_chksum) > (atol + rtol * fabs(recomputed_chksum))){
         diff = 1;
-        printf("tid: %d, Batch %d, Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
-                thread_idx, checked_batch_idx, target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+        // printf("tid: %d, Batch %d, Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
+        //         thread_idx, checked_batch_idx, target_smid, next_matrix_block_idx, smid, block_idx, chksum_smid, next_chk_block_idx, recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
       }
       // __syncthreads();
       // if(thread_idx == 0 && smid == 0){
@@ -447,7 +447,7 @@ struct GemmBatched {
     int K = params.problem_size.k();
     int N = params.problem_size.n();
     
-    float E = 10;
+    float E = 1e5;
     // int loc = -1;
     float MAX = 0;
     // int diff = 0;
@@ -480,8 +480,8 @@ struct GemmBatched {
 
     // printf("tid: %d, batch_idx: %d, row_idx: %d, updated: (%f, %f), recomputed: (%f, %f)\n", thread_idx, batch_idx, row_idx, dA_col_1, dA_col_2, dA_col_r1, dA_col_r2);
     
-    // if(abs_d1 > E){
-    if(rel_err > 0.01){
+    if(abs_d1 > E){
+    // if(rel_err > 0.01){
       if(!std::isinf(d2)){
         loc = round(d2 / d1) - 1;
         // float max = (dA_col_1 > dA_col_r1) ? dA_col_1 : dA_col_r1;
@@ -643,7 +643,7 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int nSM, int monitored_batched_count,
+                    int if_split_phase, int *SM_check_res, int nSM, int batch_per_TB, int monitored_batched_count,
                     int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf) {
 
     // get SM id
@@ -677,6 +677,11 @@ struct GemmBatched {
     // if(threadIdx.x == 0) printf("SM_per_batch: %d, batch_step: %d, batch_iter: %d\n", SM_per_batch, batch_step, batch_iter);
     // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.problem_size.m(), params.problem_size.n());
     
+    // if(threadIdx.x==0){
+    //     printf("stride_D=%d\n", params.stride_D);
+    //     printf("N=%d\n", params.problem_size.n());
+    // }
+
     int checksumblk_per_col = 0;
     // int matrix_SM = SM_per_batch;
     int matrix_shape_m = params.grid_tiled_shape.m();
@@ -834,13 +839,15 @@ struct GemmBatched {
             // index of 1st faulty element
             int fault_m = faulty_elements[i] % 8;
             int fault_n = faulty_elements[i] / 8;
-            int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-            force_bit_one_bf16((params.ref_D.data()+ idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+            if((mma_n + fault_n) < params.problem_size.n() ){
+              int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
 
-            // index of 2nd faulty element (gap is 64)
-            fault_m += 8;
-            idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-            force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+              // index of 2nd faulty element (gap is 64)
+              fault_m += 8;
+              idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+            }
           }
         }
         if(real_smid != faulty_smid){
@@ -918,8 +925,9 @@ struct GemmBatched {
           int target_sm_offset = i;
           int target_smid = ((local_smid + target_sm_offset) % SM_per_batch + (checked_SM_group_idx * SM_per_batch)) % nSM;
 
-          int chksum_iter = checked_batch_idx / checksum_SM;
-          int chksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+          int checked_batch_group_idx = checked_batch_idx / batch_per_TB;
+          int chksum_offset = checked_batch_group_idx / checksum_SM;
+          int chksum_smid = ((checked_batch_group_idx + chksum_offset) % checksum_SM) + nSM;
 
           int next_matrix_block_idx = (block_idx + target_sm_offset) % SM_per_batch;
           int MatrixColBlkOffset = next_matrix_block_idx / params.grid_tiled_shape.m();
@@ -992,8 +1000,12 @@ struct GemmBatched {
       
                 // printf("%d Error detected at SM %d by checker SM %d (%d)\n", i, error_smid, real_smid, checked_batch_idx);
                 int checksum_SM = n_smid - nSM;
-                int chksum_iter = checked_batch_idx / checksum_SM;
-                int checksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+                // int chksum_iter = checked_batch_idx / checksum_SM;
+                // int checksum_smid = ((checked_batch_idx + chksum_iter) % checksum_SM) + nSM;
+
+                int checked_batch_group_idx = checked_batch_idx / batch_per_TB;
+                int chksum_offset = checked_batch_group_idx / checksum_SM;
+                int checksum_smid = ((checked_batch_group_idx + chksum_offset) % checksum_SM) + nSM;
                 
                 // int checksum_smid = (checked_batch_idx % (n_smid - nSM)) + nSM;
                 // printf("%d Error detected at SM %d by checker SM %d. Checksum SM %d (%d)\n", i, error_smid, real_smid, checksum_smid, checked_batch_idx);
