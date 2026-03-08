@@ -655,7 +655,7 @@ struct GemmBatched {
     
     // int nSM = 128;
     // return update checksum SM
-    if(real_smid > (nSM - 1)) return;
+    // if(real_smid > (nSM - 1)) return;
     
     // if(threadIdx.x == 0) {
     //   printf("gemm smid: %d\n", real_smid);
@@ -709,11 +709,12 @@ struct GemmBatched {
     // if(real_smid < (nSM - 1)){
       // for matrix
       for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
+        if(real_smid < nSM) {
         batch_idx = init_batch_idx + b_iter * batch_step;
         int local_matrix_idx = smid;
         block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
         block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
-
+        
         if(batch_idx < params.batch_count){
           cutlass::MatrixCoord tb_offset_A{
             threadblock_tile_offset_m * Mma::Shape::kM,
@@ -850,13 +851,16 @@ struct GemmBatched {
             }
           }
         }
-        if(real_smid != faulty_smid){
-          int wait_clock = 0;
-          while(wait_clock < 10000000){
-            wait_clock = wait_clock + 1;
-          }
+         __syncthreads();
         }
-        __syncthreads();
+        // if(real_smid != faulty_smid){
+        //   int wait_clock = 0;
+        //   while(wait_clock < 10000000){
+        //     wait_clock = wait_clock + 1;
+        //   }
+        // }
+       
+        cooperative_groups::this_grid().sync();
 
         // if(real_smid == faulty_smid && (thread_idx == faulty_tid_1)){
         //   // printf("batched injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
@@ -910,7 +914,7 @@ struct GemmBatched {
     // }
 
     #if 1
-    if(if_split_phase == 0){
+    if(if_split_phase == 0 && real_smid < nSM){
       int checksum_SM = n_smid - nSM;
 
       int check_step = batch_step;
@@ -946,7 +950,7 @@ struct GemmBatched {
     #endif
     
     #if 0
-    if(if_split_phase == 0){
+    if(if_split_phase == 0 && real_smid < nSM){
       // check checksum
       // using Dtype = typename decltype(params.ref_D)::Element;
       // cooperative_groups::this_grid().sync();

@@ -791,9 +791,9 @@ public:
         // cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
         
         // tensor core pipeline
-        // cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+        // cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
-        cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+        cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, monitored_batched_count,num_sms);
 
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
@@ -820,8 +820,8 @@ public:
         }
         // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
         // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
-        // cutlass::update_checksum_v3_2<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
-        cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, warps_per_TB, monitored_batched_count);
+        // cutlass::update_checksum_v3_2<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, batch_per_TB, num_sms, warps_per_TB, monitored_batched_count);
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -831,6 +831,8 @@ public:
         }
       }
     }
+
+    cudaDeviceSynchronize();
 
     // redirecte stdout
     // int saved_stdout_fd = dup(fileno(stdout));

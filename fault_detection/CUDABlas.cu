@@ -1657,6 +1657,31 @@ __global__ void copy_batched_matrix_f32_to_bf16(float *src, Dtype *dst, int64_t 
   }
 }
 
+
+template <typename Element>
+__global__ void encode_row_checksum_multi(Element *A, int m, int k, int partition, int b_idx, int stride, int lda, float *chk_vector){
+  int n = 1;
+  int k_per_partion = k / partition;
+
+  // encode row chksum - column major
+  for(int p = 0; p < partition; p++){
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = float(0.0f);
+        for(int i = 0; i < k_per_partion; i++){
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
+          float b = chk_vector[i + c * k_per_partion];
+          sum += a * b;
+        }
+        // int idx = (k + p) + (c * lda) + (b_idx * stride);
+        int idx = (lda * (k + p)) + (r + c * m + (b_idx * stride));
+        A[idx] = static_cast<Element>(sum);
+      }
+    }
+  }
+  free(chk_vector);
+}
+
 void recordTime(std::string FP, float time, bool DEBUG){
   std::ofstream outFile(FP, std::ios::app);
   if(!outFile){
@@ -1665,6 +1690,47 @@ void recordTime(std::string FP, float time, bool DEBUG){
   }
   outFile << time << std::endl;
   if(DEBUG) printf("Data appended to the file successfully.\n");
+}
+
+template<typename T> 
+cudaError_t strided_batched_gemm_nn_reference_T(
+  int m,
+  int n,
+  int k,
+  T alpha,
+  T *A, 
+  int lda,
+  int64_t batch_stride_A,
+  T *B, 
+  int ldb,
+  int64_t batch_stride_B,
+  T *C, 
+  int ldc,
+  int64_t batch_stride_C,
+  T beta,
+  int batch_count) {
+  /*
+  strided batched gemm NN
+  */
+  
+  cudaError_t result = cudaSuccess;
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          // T a = A[batch_idx * batch_stride_A + k_idx * lda + m_idx];
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + m_idx * lda + k_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);
+          accum += static_cast<float>(alpha * a * b);
+        }
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = static_cast<T>(accum);
+      }
+    }
+  }
+
+  return result;
 }
 
 template<typename T> 
@@ -1693,17 +1759,20 @@ cudaError_t strided_batched_gemm_nn_reference(
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
     for (int n_idx = 0; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
-        T accum = beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
         for (int k_idx = 0; k_idx < k; k_idx++) {
-          accum += alpha 
-            * A[batch_idx * batch_stride_A + k_idx * lda + m_idx]
-            * B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + k_idx * lda + m_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);  
+          accum += static_cast<float>(alpha * a * b);
+
+          // if(batch_idx == 1 && m_idx == 71 && n_idx == 1025){
+          //   printf("%f %f %f,\n", a, b, accum);
+          // }
         }
-        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = static_cast<T>(accum);
       }
     }
   }
-
   return result;
 }
 
@@ -1713,14 +1782,147 @@ bool valid( int m, int n, int k,
             int ldc, long long int batch_stride_C, int batch_count){
   bool correct = true;
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
-    for (int n_idx = 0; n_idx < n; n_idx++) {
+    for (int n_idx = 1024; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
           float c = (float)C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           float ref_c = (float)ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
-          if(fabs(c - ref_c) > 1){
+          if(c != ref_c){
+          // float max = (c > ref_c) ? c : ref_c;
+          // float rel_err = fabs(c - ref_c) / max;
+          // if(rel_err > 0.01){
             printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
             correct = false;
           }
+      }
+    }
+  }
+  return correct;
+}
+
+template <typename Element>
+void cpu_encode_row_checksum_multi(Element *A, float *h_row_chk, int m, int k, int partition, int b_idx, int stride, int lda){
+  int n = 1;
+  int k_per_partion = k / partition;
+
+  // init checksum vector
+  float *chk_vector;
+  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * n);
+  for(int r = 0; r < k_per_partion; r++){
+    chk_vector[r] = float(1);
+    // chk_vector[k_per_partion + r] = float(r + 1);
+  }
+
+  // encode row chksum - column major
+  for(int p = 0; p < partition; p++){
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = float(0.0f);
+        for(int i = 0; i < k_per_partion; i++){
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
+          float b = chk_vector[i + c * k_per_partion];
+          sum += a * b;
+        }
+        // int idx = (lda * (k + p)) + (r + c * m + (b_idx * stride));
+        // A[idx] = static_cast<Element>(sum);
+        int idx = (lda * p) + (r + c * m) + (b_idx * (8 * m));
+        h_row_chk[idx] = sum;
+      }
+    }
+  }
+  free(chk_vector);
+}
+
+template<typename T>
+void cpu_update(int m, int n, int k, T *A, float *hB_rowchk, float *hC_rowchk, int stride_a, int stride_B_chk,int stride_C_chk, int batch_count){
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = 0;
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          float a = static_cast<float>(A[batch_idx * stride_a + k_idx * m + m_idx]);
+          float b = static_cast<float>(hB_rowchk[batch_idx * stride_B_chk + n_idx * k + k_idx]);  
+          accum += static_cast<float>(a * b);
+
+          if(batch_idx == 1 && m_idx == 71 && n_idx == 1){
+            printf("%f %f %f,\n", a, b, accum);
+          }
+        }
+        hC_rowchk[batch_idx * stride_C_chk + n_idx * m + m_idx] = static_cast<T>(accum);
+      }
+    }
+  }
+}
+
+template<typename T> 
+cudaError_t f32_strided_batched_gemm_nn_reference(
+  int m,
+  int n,
+  int k,
+  T alpha,
+  T *A, 
+  int lda,
+  int64_t batch_stride_A,
+  T *B, 
+  int ldb,
+  int64_t batch_stride_B,
+  float *C, 
+  int ldc,
+  int64_t batch_stride_C,
+  T beta,
+  int batch_count) {
+  /*
+  strided batched gemm NN
+  */
+  
+  cudaError_t result = cudaSuccess;
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + k_idx * lda + m_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);  
+          accum += static_cast<float>(alpha * a * b);
+
+          // if(batch_idx == 1 && m_idx == 71 && n_idx == 1025){
+          //   printf("%f %f %f,\n", a, b, accum);
+          // }
+        }
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
+      }
+    }
+  }
+  return result;
+}
+
+
+template<typename T>
+bool cpu_recompute(int m, int n, int k, T *A, int ld, long long int batch_stride, int batch_count, int partition){
+  bool correct = true;
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for(int p = 0; p < partition; p++){
+      for (int row_idx = 0; row_idx < m; row_idx++){
+        float recomputed_chksum = 0;
+        for(int i = 0; i < 128; i++){
+          int col_idx = p * 128 + i;
+          int idx = row_idx + col_idx * ld + batch_idx * batch_stride;
+          recomputed_chksum += static_cast<float>(A[idx]);
+          if(batch_idx == 1 && row_idx == 71 && p==1){
+            printf("%f %f,\n", static_cast<float>(A[idx]), recomputed_chksum);
+          }
+        }
+        int chk_idx = row_idx + (n + p) * ld + batch_idx * batch_stride;
+        float updated_chksum = static_cast<float>(A[chk_idx]);
+
+        if(recomputed_chksum != updated_chksum){
+          float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+          float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+
+          // printf("CPU: loc (%d, %d, %d), recompute: %f, checksum: %f, diff: %f, rel err: %f\n", 
+          //         batch_idx, row_idx, (p * 128), recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+        }
       }
     }
   }
@@ -1916,12 +2118,57 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
   // printf("B after:\n");
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
 
-  // ref
+  // // ref
   // Dtype *ref_C, *ref_A, *ref_B;
   // ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
   // cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
   // ref_A = ref_C + count_C;
   // ref_B = ref_A + count_A;
+
+  // for(int row_idx = 0; row_idx < k; row_idx++){
+  //   for(int col_idx = 128; col_idx < 256; col_idx++){
+  //     int idx = 1 * strideb_check + col_idx * ldb + row_idx;
+  //     printf("%f, ", static_cast<float>(ref_B[idx]));
+  //   }
+  //   int chk_idx = 1 * strideb_check + 1025 * ldb + row_idx;
+  //   printf("%f\n", static_cast<float>(ref_B[chk_idx]));
+  // }
+
+  // float *hB_rowchk;
+  // size_t size = sizeof(float) * k * 8 * num_batches;
+  // hB_rowchk = (float*)malloc(size);
+
+  // for (int b_idx = 0; b_idx < num_batches; b_idx++) {
+  //   // encode_row_checksum_multi<Dtype><<<1,1,0, stream_main>>>(B, k, n, partition, b_idx, strideb_check, ldb, d_chk_vector);
+  //   cpu_encode_row_checksum_multi(ref_B, hB_rowchk, k, n, 8, b_idx, strideb_check, ldb);
+  // }
+
+  // for(int row_idx = 0; row_idx < k; row_idx++){
+  //   for(int col_idx = 128; col_idx < 256; col_idx++){
+  //     int idx = 1 * strideb_check + col_idx * ldb + row_idx;
+  //     printf("%f, ", static_cast<float>(ref_B[idx]));
+  //   }
+  //   int chk_idx = 1 * (k * 8) + 1 * ldb + row_idx;
+  //   printf("%f\n", static_cast<float>(hB_rowchk[chk_idx]));
+  // }
+
+  // float *hC_rowchk;
+  // size = sizeof(float) * m * 8 * num_batches;
+  // hC_rowchk = (float*)malloc(size);
+  // cpu_update(m, 8, k, ref_A, hB_rowchk, hC_rowchk, stridea, (8*k), (8*m), num_batches);
+
+  // float *h_C;
+  // size = sizeof(float) * m * n * num_batches;
+  // h_C = (float*)malloc(size);
+
+  // printf("f32 cpu gemm\n");
+  // f32_strided_batched_gemm_nn_reference<Dtype>(m, n, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, h_C, ldc, (m*n), beta, num_batches);
+  
+  // printf("f32 cpu recompute\n");
+  // bool res1 = cpu_recompute(m, n, k, h_C, ldc, m*n, num_batches, 8);
+
+  // printf("---------------------\n");
+
   // strided_batched_gemm_nn_reference<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
 
   // define CUTLASS GEMMBATCHED API
@@ -1974,7 +2221,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
     return false;
   }
 
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
 
   if (DEBUG){
     cudaEventRecord(abft_prepare_start, 0);
@@ -1990,6 +2237,9 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
   // else{
   //   printf("self-validate error detected\n");
   // }
+
+  // res = cpu_recompute(m, n, k, result_C, ldc, stridec_check, num_batches, 8);
+
   // free(result_C);
   // free(ref_C);
 
@@ -2143,7 +2393,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
     cublasSetStream(handle_main, stream_main);
 
-    Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
+    Dtype *chk_vector, *d_chk_vector;
 
     // size_t size = sizeof(Dtype)* n * 2;
     // chk_vector = (Dtype*)malloc(size);
@@ -2165,6 +2415,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     }
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
     
+    Dtype *dB_rowchk;
     size = sizeof(Dtype) * k * 8 * num_batches;
     cudaMalloc((void**)&dB_rowchk, size);
     
@@ -2201,7 +2452,11 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                             reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
                             (partition * num_batches), CUDA_R_32F,                
                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-      
+
+      // for (int b_idx = 0; b_idx < num_batches; b_idx++) {
+      //   // encode_row_checksum_multi<Dtype><<<1,1,0, stream_main>>>(B, k, n, partition, b_idx, strideb_check, ldb, d_chk_vector);
+      //   cpu_encode_row_checksum_multi()
+      // }
       // printf("dB_rowchk after:\n");
       // outputChk(dB_rowchk, (num_batches * partition), ldb, (k * 1), k, 1);
     }
@@ -2220,6 +2475,14 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
 
   // printf("B after:\n");
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
+
+  // // ref
+  // Dtype *ref_C, *ref_A, *ref_B;
+  // ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
+  // cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // ref_A = ref_C + count_C;
+  // ref_B = ref_A + count_A;
+  // strided_batched_gemm_nn_reference_T<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
 
   // define CUTLASS GEMMBATCHED API
   using Gemm = cutlass::gemm::device::GemmBatched<
@@ -2271,11 +2534,27 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     return false;
   }
 
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
 
   if (DEBUG){
     cudaEventRecord(abft_prepare_start, 0);
   }
+
+  // Dtype *result_C;
+  // result_C = (Dtype *)malloc(count_C * sizeof(Dtype)); 
+  // cudaMemcpy(result_C, C, count_C * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // bool res = valid(m, n1, k, result_C, ref_C, ldc, stridec_check, num_batches);
+  // if(res){
+  //     printf("self-validate not error\n");
+  // }
+  // else{
+  //   printf("self-validate error detected\n");
+  // }
+
+  // res = cpu_recompute(m, n, k, result_C, ldc, stridec_check, num_batches, 8);
+
+  // free(result_C);
+  // free(ref_C);
 
   // Copy Back
   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec_check, stridec);
