@@ -462,6 +462,11 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
   if (homeDir == nullptr) {
     std::cerr << "Could not get home directory" << std::endl;
   } 
+  
+  char *job_id = getenv("SLURM_JOB_ID");
+  // printf("job_id: %s\n", job_id);
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
 
   if (useLtInterface) {
 #if defined(USE_ROCM)
@@ -554,10 +559,16 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
               activation_epilogue);
         }
         else {
-          fs::path homePath(homeDir);
-          fs::path destinationFile = "control/cutlass.txt";
-          fs::path fullPath = homePath / destinationFile;
-          std::ifstream myfile(fullPath);
+          // Absolute Path
+          // fs::path homePath(homeDir);
+          // // fs::path destinationFile = "control/cutlass.txt";
+          // fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
+          // fs::path fullPath = homePath / destinationFile;
+          // std::ifstream myfile(fullPath);
+
+          // Relative Path
+          fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
+          std::ifstream myfile(destinationFile);
 
           if (!myfile.is_open()){
             // std::cout << "cannot open file: " << fullPath << std::endl;
@@ -672,10 +683,16 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
           const scalar_t* mat2_ptr = args.matb->const_data_ptr<scalar_t>();
           scalar_t* result_ptr = args.result->mutable_data_ptr<scalar_t>();
           
-          fs::path homePath(homeDir);
-          fs::path destinationFile = "control/cutlass.txt";
-          fs::path fullPath = homePath / destinationFile;
-          std::ifstream myfile(fullPath);
+          // Absolute Path
+          // fs::path homePath(homeDir);
+          // // fs::path destinationFile = "control/cutlass.txt";
+          // fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
+          // fs::path fullPath = homePath / destinationFile;
+          // std::ifstream myfile(fullPath);
+
+          // Relative Path
+          fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
+          std::ifstream myfile(destinationFile);
 
           if (!myfile.is_open()){
             at::cuda::blas::gemm<scalar_t>(
@@ -855,11 +872,15 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
       const auto transb = transpose_batch2 ? batch2_->is_conj() ? 'c' : 't' : 'n';
       scalar_t* result_ptr = result_->mutable_data_ptr<scalar_t>();
 
-      const char* homeDir = nullptr;
-      homeDir = getenv("HOME");
-      if (homeDir == nullptr) {
-          std::cerr << "Could not get home directory" << std::endl;
-      } 
+      // const char* homeDir = nullptr;
+      // homeDir = getenv("HOME");
+      // if (homeDir == nullptr) {
+      //     std::cerr << "Could not get home directory" << std::endl;
+      // } 
+
+      char *job_id = getenv("SLURM_JOB_ID");
+      int gpu_dev = -1;
+      cudaGetDevice(&gpu_dev);
 
       // If batch is 1 call gemm rather than bgemm
       if (num_batches == 1) {
@@ -873,12 +894,20 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
             result_ptr, ldc);
       } else {
         // torch.matmul()
-        fs::path homePath(homeDir);
-        fs::path destinationFile = "control/cutlass.txt";
-        fs::path fullPath = homePath / destinationFile;
-        std::ifstream myfile(fullPath);
+
+        // Absolute Path
+        // fs::path homePath(homeDir);
+        // fs::path destinationFile = "control/cutlass.txt";
+        // fs::path destinationFile = fs::path("control_" + std::string(job_id)) / "cutlass.txt";
+        // fs::path fullPath = homePath / destinationFile;
+        // std::ifstream myfile(fullPath);
+
+        // Relative Path
+        fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "cutlass.txt";
+        std::ifstream myfile(destinationFile);
 
         if (!myfile.is_open()){
+          // std::cout << "not open " << destinationFile << std::endl;
           at::cuda::blas::bgemm<scalar_t>(
             transa, transb,
             m, n, k,
@@ -895,6 +924,7 @@ const Tensor& baddbmm_out_cuda_impl(const Tensor& result, const Tensor& self, co
           myfile.get(flag);
           myfile.close();
 
+          // std::cout << flag << std::endl;
           if(flag == 't'){
             at::cuda::blas::cutlass_bgemm_launcher<scalar_t>(
               transa, transb,

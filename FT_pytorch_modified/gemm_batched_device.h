@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include <iostream>
+
 #include "cutlass/cutlass.h"
 #include "cutlass/numeric_types.h"
 #include "cutlass/arch/arch.h"
@@ -56,6 +58,12 @@ void check(T result, char const *const func, const char *const file, int const l
         exit(EXIT_FAILURE);
     }
 }
+
+#include <cmath>
+#include <string>
+#include <fstream>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -443,20 +451,29 @@ public:
     homeDir = getenv("HOME");
     fs::path homePath(homeDir);
 
+    int gpu_dev = -1;
+    cudaGetDevice(&gpu_dev);
+
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, gpu_dev);
+    int num_sms = prop.multiProcessorCount;
+    // int num_sms = 132;
+    // printf("SM count: %d\n", num_sms);
+
     ThreadblockSwizzle threadblock_swizzle;
 
     // dim3 grid = threadblock_swizzle.get_grid_shape(params_.grid_tiled_shape);
     dim3 block(GemmKernel::kThreadCount, 1, 1);
-    dim3 grid_gemm(132,1,1);
+    dim3 grid_gemm(num_sms,1,1);
 
-    dim3 grid_updatechk(132,1,1);
+    dim3 grid_updatechk(num_sms,1,1);
     dim3 block_updatechk(1024,1, 1);
     
     cudaStream_t stream_colchk;
     // cudaStreamCreate(&stream_main);
     cudaStreamCreate(&stream_colchk);
 
-    bool deBug = true;
+    bool deBug = false;
     // int iterations = 1;
     
     cudaEvent_t start, stop;
@@ -465,8 +482,21 @@ public:
     float t_gemm = 0, t_chksum = 0, t_check = 0;
 
     // int *SM_check_res;
-    cudaMalloc((void**)&SM_check_res, 132 * sizeof(int));
-    cudaMemset(SM_check_res, 0, 132 * sizeof(int));
+    cudaMalloc((void**)&SM_check_res, num_sms * sizeof(int));
+    cudaMemset(SM_check_res, 0, num_sms * sizeof(int));
+
+    // 128 96 112
+    // int matrix_SM = (if_split_phase == 2)? num_sms : 128;
+    int matrix_SM = num_sms;
+    if(if_split_phase != 2){
+      int sm_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+      if(num_sms % sm_per_batch == 0){
+        matrix_SM = num_sms - sm_per_batch;
+      }
+      else{
+        matrix_SM = num_sms - (num_sms % sm_per_batch);
+      }
+    }
 
     // printf("Grdi: (%d, %d, %d); Blocks: (%d, %d, %d)\n", new_grid.x, new_grid.y, new_grid.z, block.x, block.y, block.z);
 
@@ -489,18 +519,225 @@ public:
       }
     }
 
-    int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
-    // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
-    // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
-    // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
-    int update_smem_size;
+    // Fault Injection
+    char flag;
+    bool injection = false;
+    char *job_id = getenv("SLURM_JOB_ID");    
+    // int faulty_smid =-1, faulty_tid_1 = -1, faulty_tid_2 = -1, faulty_bit = -1;
+    
+    int faulty_smid =-1, faulty_bit = -1, *h_faulty_MMAs, *d_faulty_MMAs, *h_faulty_elements, *d_faulty_elements;
+    size_t faulty_size = sizeof(int) * 64;
+
+    h_faulty_MMAs = (int*)malloc(faulty_size);
+    h_faulty_elements = (int*)malloc(faulty_size);
+    cudaMalloc((void**)&d_faulty_MMAs, faulty_size);
+    cudaMemset(d_faulty_MMAs, -1, faulty_size);
+    cudaMalloc((void**)&d_faulty_elements, faulty_size);
+    cudaMemset(d_faulty_elements, -1, faulty_size);
+    
+    // Fault Injection Results
+    int SM_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+    if(SM_per_batch > matrix_SM){
+      SM_per_batch = matrix_SM;
+    }
+    int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
+    int batch_iter = (int)(ceil((double)params_.batch_count / (double)batch_step));
+
+    int *d_counter, *h_counter;
+    cudaMalloc((void**)&d_counter, 1 * sizeof(int));
+    cudaMemset(d_counter, 0, 1 * sizeof(int));
+    h_counter = (int*)malloc((1) * sizeof(int));
+
+    float *h_buf, *d_buf;
+    // size_t buf_size = (16*8*2*batch_iter * 2) * sizeof(float);
+    size_t buf_size = (64 * 2 * batch_iter * 2) * sizeof(float);
+    cudaMalloc((void**)&d_buf, buf_size);
+    cudaMemset(d_buf, 0, buf_size);
+    h_buf = (float*)malloc(buf_size);
+
+    // destinationFile = "/home/yuhangl/control/FI.txt";
+    // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+    // Absolute Path
+    // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.bin";
+    // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "FI.txt";
+
+    // Relative Path
+    fs::path FIInfoPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "fi_info.bin";
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "FI.txt";
+
+    std::ifstream FIFile(destinationFile);
+    if(FIFile.is_open()){
+      FIFile.get(flag);
+      if(flag == 't'){
+        injection = false;
+        // printf("Perform Fault Injection.\n");
+        
+        // // read injected SM and thread
+        // // std::ifstream planFile("/home/yuhangl/control/plan.txt");
+        // fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        // std::ifstream planFile(planPath);
+        // if(planFile.is_open()){
+        //   if (planFile >> faulty_smid >> faulty_tid_1 >> faulty_tid_2) {
+        //       // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid_1 = " << faulty_tid_1 << ", faulty_tid_2 = " << faulty_tid_2 << std::endl;
+        //   }
+        // }
+        // else{
+        //   printf("plan: Cannot open file, using default setting.\n");
+        // }
+        // planFile.close();
+
+        // read the faulty SM, MMAs, elements (faultySM, faultyMMA1, faultyMMA2,..., faultyMMA16, faultyElement1, faultyElement2,..., faultyElement16)
+        // Absolute Path
+        // fs::path planPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "plan.txt";
+        
+        // Relative Path
+        fs::path planPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "plan.txt";
+        std::ifstream planFile(planPath);
+        if(planFile.is_open()){
+          std::string line;
+          // while (std::getline(planFile, line)) {
+            
+          if (!std::getline(planFile, line)) {
+              std::cerr << "File is empty" << std::endl;
+              return Status::kErrorInternal;
+          }
+
+          std::stringstream ss(line);
+          std::string token;
+          std::vector<int> nums;
+
+          while (std::getline(ss, token, ' ')) {
+              nums.push_back(std::stoi(token));
+          }
+
+          if (nums.size() != 129) {
+              printf("Error: expected 129 numbers but got %ld\n", nums.size());
+              return Status::kErrorInternal;
+          }
+
+          int idx = 0;
+          faulty_smid = nums[idx++];
+          faulty_smid = faulty_smid % num_sms;
+          // printf("faulty SM: %d, faulty MMA: ", faulty_smid);
+
+          for (int i = 0; i < 64; i++){
+            h_faulty_MMAs[i] = nums[idx++];
+            // printf("%d ", h_faulty_MMAs[i]);
+          }
+
+          // printf("faulty elements: ");
+          for (int i = 0; i < 64; i++){
+            h_faulty_elements[i] = nums[idx++];
+            // printf("%d ", h_faulty_elements[i]);
+          }
+          // printf("\n");
+              
+          // }
+
+          cudaMemcpy(d_faulty_MMAs, h_faulty_MMAs, faulty_size, cudaMemcpyHostToDevice);
+          cudaMemcpy(d_faulty_elements, h_faulty_elements, faulty_size, cudaMemcpyHostToDevice);
+        }
+        else{
+          printf("plan: Cannot open file, using default setting.\n");
+        }
+        planFile.close();
+
+        
+        // read faulty bit
+        // std::ifstream bitFile("/home/yuhangl/control/bit.txt");
+        // Absolute Path
+        // fs::path bitPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "bit.txt";
+        // Relative Path
+        fs::path bitPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "bit.txt";
+        std::ifstream bitFile(bitPath);
+        if(bitFile.is_open()){
+          if (bitFile >> faulty_bit) {
+              // std::cout << "faulty_bit = " << faulty_bit << std::endl;
+          }
+        }
+        else{
+          printf("bit: Cannot open file, using default setting.\n");
+        }
+        bitFile.close();
+
+        // current steps
+        // Absolute Path
+        // fs::path StepPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "current_step.txt";
+        // Relative Path
+        // fs::path StepPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "current_step.txt";
+        // std::ifstream stepFile(StepPath);
+        // if (stepFile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(stepFile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     int step = std::stoi(line);
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(reinterpret_cast<const char*>(&step), sizeof(step));
+
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << std::endl << line << " ";
+        //     // std::cout << std::endl << line << " ";
+
+        //     ofs.close();
+        //   } 
+        // }
+        // stepFile.close();
+
+        // current component
+        // Absolute Path
+        // fs::path componentPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "component.txt";
+        // Relative Path
+        // fs::path componentPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "component.txt";
+        // std::ifstream compfile(componentPath);
+        // if (compfile.is_open()) {
+        //   std::string line;
+        //   if (std::getline(compfile, line)) {
+        //     // std::cout << line << std::endl;
+        //     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
+        //     std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+        //     ofs.write(line.data(), 2);
+
+        //     // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+        //     // ofs << line << " ";
+        //     // std::cout << line << " ";
+
+        //     ofs.close();
+        //   } 
+        // }
+        // compfile.close();
+      }
+      // std::cout << "faulty_smid = " << faulty_smid << ", faulty_tid = " << faulty_tid << " " << "faulty_bit = " << faulty_bit << std::endl;
+    }
+    else{
+      printf("FI: Cannot open file, using default setting.\n");
+    }
+    FIFile.close();
+
+
+    // int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
+    // // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
+    // // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
+    // // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+    // int update_smem_size;
+
+    // int update_smem_size = 0;
+    // int warps_per_TB = params_.problem_size.n() / 16;
+    // int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
+
+    int update_smem_size = 0;
+    int wmma_warps_per_TB = params_.problem_size.n() / 32;
+    // int warps_per_TB = 2 * wmma_warps_per_TB;
+    int warps_per_TB = (wmma_warps_per_TB < 16)? 2 * wmma_warps_per_TB : wmma_warps_per_TB;
+    int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
 
     // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
-
-    // 128 96 112
-    int matrix_SM = (if_split_phase == 2)? 132 : 128;
     
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM};
+    // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf};
+    int monitored_batched_count = params_.batch_count;
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &batch_per_TB, &monitored_batched_count, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf};
+    
+    // printf("SM: count: %d, m: %d, n: %d, k: %d, batch_per_TB: %d\n", num_sms, params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
     cutlass::arch::synclog_setup();
 
@@ -520,26 +757,42 @@ public:
       cudaEventRecord(abft_prepare_end, 0);
       cudaEventSynchronize(abft_prepare_end);
       cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-      // printf("myABFT Prepare Time: %f \n", t1);
-      destinationFile = "records/time/preparation.txt";
-      fullPath = homePath / destinationFile;
-      recordTime(fullPath, t1, DEBUG);
+      destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+      recordTime(destinationFile, t1, DEBUG);
     }
 
     // for(int i = 0; i < iterations; i++){
 
     if(if_split_phase == 0 || if_split_phase == 1) {
+      // printf("update kernel\n");
       // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       if(transb == 't'){
-        update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // cuda core pipeline
+        // update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // tensor core pipeline batch wise check
+        // update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // tensor core pipeline block wise check
+        update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         
         if(deBug){
           cudaEventRecord(start, stream_colchk);
         }
-        int monitored_batched_count = params_.batch_count;
-        cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+        // int monitored_batched_count = params_.batch_count;
+        
+        // cuda core pipeline
+        // cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+        
+        // tensor core pipeline
+        // cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
+        cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -549,13 +802,24 @@ public:
         }
       }
       else{
-        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
-        cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
+        // update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
+        // update_smem_size = batch_per_TB * 8 * params_.problem_size.k() * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3_2<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        update_smem_size = batch_per_TB * (8 * 144 + 144 * params_.problem_size.n()) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
         if(deBug){
           cudaEventRecord(start, stream_colchk);
         }
-        cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        // cutlass::update_checksum_v3_2<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, warps_per_TB, monitored_batched_count);
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -566,6 +830,12 @@ public:
       }
     }
 
+    // cudaDeviceSynchronize();
+
+    // redirecte stdout
+    // int saved_stdout_fd = dup(fileno(stdout));
+    // freopen(FIInfoPath.string().c_str(), "a", stdout);
+    
     if(deBug){
       cudaEventRecord(start, stream);
     }   
@@ -590,11 +860,96 @@ public:
     //   sum_check += t_check;
     // }
     cudaDeviceSynchronize();
+
+    if (DEBUG){
+      cudaEventRecord(abft_prepare_start, 0);
+    }
+    
+    // direct back
+    // fflush(stdout);               
+    // dup2(saved_stdout_fd, fileno(stdout)); // restore
+    // close(saved_stdout_fd);
     // }
+
+    // copy back SM check results
+    int *h_SM_check_res;
+    h_SM_check_res = (int*)malloc(num_sms * sizeof(int));
+    cudaMemcpy(h_SM_check_res, SM_check_res, num_sms*sizeof(int), cudaMemcpyDeviceToHost);
+    // record checking results
+    // int gpu_dev = -1;
+    // cudaGetDevice(&gpu_dev);
+    // char *job_id = getenv("SLURM_JOB_ID");
+    fs::path SMCheckResPath = fs::path("/home/yuhangl/control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "SM_checking_results.txt";
+    std::ofstream ofs(SMCheckResPath, std::ios::out | std::ios::app);
+    // ofs.write(reinterpret_cast<const char*>(h_SM_check_res), sizeof(int) * num_sms);
+    for (int i = 0; i < num_sms; i++) {
+        ofs << h_SM_check_res[i];
+        if (i != num_sms - 1)
+            ofs << " ";   // 空格分隔
+    }
+    ofs << "\n";          // 换行
+    free(h_SM_check_res);
+
 
     if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 
+    if(injection){
+      cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
+      cudaMemcpy(h_counter, d_counter, 1 * sizeof(int), cudaMemcpyDeviceToHost);
+
+      std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+      // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+
+      ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
+      ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
+
+      // int N = (*h_counter) + (*(h_counter+1));
+      // ofs << h_counter[0] << ": ";
+      // for (int i = 0; i < 1*(h_counter[0]); i++) {
+          // ofs << h_buf[i] << " "; 
+          // if (i != N - 1){
+          // ofs << " ";  
+          // }
+          // printf("%f ", h_buf[i]);
+      // }
+      // ofs << "|||| ";
+
+      // int o = 16*8*2*batch_iter;
+      // ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
+      // ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
+      // ofs << h_counter[1] << ": ";
+      // for (int i = 0; i < 1*(h_counter[1]); i++) {
+      //     ofs << h_buf[i + o]; 
+      //     // if (i != 2*(h_counter[0]) - 1){
+      //     ofs << " ";  
+      //     // }
+      //     // printf("%f ", h_buf[i + o]);
+      // }
+
+      ofs.close();
+    }
+    
+    // Clean up
     cudaFree(SM_check_res);
+    cudaStreamDestroy(stream_colchk);
+    
+    cudaFree(d_counter);
+    cudaFree(d_buf);
+    free(h_counter);
+    free(h_buf);
+
+    cudaFree(d_faulty_MMAs);
+    cudaFree(d_faulty_elements);
+    free(h_faulty_MMAs);
+    free(h_faulty_elements);
+
+    if(DEBUG){
+      cudaEventRecord(abft_prepare_end, 0);
+      cudaEventSynchronize(abft_prepare_end);
+      cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+      destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+      recordTime(destinationFile, t1, DEBUG);
+    }
 
     result = cudaGetLastError();
 

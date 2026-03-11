@@ -1644,6 +1644,44 @@ __global__ void copy_batched_matrix(Dtype *src, Dtype *dst, int64_t rows, int64_
   }
 }
 
+template <typename Dtype>
+__global__ void copy_batched_matrix_f32_to_bf16(float *src, Dtype *dst, int64_t rows, int64_t cols, int64_t strideSrc, int64_t strideDst){
+  int col = blockIdx.x * blockDim.x + threadIdx.x;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int batch = blockIdx.z;
+
+  if (row < rows && col < cols) {
+    int idx_src = batch * strideSrc + row * cols + col;
+    int idx_dst = batch * strideDst + row * cols + col;
+    dst[idx_dst] = static_cast<Dtype>(src[idx_src]);
+  }
+}
+
+
+template <typename Element>
+__global__ void encode_row_checksum_multi(Element *A, int m, int k, int partition, int b_idx, int stride, int lda, float *chk_vector){
+  int n = 1;
+  int k_per_partion = k / partition;
+
+  // encode row chksum - column major
+  for(int p = 0; p < partition; p++){
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = float(0.0f);
+        for(int i = 0; i < k_per_partion; i++){
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
+          float b = chk_vector[i + c * k_per_partion];
+          sum += a * b;
+        }
+        // int idx = (k + p) + (c * lda) + (b_idx * stride);
+        int idx = (lda * (k + p)) + (r + c * m + (b_idx * stride));
+        A[idx] = static_cast<Element>(sum);
+      }
+    }
+  }
+  free(chk_vector);
+}
+
 void recordTime(std::string FP, float time, bool DEBUG){
   std::ofstream outFile(FP, std::ios::app);
   if(!outFile){
@@ -1652,6 +1690,47 @@ void recordTime(std::string FP, float time, bool DEBUG){
   }
   outFile << time << std::endl;
   if(DEBUG) printf("Data appended to the file successfully.\n");
+}
+
+template<typename T> 
+cudaError_t strided_batched_gemm_nn_reference_T(
+  int m,
+  int n,
+  int k,
+  T alpha,
+  T *A, 
+  int lda,
+  int64_t batch_stride_A,
+  T *B, 
+  int ldb,
+  int64_t batch_stride_B,
+  T *C, 
+  int ldc,
+  int64_t batch_stride_C,
+  T beta,
+  int batch_count) {
+  /*
+  strided batched gemm NN
+  */
+  
+  cudaError_t result = cudaSuccess;
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          // T a = A[batch_idx * batch_stride_A + k_idx * lda + m_idx];
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + m_idx * lda + k_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);
+          accum += static_cast<float>(alpha * a * b);
+        }
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = static_cast<T>(accum);
+      }
+    }
+  }
+
+  return result;
 }
 
 template<typename T> 
@@ -1680,17 +1759,20 @@ cudaError_t strided_batched_gemm_nn_reference(
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
     for (int n_idx = 0; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
-        T accum = beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
         for (int k_idx = 0; k_idx < k; k_idx++) {
-          accum += alpha 
-            * A[batch_idx * batch_stride_A + k_idx * lda + m_idx]
-            * B[batch_idx * batch_stride_B + n_idx * ldb + k_idx];
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + k_idx * lda + m_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);  
+          accum += static_cast<float>(alpha * a * b);
+
+          // if(batch_idx == 1 && m_idx == 71 && n_idx == 1025){
+          //   printf("%f %f %f,\n", a, b, accum);
+          // }
         }
-        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = static_cast<T>(accum);
       }
     }
   }
-
   return result;
 }
 
@@ -1700,11 +1782,14 @@ bool valid( int m, int n, int k,
             int ldc, long long int batch_stride_C, int batch_count){
   bool correct = true;
   for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
-    for (int n_idx = 0; n_idx < n; n_idx++) {
+    for (int n_idx = 1024; n_idx < n; n_idx++) {
       for (int m_idx = 0; m_idx < m; m_idx++) {
           float c = (float)C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
           float ref_c = (float)ref_C[batch_idx * batch_stride_C + n_idx * ldc + m_idx];
-          if(fabs(c - ref_c) > 1){
+          if(c != ref_c){
+          // float max = (c > ref_c) ? c : ref_c;
+          // float rel_err = fabs(c - ref_c) / max;
+          // if(rel_err > 0.01){
             printf("batch: %d, m: %d, n: %d, C: %f, ref_C: %f, diff: %f\n", batch_idx, m_idx, n_idx, c, ref_c, (c-ref_c));
             correct = false;
           }
@@ -1714,13 +1799,144 @@ bool valid( int m, int n, int k,
   return correct;
 }
 
+template <typename Element>
+void cpu_encode_row_checksum_multi(Element *A, float *h_row_chk, int m, int k, int partition, int b_idx, int stride, int lda){
+  int n = 1;
+  int k_per_partion = k / partition;
+
+  // init checksum vector
+  float *chk_vector;
+  chk_vector = (float*)malloc(sizeof(float)* k_per_partion * n);
+  for(int r = 0; r < k_per_partion; r++){
+    chk_vector[r] = float(1);
+    // chk_vector[k_per_partion + r] = float(r + 1);
+  }
+
+  // encode row chksum - column major
+  for(int p = 0; p < partition; p++){
+    for(int c = 0; c < n; c++){
+      for(int r = 0; r < m; r++){
+        float sum = float(0.0f);
+        for(int i = 0; i < k_per_partion; i++){
+          float a = static_cast<float>(A[r + (i + k_per_partion * p) * lda + (b_idx * stride)]);
+          float b = chk_vector[i + c * k_per_partion];
+          sum += a * b;
+        }
+        // int idx = (lda * (k + p)) + (r + c * m + (b_idx * stride));
+        // A[idx] = static_cast<Element>(sum);
+        int idx = (lda * p) + (r + c * m) + (b_idx * (8 * m));
+        h_row_chk[idx] = sum;
+      }
+    }
+  }
+  free(chk_vector);
+}
+
+template<typename T>
+void cpu_update(int m, int n, int k, T *A, float *hB_rowchk, float *hC_rowchk, int stride_a, int stride_B_chk,int stride_C_chk, int batch_count){
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = 0;
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          float a = static_cast<float>(A[batch_idx * stride_a + k_idx * m + m_idx]);
+          float b = static_cast<float>(hB_rowchk[batch_idx * stride_B_chk + n_idx * k + k_idx]);  
+          accum += static_cast<float>(a * b);
+
+          if(batch_idx == 1 && m_idx == 71 && n_idx == 1){
+            printf("%f %f %f,\n", a, b, accum);
+          }
+        }
+        hC_rowchk[batch_idx * stride_C_chk + n_idx * m + m_idx] = static_cast<T>(accum);
+      }
+    }
+  }
+}
+
+template<typename T> 
+cudaError_t f32_strided_batched_gemm_nn_reference(
+  int m,
+  int n,
+  int k,
+  T alpha,
+  T *A, 
+  int lda,
+  int64_t batch_stride_A,
+  T *B, 
+  int ldb,
+  int64_t batch_stride_B,
+  float *C, 
+  int ldc,
+  int64_t batch_stride_C,
+  T beta,
+  int batch_count) {
+  /*
+  strided batched gemm NN
+  */
+  
+  cudaError_t result = cudaSuccess;
+  
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for (int n_idx = 0; n_idx < n; n_idx++) {
+      for (int m_idx = 0; m_idx < m; m_idx++) {
+        float accum = static_cast<float>(beta * C[batch_idx * batch_stride_C + n_idx * ldc + m_idx]);
+        for (int k_idx = 0; k_idx < k; k_idx++) {
+          float a = static_cast<float>(A[batch_idx * batch_stride_A + k_idx * lda + m_idx]);
+          float b = static_cast<float>(B[batch_idx * batch_stride_B + n_idx * ldb + k_idx]);  
+          accum += static_cast<float>(alpha * a * b);
+
+          // if(batch_idx == 1 && m_idx == 71 && n_idx == 1025){
+          //   printf("%f %f %f,\n", a, b, accum);
+          // }
+        }
+        C[batch_idx * batch_stride_C + n_idx * ldc + m_idx] = accum;
+      }
+    }
+  }
+  return result;
+}
+
+
+template<typename T>
+bool cpu_recompute(int m, int n, int k, T *A, int ld, long long int batch_stride, int batch_count, int partition){
+  bool correct = true;
+  for (int batch_idx = 0; batch_idx < batch_count; batch_idx++) {
+    for(int p = 0; p < partition; p++){
+      for (int row_idx = 0; row_idx < m; row_idx++){
+        float recomputed_chksum = 0;
+        for(int i = 0; i < 128; i++){
+          int col_idx = p * 128 + i;
+          int idx = row_idx + col_idx * ld + batch_idx * batch_stride;
+          recomputed_chksum += static_cast<float>(A[idx]);
+          if(batch_idx == 1 && row_idx == 71 && p==1){
+            printf("%f %f,\n", static_cast<float>(A[idx]), recomputed_chksum);
+          }
+        }
+        int chk_idx = row_idx + (n + p) * ld + batch_idx * batch_stride;
+        float updated_chksum = static_cast<float>(A[chk_idx]);
+
+        if(recomputed_chksum != updated_chksum){
+          float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
+          float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
+
+          // printf("CPU: loc (%d, %d, %d), recompute: %f, checksum: %f, diff: %f, rel err: %f\n", 
+          //         batch_idx, row_idx, (p * 128), recomputed_chksum, updated_chksum, fabs(recomputed_chksum - updated_chksum), rel_err);
+        }
+      }
+    }
+  }
+  return correct;
+}
+
 template <typename Dtype>
-bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
-                        const Dtype *a, int64_t lda, int64_t stridea,                                         
-                        const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
-                        bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm\n");
+bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,  
+                        Dtype *a, int64_t lda, int64_t stridea,                                         
+                        Dtype *b, int64_t ldb, int64_t strideb,                                           
+                        Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
+                        bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+  // printf("cutlass bgemm\n");
+  // printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1735,6 +1951,10 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   const char* homeDir = nullptr;
   homeDir = getenv("HOME");
   fs::path homePath(homeDir);
+
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::ColumnMajor;
@@ -1765,25 +1985,29 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
 
-  alpha = Dtype(alpha);
-  beta = Dtype(beta);
+  // alpha = Dtype(alpha);
+  // beta = Dtype(beta);
   
   // ldb = ldb * num_batches;
-
-  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
 
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
-  if(if_split_phase == 0) n1 += 2;
+  // batch wise
+  // if(if_split_phase == 0) n1 += 2;
+  // block wise
+  if(if_split_phase == 0) n1 += 8;
   int64_t strideb_check = ldb * n1;
   int64_t stridec_check = ldc * n1;
+
+  // printf("cudablas, num_batch: %d, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", num_batches, m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("  stride A: %d, stride B: (%d, %d), stride C: (%d, %d)\n", stridea, strideb, strideb_check, stridec, stridec_check);
 
   int const count_A = num_batches * lda * k;
   int const count_B = num_batches * ldb * n1;
@@ -1794,13 +2018,11 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   cudaMalloc((void**)&C, (count_A + count_B + count_C) * sizeof(Dtype));
   A = C + count_C;
   B = A + count_A;
-  // cudaMalloc((void**)&A, count_A * sizeof(Dtype));
-  // cudaMalloc((void**)&B, count_B * sizeof(Dtype));     
-  // cudaMalloc((void**)&C, count_C * sizeof(Dtype));
 
   // copy matrix A and matrix B
   Dtype *a_ = const_cast<Dtype*>(a);
   Dtype *b_ = const_cast<Dtype*>(b);
+
   copy_batched_matrix<<<dim3((k+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(a_, A, m, k, stridea, stridea);
   copy_batched_matrix<<<dim3((n+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(b_, B, k, n, strideb, strideb_check);
 
@@ -1827,17 +2049,33 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
     cublasSetStream(handle_main, stream_main);
 
+    // Dtype *chk_vector, *d_chk_vector;
+    // size_t size = sizeof(Dtype)* n * 2;
+    // chk_vector = (Dtype*)malloc(size);
+    // cudaMalloc((void**)&d_chk_vector, size);
+    // for(int r = 0; r < n; r++){
+    //   chk_vector[r] = (Dtype)1;
+    //   chk_vector[n + r] = (Dtype)(r + 1);
+    // }
+    // cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+    // free(chk_vector);
+
     Dtype *chk_vector, *d_chk_vector;
-    size_t size = sizeof(Dtype)* n * 2;
+    int partition = n / 128;
+    int nb = n / partition;
+    size_t size = sizeof(Dtype)* nb * 1;
     chk_vector = (Dtype*)malloc(size);
     cudaMalloc((void**)&d_chk_vector, size);
-    for(int r = 0; r < n; r++){
-      chk_vector[r] = (Dtype)1;
-      chk_vector[n + r] = (Dtype)(r + 1);
+    for(int r = 0; r < nb; r++){
+      chk_vector[r] = (Dtype)1.f;
     }
-
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-    
+    free(chk_vector);
+
+    Dtype *dB_rowchk;
+    size = sizeof(Dtype) * k * 8 * num_batches;
+    cudaMalloc((void**)&dB_rowchk, size);
+
     if constexpr (std::is_same<Dtype, float>::value) {
       cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
                                         &alpha, B, ldb, strideb_check,
@@ -1845,20 +2083,92 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
                                         (B+(k*n)), ldb, strideb_check,
                                         num_batches);
     }
+    else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
+      float alpha_bf16 = static_cast<float>(alpha);
+      float beta_bf16 = static_cast<float>(beta);
+      // cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>((B+(k*n))), CUDA_R_16BF, ldb, strideb_check,
+      //                             num_batches, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // // block wise checksum
+      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, k*nb,
+                            reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+                            dB_rowchk, CUDA_R_16BF, ldb, k,
+                            (partition * num_batches), CUDA_R_32F,                
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16), 0, stream_main>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
 
+      // for(int batch = 0; batch < num_batches; batch++){
+      //   cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>((B + batch*strideb_check)), CUDA_R_16BF, ldb, (k*nb),
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>(B + batch*strideb_check + (k*n)), CUDA_R_16BF, ldb, k,
+      //                             partition, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      // }
+    }
+    cudaStreamSynchronize(stream_main);
     cudaFree(d_chk_vector);
-    free(chk_vector);
+    cudaFree(dB_rowchk);
   }
   
   // printf("B after:\n");
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
 
-  // ref
+  // // ref
   // Dtype *ref_C, *ref_A, *ref_B;
   // ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
   // cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
   // ref_A = ref_C + count_C;
   // ref_B = ref_A + count_A;
+
+  // for(int row_idx = 0; row_idx < k; row_idx++){
+  //   for(int col_idx = 128; col_idx < 256; col_idx++){
+  //     int idx = 1 * strideb_check + col_idx * ldb + row_idx;
+  //     printf("%f, ", static_cast<float>(ref_B[idx]));
+  //   }
+  //   int chk_idx = 1 * strideb_check + 1025 * ldb + row_idx;
+  //   printf("%f\n", static_cast<float>(ref_B[chk_idx]));
+  // }
+
+  // float *hB_rowchk;
+  // size_t size = sizeof(float) * k * 8 * num_batches;
+  // hB_rowchk = (float*)malloc(size);
+
+  // for (int b_idx = 0; b_idx < num_batches; b_idx++) {
+  //   // encode_row_checksum_multi<Dtype><<<1,1,0, stream_main>>>(B, k, n, partition, b_idx, strideb_check, ldb, d_chk_vector);
+  //   cpu_encode_row_checksum_multi(ref_B, hB_rowchk, k, n, 8, b_idx, strideb_check, ldb);
+  // }
+
+  // for(int row_idx = 0; row_idx < k; row_idx++){
+  //   for(int col_idx = 128; col_idx < 256; col_idx++){
+  //     int idx = 1 * strideb_check + col_idx * ldb + row_idx;
+  //     printf("%f, ", static_cast<float>(ref_B[idx]));
+  //   }
+  //   int chk_idx = 1 * (k * 8) + 1 * ldb + row_idx;
+  //   printf("%f\n", static_cast<float>(hB_rowchk[chk_idx]));
+  // }
+
+  // float *hC_rowchk;
+  // size = sizeof(float) * m * 8 * num_batches;
+  // hC_rowchk = (float*)malloc(size);
+  // cpu_update(m, 8, k, ref_A, hB_rowchk, hC_rowchk, stridea, (8*k), (8*m), num_batches);
+
+  // float *h_C;
+  // size = sizeof(float) * m * n * num_batches;
+  // h_C = (float*)malloc(size);
+
+  // printf("f32 cpu gemm\n");
+  // f32_strided_batched_gemm_nn_reference<Dtype>(m, n, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, h_C, ldc, (m*n), beta, num_batches);
+  
+  // printf("f32 cpu recompute\n");
+  // bool res1 = cpu_recompute(m, n, k, h_C, ldc, m*n, num_batches, 8);
+
+  // printf("---------------------\n");
+
   // strided_batched_gemm_nn_reference<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
 
   // define CUTLASS GEMMBATCHED API
@@ -1866,7 +2176,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
       Dtype, LayoutInputA,
       Dtype, LayoutInputB,
       Dtype, LayoutOutput,
-      Dtype,
+      DtypeAccumulator,
       MMAOp,
       SmArch,
       ShapeMMAThreadBlock,
@@ -1885,10 +2195,8 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-    // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
   }
 
   cutlass::Status status = gemm_op({
@@ -1911,10 +2219,9 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     return false;
   }
 
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
 
   if (DEBUG){
-    // cudaDeviceSynchronize();
     cudaEventRecord(abft_prepare_start, 0);
   }
 
@@ -1928,6 +2235,9 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
   // else{
   //   printf("self-validate error detected\n");
   // }
+
+  // res = cpu_recompute(m, n, k, result_C, ldc, stridec_check, num_batches, 8);
+
   // free(result_C);
   // free(ref_C);
 
@@ -1946,24 +2256,24 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-    // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
     // cudaEventDestroy(abft_prepare_start);
     // cudaEventDestroy(abft_prepare_end);
   }
-
+  
   return true;
 }
 
 template <typename Dtype>
-bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,  
-                        const Dtype *a, int64_t lda, int64_t stridea,                                         
-                        const Dtype *b, int64_t ldb, int64_t strideb,                                           
-                        at::opmath_type<Dtype> beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
-                        bool DEBUG, int if_split_phase){
-  printf("cutlass bgemm T\n");
+bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,  
+                        Dtype *a, int64_t lda, int64_t stridea,                                         
+                        Dtype *b, int64_t ldb, int64_t strideb,                                           
+                        Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
+                        bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+  // printf("cutlass bgemm T\n");
+  // printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -1978,6 +2288,10 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   const char* homeDir = nullptr;
   homeDir = getenv("HOME");
   fs::path homePath(homeDir);
+
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
 
   // Matrix A, Row Major for Matrix B and Row Major for Matrix C
   using LayoutInputA = cutlass::layout::RowMajor;
@@ -2008,21 +2322,29 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
 
-  alpha = Dtype(alpha);
-  beta = Dtype(beta);
+  // alpha = Dtype(alpha);
+  // beta = Dtype(beta);
   
   // ldb = ldb * num_batches;
+
+  // No ABFT
+  // int64_t n1 = n;
+  // int64_t strideb_check = strideb;
+  // int64_t stridec_check = stridec;
 
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
-  if(if_split_phase == 0) n1 += 2;
+  // batch wise
+  // if(if_split_phase == 0) n1 += 2;
+  // block wise 
+  if(if_split_phase == 0) n1 += 8;
   int64_t strideb_check = ldb * n1;
   int64_t stridec_check = ldc * n1;
 
@@ -2030,16 +2352,14 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
   int const count_B = num_batches * ldb * n1;
   int const count_C = num_batches * ldc * n1;
 
-  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("cudablas, num_batch: %d, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", num_batches, m, n, k, lda, ldb, ldc, alpha, beta);
+  // printf("  stride A: %d, stride B: (%d, %d), stride C: (%d, %d)\n", stridea, strideb, strideb_check, stridec, stridec_check);
 
   // allocate the device memory
   Dtype *A, *B, *C;
   cudaMalloc(&C, (count_A + count_B + count_C) * sizeof(Dtype));
   A = C + count_C;
   B = A + count_A;
-  // cudaMalloc((void**)&A, count_A * sizeof(Dtype));
-  // cudaMalloc((void**)&B, count_B * sizeof(Dtype));     
-  // cudaMalloc((void**)&C, count_C * sizeof(Dtype));
 
   // copy matrix A and matrix B
   Dtype *a_ = const_cast<Dtype*>(a);
@@ -2070,48 +2390,103 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
     cublasSetStream(handle_main, stream_main);
 
-    Dtype *chk_vector, *d_chk_vector, *dB_rowchk;
-    size_t size = sizeof(Dtype)* n * 2;
+    Dtype *chk_vector, *d_chk_vector;
+
+    // size_t size = sizeof(Dtype)* n * 2;
+    // chk_vector = (Dtype*)malloc(size);
+    // cudaMalloc((void**)&d_chk_vector, size);
+    // for(int r = 0; r < n; r++){
+    //   chk_vector[r] = (Dtype)1;
+    //   chk_vector[n + r] = (Dtype)(r + 1);
+    //   // printf("%f, %f\n", static_cast<float>(chk_vector[r]), static_cast<float>(chk_vector[n + r]));
+    // }
+    // cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+
+    int partition = n / 128;
+    int nb = n / partition;
+    size_t size = sizeof(Dtype)* nb * 1;
     chk_vector = (Dtype*)malloc(size);
     cudaMalloc((void**)&d_chk_vector, size);
-    for(int r = 0; r < n; r++){
-      chk_vector[r] = (Dtype)1;
-      chk_vector[n + r] = (Dtype)(r + 1);
+    for(int r = 0; r < nb; r++){
+      chk_vector[r] = (Dtype)1.f;
     }
     cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-
-    size = sizeof(Dtype) * k * 2 * num_batches;
+    
+    Dtype *dB_rowchk;
+    size = sizeof(Dtype) * k * 8 * num_batches;
     cudaMalloc((void**)&dB_rowchk, size);
     
     if constexpr (std::is_same<Dtype, float>::value) {
+      // batch wise checksum
       // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
       //                                   &alpha, B, ldb, strideb_check,
       //                                   d_chk_vector, n, 0, &beta,
-      //                                   (B+(k*n)), ldb, strideb_check,
+      //                                   dB_rowchk, ldb, (k * 2),
       //                                   num_batches);
-      cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
-                                        &alpha, B, ldb, strideb_check,
-                                        d_chk_vector, n, 0, &beta,
-                                        dB_rowchk, ldb, (k * 2),
-                                        num_batches);
-      
-      copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
+      // block wise checksum
+      // cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+      //                                   &alpha_bf16, reinterpret_cast<float*>(b_), ldb, (k*nb),
+      //                                   reinterpret_cast<float*>(d_chk_vector), nb, 0, &beta_bf16,
+      //                                   reinterpret_cast<float*>(dB_rowchk), ldb, k,
+      //                                   (partition * num_batches));      
+      // copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
     }
+    else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
+      float alpha_bf16 = static_cast<float>(alpha);
+      float beta_bf16 = static_cast<float>(beta);
+      // batch wise checksum
+      // cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 2, n,
+      //                             &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(B), CUDA_R_16BF, ldb, strideb_check,
+      //                             reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, n, 0, &beta_bf16,
+      //                             reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, (k * 2),
+      //                             num_batches, CUDA_R_32F,                
+      //                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 
+      // block wise checksum
+      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+                            &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(b_), CUDA_R_16BF, ldb, (k*nb),
+                            reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+                            reinterpret_cast<__nv_bfloat16*>(dB_rowchk), CUDA_R_16BF, ldb, k,
+                            (partition * num_batches), CUDA_R_32F,                
+                            CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+
+      // for (int b_idx = 0; b_idx < num_batches; b_idx++) {
+      //   // encode_row_checksum_multi<Dtype><<<1,1,0, stream_main>>>(B, k, n, partition, b_idx, strideb_check, ldb, d_chk_vector);
+      //   cpu_encode_row_checksum_multi()
+      // }
+      // printf("dB_rowchk after:\n");
+      // outputChk(dB_rowchk, (num_batches * partition), ldb, (k * 1), k, 1);
+    }
+    // batch wise
+    // copy_batched_matrix<<<dim3((2+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 2, (k*2), strideb_check);
+    // batch wise
+    copy_batched_matrix<<<dim3((8+16-1)/16, (k+16-1)/16, num_batches), dim3(16, 16)>>>(dB_rowchk, (B+(k*n)), k, 8, (k*8), strideb_check);
+
+    cudaStreamSynchronize(stream_main);
+    
     free(chk_vector);                                  
     cudaFree(d_chk_vector);
     cudaFree(dB_rowchk);
   }
+  // cudaDeviceSynchronize();
 
   // printf("B after:\n");
   // outputChk(B, num_batches, ldb, strideb_check, k, n1);
+
+  // // ref
+  // Dtype *ref_C, *ref_A, *ref_B;
+  // ref_C = (Dtype *)malloc((count_A + count_B + count_C) * sizeof(Dtype)); 
+  // cudaMemcpy(ref_C, C, (count_A + count_B + count_C) * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // ref_A = ref_C + count_C;
+  // ref_B = ref_A + count_A;
+  // strided_batched_gemm_nn_reference_T<Dtype>(m, n1, k, alpha, ref_A, lda, stridea, ref_B, ldb, strideb_check, ref_C, ldc, stridec_check, beta, num_batches);
 
   // define CUTLASS GEMMBATCHED API
   using Gemm = cutlass::gemm::device::GemmBatched<
       Dtype, LayoutInputA,
       Dtype, LayoutInputB,
       Dtype, LayoutOutput,
-      Dtype,
+      DtypeAccumulator,
       MMAOp,
       SmArch,
       ShapeMMAThreadBlock,
@@ -2130,10 +2505,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-    // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
   }
   
   cutlass::Status status = gemm_op({
@@ -2156,12 +2529,27 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     return false;
   }
 
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
 
   if (DEBUG){
-    // cudaDeviceSynchronize();
     cudaEventRecord(abft_prepare_start, 0);
   }
+
+  // Dtype *result_C;
+  // result_C = (Dtype *)malloc(count_C * sizeof(Dtype)); 
+  // cudaMemcpy(result_C, C, count_C * sizeof(Dtype), cudaMemcpyDeviceToHost);
+  // bool res = valid(m, n1, k, result_C, ref_C, ldc, stridec_check, num_batches);
+  // if(res){
+  //     printf("self-validate not error\n");
+  // }
+  // else{
+  //   printf("self-validate error detected\n");
+  // }
+
+  // res = cpu_recompute(m, n, k, result_C, ldc, stridec_check, num_batches, 8);
+
+  // free(result_C);
+  // free(ref_C);
 
   // Copy Back
   copy_batched_matrix<<<dim3((n+16-1)/16, (m+16-1)/16, num_batches), dim3(16, 16)>>>(C, c, m, n, stridec_check, stridec);
@@ -2178,10 +2566,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-    // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
     // cudaEventDestroy(abft_prepare_start);
     // cudaEventDestroy(abft_prepare_end);
   }
@@ -2198,7 +2584,15 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   bool state = false;
   char flag;
   bool DEBUG = true;
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+
+  char *job_id = getenv("SLURM_JOB_ID");
+  
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
+
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2213,9 +2607,20 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   }
   DebugFile.close();
 
+  // record preparation time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  float t1 = 0.f;
+
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2230,49 +2635,68 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   }
   SplitFile.close();
 
-  if constexpr (std::is_same<Dtype, float>::value) {
-    // c10::Half torch_half = 1;
-    // float f = static_cast<float>(torch_half);
-    // cutlass::half_t cutlass_half = cutlass::half_t(static_cast<float>(f));
-
-    // float x = static_cast<float>(cutlass_half);
-    // torch_half = c10::Half(static_cast<float>(x));
-
-    if(transa == 't'){
-      // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
-      state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha,  
-        a, lda, stridea,                                         
-        b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
-    }
-    else{
-      // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
-      state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha,  
-        a, lda, stridea,                                         
-        b, ldb, strideb,                                           
-        beta, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
-    }
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
   }
-  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
+
+  // if constexpr (std::is_same<Dtype, float>::value) {
+  //   printf("using float\n");
+
+  //   Dtype alpha_ = Dtype(alpha);
+  //   Dtype beta_ = Dtype(beta);
+
+  //   Dtype *a_ = const_cast<Dtype*>(a);
+  //   Dtype *b_ = const_cast<Dtype*>(b);
+
   //   if(transa == 't'){
-  //     state = cutlass_bgemm_T<c10::Half>(transa, transb, m, n, k, alpha,  
-  //       a, lda, stridea,                                         
-  //       b, ldb, strideb,                                           
-  //       beta, c, ldc, stridec, num_batches);
+  //     // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+  //     state = cutlass_bgemm_T<float>(transa, transb, m, n, k, alpha_,  
+  //       a_, lda, stridea,                                         
+  //       b_, ldb, strideb,                                           
+  //       beta_, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
   //   }
   //   else{
-  //     state = cutlass_bgemm<c10::Half>(transa, transb, m, n, k, alpha,  
-  //         a, lda, stridea,                                         
-  //         b, ldb, strideb,                                           
-  //         beta, c, ldc, stridec, num_batches);
+  //     // printf("trans A: %c, trans B: %c, m: %d, n: %d, k:%d, lda: %d, ldb: %d, ldc: %d\n", transa, transb, m, n, k, lda, ldb, ldc);
+  //     state = cutlass_bgemm<float>(transa, transb, m, n, k, alpha_,  
+  //       a_, lda, stridea,                                         
+  //       b_, ldb, strideb,                                           
+  //       beta_, c, ldc, stridec, num_batches, DEBUG, if_split_phase);
   //   }
-  // } 
+  // }
+  // else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+  if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+    // printf("using c10::BFloat16\n");
+
+    cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
+    cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
+    cutlass::bfloat16_t *c_ = reinterpret_cast<cutlass::bfloat16_t*>(c);
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha);
+    cutlass::bfloat16_t beta_ = static_cast<cutlass::bfloat16_t>(beta);
+
+    if(transa == 't'){
+      state = cutlass_bgemm_T<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
+        a_, lda, stridea,                                         
+        b_, ldb, strideb,                                           
+        beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, job_id, gpu_dev);
+    }
+    else{
+      state = cutlass_bgemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
+          a_, lda, stridea,                                         
+          b_, ldb, strideb,                                           
+          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, job_id, gpu_dev);
+    }
+  } 
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
   //                                           a, lda, b, ldb, beta,
   //                                           c, ldc);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
+  // else if constexpr (std::is_same<Dtype, c10::Half>::value) {
   //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
   //                                             a, lda, b, ldb, beta,
   //                                             c, ldc);
@@ -2312,10 +2736,10 @@ template bool cutlass_bgemm_launcher<c10::complex<float>>(char transa, char tran
 
 
 template <typename Dtype>
-bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at::opmath_type<Dtype> alpha,
-                  const Dtype *a, int64_t lda, const Dtype *b, int64_t ldb, at::opmath_type<Dtype> beta,
-                  Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase){
-  printf("cutlass_gemm\n");
+bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,
+                  Dtype *a, int64_t lda, Dtype *b, int64_t ldb, Dtype beta,
+                  Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+  // printf("cutlass_gemm\n");
   
   // Preparing time
   cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -2342,8 +2766,15 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // int n1 = n + 1 * partition;
   cutlass::gemm::GemmCoord problem_size({m, n1, k});
 
+  // printf("cudablas, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", m, n, k, lda, ldb, ldc, alpha, beta);
+
+
   // problem size
   // cutlass::gemm::GemmCoord problem_size({m, n, k});
+
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
 
   // Matrix Layerout
   using LayoutInputA = cutlass::layout::RowMajor;
@@ -2379,15 +2810,13 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
 
   // encode checksum
   // cudaStream_t stream_main, stream_rowchk;
-  // cudaStreamCreate(&stream_main);
+  cudaStream_t stream_main;
+  cudaStreamCreate(&stream_main);
   // cudaStreamCreate(&stream_rowchk);
 
   // cublasHandle_t handle_rowchk;
   // cublasCreate(&handle_rowchk);
   // cublasSetStream(handle_rowchk, stream_rowchk);
-
-  cudaStream_t stream_main;
-  cudaStreamCreate(&stream_main);
   
   if(if_split_phase == 0){
     cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
@@ -2410,6 +2839,16 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                         d_chk_vector, nb, 0, &beta,
                                         (tensor_b.device_data()+(k*n)), ldb, k,
                                         partition);
+    }
+    else if  constexpr (std::is_same<Dtype, cutlass::bfloat16_t>::value){
+      float alpha_bf16 = static_cast<float>(alpha);
+      float beta_bf16 = static_cast<float>(beta);
+      cublasGemmStridedBatchedEx(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+                                  &alpha_bf16, reinterpret_cast<__nv_bfloat16*>(tensor_b.device_data()), CUDA_R_16BF, ldb, k*nb,
+                                  reinterpret_cast<__nv_bfloat16*>(d_chk_vector), CUDA_R_16BF, nb, 0, &beta_bf16,
+                                  reinterpret_cast<__nv_bfloat16*>(tensor_b.device_data()+(k*n)), CUDA_R_16BF, ldb, k,
+                                  partition, CUDA_R_32F,                
+                                  CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     }                                  
     cudaFree(d_chk_vector);
   }
@@ -2446,8 +2885,8 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
@@ -2459,7 +2898,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                          LayoutInputB,
                                          Dtype,
                                          LayoutOutput,
-                                         Dtype,
+                                         DtypeAccumulator,
                                          MMAOp,
                                          SmArch,
                                          ShapeMMAThreadBlock,
@@ -2470,20 +2909,30 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
                                          NumStages>;
                                          
   // instantiated CUTLASS kernel
+  // typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
+  //   tensor_a.device_ref(),                          // <- reference to matrix A on device
+  //   tensor_b.device_ref(),                          // <- reference to matrix B on device
+  //   tensor_d.device_ref(),                          // <- reference to matrix C on device
+  //   tensor_d.device_ref(),                          // <- reference to matrix D on device
+  //   {alpha, beta},                                  // <- tuple of alpha and beta
+  //   split_k_slices};                                // <- k-dimension split factor
+
+  // instantiated CUTLASS kernel
   typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
-    tensor_a.device_ref(),                          // <- reference to matrix A on device
-    tensor_b.device_ref(),                          // <- reference to matrix B on device
-    tensor_d.device_ref(),                          // <- reference to matrix C on device
-    tensor_d.device_ref(),                          // <- reference to matrix D on device
+    {tensor_a.device_ref(), lda},                          // <- reference to matrix A on device
+    {tensor_b.device_ref(), ldb},                          // <- reference to matrix B on device
+    {tensor_d.device_ref(), ldc},                          // <- reference to matrix C on device
+    {tensor_d.device_ref(), ldc},                          // <- reference to matrix D on device
     {alpha, beta},                                  // <- tuple of alpha and beta
     split_k_slices};                                // <- k-dimension split factor
-
+  
+  // cudaDeviceSynchronize();
   // Using the arguments, query for extra workspace required for matrix multiplication computation
   size_t workspace_size = Gemm::get_workspace_size(arguments);
 
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
-
+  
   // Instantiate CUTLASS kernel depending on templates
   Gemm gemm_op;
 
@@ -2504,10 +2953,8 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
     cudaEventRecord(abft_prepare_end, 0);
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
-    // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
   }
 
   // Launch initialized CUTLASS kernel
@@ -2524,10 +2971,12 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
   // Copy results back
   // printf("copy back\n");
   copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), c, m, n);
+  
   // result_ptr = tensor_d.device_data();
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
   // outputChk(result_ptr, 1, result_ld, m*n, m, n);
+  
   // tensor_a.reset();
   // tensor_b.reset();
   // tensor_d.reset();
@@ -2538,9 +2987,10 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, at:
     cudaEventSynchronize(abft_prepare_end);
     cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
     // printf("myABFT Prepare Time: %f \n", t1);
-    destinationFile = "records/time/preparation.txt";
-    fullPath = homePath / destinationFile;
-    recordTime(fullPath, t1, DEBUG);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
+    // cudaEventDestroy(abft_prepare_start);
+    // cudaEventDestroy(abft_prepare_end);
   }
   
   return true;
@@ -2553,8 +3003,14 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   bool state = false;
   bool DEBUG = true;
   char flag;
+  char *job_id = getenv("SLURM_JOB_ID");
+  
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
 
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2569,9 +3025,21 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   }
   DebugFile.close();
 
+  // record preparation time
+  cudaEvent_t abft_prepare_start, abft_prepare_end;
+  if (DEBUG){
+    cudaEventCreate(&abft_prepare_start,0);
+    cudaEventCreate(&abft_prepare_end,0);
+    cudaEventRecord(abft_prepare_start, 0);
+  }
+  float t1 = 0.f;
+
+
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2586,11 +3054,42 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   }
   SplitFile.close();
 
-  if constexpr (std::is_same<Dtype, float>::value) {
-    state = cutlass_gemm<float>(transa, transb, m, n, k, alpha,
-                                a, lda, b, ldb, beta,
-                                c, ldc, DEBUG, if_split_phase);
+  if(DEBUG){
+    cudaEventRecord(abft_prepare_end, 0);
+    cudaEventSynchronize(abft_prepare_end);
+    cudaEventElapsedTime(&t1, abft_prepare_start, abft_prepare_end);
+    destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "time/preparation.txt";
+    recordTime(destinationFile, t1, DEBUG);
   }
+
+  if constexpr (std::is_same<Dtype, float>::value) {
+    // printf("using float\n");
+
+    Dtype alpha_ = Dtype(alpha);
+    Dtype beta_ = Dtype(beta);
+
+    Dtype *a_ = const_cast<Dtype*>(a);
+    Dtype *b_ = const_cast<Dtype*>(b);
+
+    state = cutlass_gemm<float>(transa, transb, m, n, k, alpha_,
+                                a_, lda, b_, ldb, beta_,
+                                c, ldc, DEBUG, if_split_phase, job_id, gpu_dev);
+  }
+  else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
+    // printf("using c10::BFloat16\n");
+
+    cutlass::bfloat16_t *a_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(a));
+    cutlass::bfloat16_t *b_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(b));
+    cutlass::bfloat16_t *c_ = reinterpret_cast<cutlass::bfloat16_t*>(c);
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha);
+    cutlass::bfloat16_t beta_ = static_cast<cutlass::bfloat16_t>(beta);
+
+    state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,
+                                              a_, lda, b_, ldb, beta_,
+                                              c_, ldc, DEBUG, if_split_phase, job_id, gpu_dev);
+  } 
+
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm<double>(transa, transb, m, n, k, alpha,
   //                               a, lda, b, ldb, beta,
@@ -2608,11 +3107,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   //                                           *temp_a, lda, *temp_b, ldb, temp_beta,
   //                                           *temp_c, ldc);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
-  //   state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha,
-  //                                             *a, lda, *b, ldb, beta,
-  //                                             *c, ldc);
-  // } 
+
   return state;
 }
 
@@ -2647,12 +3142,12 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
     int64_t m,
     int64_t n,
     int64_t k,
-    at::opmath_type<Dtype> alpha_val,
-    const Dtype* mat1_ptr,
+    Dtype alpha_val,
+    Dtype* mat1_ptr_,
     int64_t mat1_ld,
-    const Dtype* mat2_ptr,
+    Dtype* mat2_ptr_,
     int64_t mat2_ld,
-    const Dtype* bias,
+    Dtype* bias_,
     Dtype* result_ptr,
     int64_t result_ld,
     GEMMAndBiasActivationEpilogue activation, bool DEBUG, int if_split_phase){
@@ -2692,6 +3187,10 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // Problem Size
   // cutlass::gemm::GemmCoord problem_size({m, n, k});
 
+  // Accumulator Dtype
+  using DtypeAccumulator = float;
+  using DtypeComputeEpilogue = DtypeAccumulator;
+
   // Matrix Layerout
   using LayoutInputA = cutlass::layout::RowMajor;
   using LayoutInputB = cutlass::layout::ColumnMajor;
@@ -2706,19 +3205,22 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   using LayoutOutput = cutlass::layout::ColumnMajor;
   
   // init host_tensor of A, B, C and D
-  cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
-  cutlass::HostTensor<Dtype, LayoutInputB> tensor_b(problem_size.kn()); // Matrix B
-  cutlass::HostTensor<Dtype, LayoutOutput> tensor_c(problem_size.mn()); // Matrix Bias
-  cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
+  // cutlass::HostTensor<Dtype, LayoutInputA> tensor_a(problem_size.mk()); // Matrix A
+  // cutlass::HostTensor<Dtype, LayoutInputB> tensor_b(problem_size.kn()); // Matrix B
+  // cutlass::HostTensor<Dtype, LayoutOutput> tensor_c(problem_size.mn()); // Matrix Bias
+  // cutlass::HostTensor<Dtype, LayoutOutput> tensor_d(problem_size.mn()); // Matrix D
   
   // bias vector to bias matrix
-  Dtype *bias_ = const_cast<Dtype*>(bias);
-  vector_to_matrix<<<dim3(128), dim3((n+128-1)/128)>>>(bias_, tensor_c.device_data(), m, n);
+  // Dtype *bias_ = const_cast<Dtype*>(bias);
+  Dtype *bias_mat;
+  cudaMalloc((void**)bias_mat, m * n * sizeof(Dtype));
+  vector_to_matrix<<<dim3(128), dim3((n+128-1)/128)>>>(bias_, bias_mat, m, n);
+  
   // copy data
-  Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
-  Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
-  copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), k, m);
-  copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
+  // Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
+  // Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
+  // copy_matrix<<<dim3((m + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat1_ptr_, tensor_a.device_data(), k, m);
+  // copy_matrix<<<dim3((n + 16 - 1) / 16, (k + 16 - 1) / 16), dim3(16,16)>>>(mat2_ptr_, tensor_b.device_data(), k, n);
 
   // printf("print A:\n");
   // outputChk(tensor_a.device_data(), 1, mat1_ld, m*k, m, k);
@@ -2732,13 +3234,18 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // outputChk(tensor_c.device_data(), 1, result_ld, m*n, m, n);
 
   // Initialize alpha and beta for dot product computation
-  Dtype alpha = Dtype(1);
-  Dtype beta = Dtype(1);
-  Dtype encode_beta = Dtype(0);
+  // Dtype alpha = Dtype(1);
+  // Dtype beta = Dtype(1);
+  // Dtype encode_beta = Dtype(0);
+
+  Dtype alpha = static_cast<Dtype>(1);
+  Dtype beta = static_cast<Dtype>(1);
+  Dtype encode_beta = static_cast<Dtype>(0);
 
   // encode checksum
   // cudaStream_t stream_main, stream_rowchk, stream_biaschk;
-  // cudaStreamCreate(&stream_main);
+  cudaStream_t stream_main;
+  cudaStreamCreate(&stream_main);
   // cudaStreamCreate(&stream_rowchk);
   // cudaStreamCreate(&stream_biaschk);
 
@@ -2748,49 +3255,35 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // cublasCreate(&handle_biaschk);
   // cublasSetStream(handle_biaschk, stream_biaschk);
 
-  cudaStream_t stream_main;
-  cudaStreamCreate(&stream_main);
+  // if(if_split_phase == 0){
+  //   int nb = n / partition;
+  //   Dtype *chk_vector, *d_chk_vector;
+  //   size_t size = sizeof(Dtype)* nb * 1;
+  //   chk_vector = (Dtype*)malloc(size);
+  //   cudaMalloc((void**)&d_chk_vector, size);
+  //   for(int r = 0; r < nb; r++){
+  //     chk_vector[r] = (Dtype)1.f;
+  //   }
+  //   cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
+  //   free(chk_vector);
 
-  if(if_split_phase == 0){
-    cublasHandle_t handle_main = at::cuda::getCurrentCUDABlasHandle();
-    cublasSetStream(handle_main, stream_main);
-
-    cudaStream_t stream_biaschk;
-    cudaStreamCreate(&stream_biaschk);
-    cublasHandle_t handle_biaschk;
-    cublasCreate(&handle_biaschk);
-    cublasSetStream(handle_biaschk, stream_biaschk);
-
-    int nb = n / partition;
-    Dtype *chk_vector, *d_chk_vector;
-    size_t size = sizeof(Dtype)* nb * 1;
-    chk_vector = (Dtype*)malloc(size);
-    cudaMalloc((void**)&d_chk_vector, size);
-    for(int r = 0; r < nb; r++){
-      chk_vector[r] = (Dtype)1.f;
-    }
-    cudaMemcpy(d_chk_vector, chk_vector, size, cudaMemcpyHostToDevice);
-    free(chk_vector);
-
-    // printf("-----------\n");
+  //   // printf("-----------\n");
     
-    if constexpr (std::is_same<Dtype, float>::value) {
-      cublasSgemmStridedBatched(handle_main, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
-                                        &alpha, tensor_b.device_data(), mat2_ld, k*nb,
-                                        d_chk_vector, nb, 0, &encode_beta,
-                                        (tensor_b.device_data()+(k*n)), mat2_ld, k,
-                                        partition);
+  //   if constexpr (std::is_same<Dtype, float>::value) {
+  //     cublasSgemmStridedBatched(handle_rowchk, CUBLAS_OP_N, CUBLAS_OP_N, k, 1, nb,
+  //                                       &alpha, tensor_b.device_data(), mat2_ld, k*nb,
+  //                                       d_chk_vector, nb, 0, &encode_beta,
+  //                                       (tensor_b.device_data()+(k*n)), mat2_ld, k,
+  //                                       partition);
                                         
-      cublasSgemmStridedBatched(handle_biaschk, CUBLAS_OP_N, CUBLAS_OP_N, m, 1, nb,
-                                        &alpha, tensor_c.device_data(), result_ld, m*nb,
-                                        d_chk_vector, nb, 0, &encode_beta,
-                                        (tensor_c.device_data()+(m*n)), result_ld, m,
-                                        partition);
-    }                                  
-    cudaFree(d_chk_vector);
-
-    cudaStreamDestroy(stream_biaschk);
-  }
+  //     cublasSgemmStridedBatched(handle_biaschk, CUBLAS_OP_N, CUBLAS_OP_N, m, 1, nb,
+  //                                       &alpha, tensor_c.device_data(), result_ld, m*nb,
+  //                                       d_chk_vector, nb, 0, &encode_beta,
+  //                                       (tensor_c.device_data()+(m*n)), result_ld, m,
+  //                                       partition);
+  //   }                                  
+  //   cudaFree(d_chk_vector);
+  // }
   
   // printf("B_after\n");
   // outputChk(tensor_b.device_data(), 1, mat2_ld, k*n1, k, n1);
@@ -2828,8 +3321,8 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                                         // memory access. For a byte, it's 16
                                                         // elements. This becomes the vector width of
                                                         // math instructions in the epilogue too
-      Dtype,                                // <- data type of accumulator
-      Dtype>;  // <- data type for alpha/beta in linear combination function
+      DtypeAccumulator,                                // <- data type of accumulator
+      DtypeComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
   // Number of pipelines you want to use
   constexpr int NumStages = 4;
@@ -2841,7 +3334,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                          LayoutInputB,
                                          Dtype,
                                          LayoutOutput,
-                                         Dtype,
+                                         DtypeAccumulator,
                                          MMAOp,
                                          SmArch,
                                          ShapeMMAThreadBlock,
@@ -2851,12 +3344,22 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
                                          SwizzleThreadBlock,
                                          NumStages>;
                                          
+  // // instantiated CUTLASS kernel
+  // typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
+  //   tensor_a.device_ref(),                          // <- reference to matrix A on device
+  //   tensor_b.device_ref(),                          // <- reference to matrix B on device
+  //   tensor_c.device_ref(),                          // <- reference to matrix C on device
+  //   tensor_d.device_ref(),                          // <- reference to matrix D on device
+  //   {alpha, beta},                                  // <- tuple of alpha and beta
+  //   split_k_slices};                                // <- k-dimension split factor
+
+
   // instantiated CUTLASS kernel
   typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
-    tensor_a.device_ref(),                          // <- reference to matrix A on device
-    tensor_b.device_ref(),                          // <- reference to matrix B on device
-    tensor_c.device_ref(),                          // <- reference to matrix C on device
-    tensor_d.device_ref(),                          // <- reference to matrix D on device
+    {mat1_ptr_, mat1_ld},                          // <- reference to matrix A on device
+    {mat2_ptr_, mat2_ld},                          // <- reference to matrix B on device
+    {bias_mat, result_ld},                          // <- reference to matrix C on device
+    {result_ptr, result_ld},                          // <- reference to matrix D on device
     {alpha, beta},                                  // <- tuple of alpha and beta
     split_k_slices};                                // <- k-dimension split factor
 
@@ -2896,14 +3399,14 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
-  // cudaDeviceSynchronize();
+  cudaDeviceSynchronize();
   
   // Copy results back
   // printf("copy back\n");
   if (DEBUG){
     cudaEventRecord(abft_prepare_start, 0);
   }
-  copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), result_ptr, m, n);
+  // copy_matrix<<<dim3((n + 16 - 1) / 16, (m + 16 - 1) / 16), dim3(16,16)>>>(tensor_d.device_data(), result_ptr, m, n);
   // result_ptr = tensor_d.device_data();
   // printf("C:\n");
   // outputChk(tensor_d.device_data(), 1, result_ld, m*n, m, n);
@@ -2914,6 +3417,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   // tensor_c.reset();
   // tensor_d.reset();
 
+  cudaFree(bias_mat);
   cudaStreamDestroy(stream_main);
 
   if(DEBUG){
@@ -2949,7 +3453,15 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   bool state = false;
   char flag;
   bool DEBUG = true;
-  fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  char *job_id = getenv("SLURM_JOB_ID");
+
+  int gpu_dev = -1;
+  cudaGetDevice(&gpu_dev);
+
+  // fs::path destinationFile = "/home/yuhangl/control/DEBUG.txt";
+  // fs::path destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "DEBUG.txt";
+  fs::path destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "DEBUG.txt";
+  
   // fullPath = homePath / destinationFile;
   std::ifstream DebugFile(destinationFile);
   if (DebugFile.is_open()){
@@ -2966,7 +3478,9 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
 
   flag = 'f';
   int if_split_phase = 2;
-  destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = "/home/yuhangl/control/split.txt";
+  // destinationFile = fs::path("/home/yuhangl/control_" + std::string(job_id)) / "split.txt";
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "split.txt";
   // fullPath = homePath / destinationFile;
   std::ifstream SplitFile(destinationFile);
   if (SplitFile.is_open()){
@@ -2982,12 +3496,37 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   SplitFile.close();
 
   if constexpr (std::is_same<Dtype, float>::value) {
-    state = cutlass_gemm_and_bias<float>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
-      mat1_ptr, mat1_ld,
-      mat2_ptr, mat2_ld,
-      bias, result_ptr,result_ld,
+    printf("using float\n");
+
+    Dtype alpha_ = Dtype(alpha_val);
+    // Dtype beta_ = Dtype(beta);
+
+    Dtype *mat1_ptr_ = const_cast<Dtype*>(mat1_ptr);
+    Dtype *mat2_ptr_ = const_cast<Dtype*>(mat2_ptr);
+    Dtype *bias_ = const_cast<Dtype*>(bias);
+
+    state = cutlass_gemm_and_bias<float>(transpose_mat1,transpose_mat2,m,n,k,alpha_,
+      mat1_ptr_, mat1_ld,
+      mat2_ptr_, mat2_ld,
+      bias_, result_ptr,result_ld,
       activation, DEBUG, if_split_phase);
   }
+  else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {    
+    printf("using c10::BFloat16\n");
+
+    cutlass::bfloat16_t *mat1_ptr_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(mat1_ptr));
+    cutlass::bfloat16_t *mat2_ptr_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(mat2_ptr));
+    cutlass::bfloat16_t *result_ptr = reinterpret_cast<cutlass::bfloat16_t*>(result_ptr);
+    cutlass::bfloat16_t *bias_ = reinterpret_cast<cutlass::bfloat16_t*>(const_cast<Dtype*>(bias));
+
+    cutlass::bfloat16_t alpha_ = static_cast<cutlass::bfloat16_t>(alpha_val);
+
+    state = cutlass_gemm_and_bias<cutlass::bfloat16_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_,
+      mat1_ptr_, mat1_ld,
+      mat2_ptr_, mat2_ld,
+      bias_, result_ptr,result_ld,
+      activation, DEBUG, if_split_phase);
+  } 
   // else if constexpr (std::is_same<Dtype, double>::value) {
   //   state = cutlass_gemm_and_bias<double>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
   //     mat1_ptr, mat1_ld,
@@ -3002,13 +3541,7 @@ bool cutlass_gemm_and_bias_launcher(bool transpose_mat1,
   //     bias, result_ptr,result_ld,
   //     activation);
   // } 
-  // else if constexpr (std::is_same<Dtype, c10::BFloat16>::value) {
-  //   state = cutlass_gemm_and_bias<cutlass::bfloat16_t>(transpose_mat1,transpose_mat2,m,n,k,alpha_val,
-  //     mat1_ptr, mat1_ld,
-  //     mat2_ptr, mat2_ld,
-  //     bias, result_ptr,result_ld,
-  //     activation);
-  // } 
+  
   return state;
 }
 
