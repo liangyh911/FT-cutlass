@@ -643,8 +643,9 @@ struct GemmBatched {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                    int if_split_phase, int *SM_check_res, int nSM, int batch_per_TB, int monitored_batched_count,
-                    int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf) {
+                    int if_split_phase, int *SM_check_res, int nSM, int batch_per_TB, int monitored_batched_count
+                    // int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf
+                  ) {
 
     // get SM id
     unsigned int real_smid;
@@ -828,30 +829,30 @@ struct GemmBatched {
         // }
         
         // Fault Injection
-        if(real_smid == faulty_smid && thread_idx == 0){
-          // int mma_grid_m = params.problem_size.m() / 16;
-          // int mma_grid_n = params.problem_size.n() / 8;
-          int N = params.problem_size.n();
-          int c = 0;
-          for(int i = 0; i < 64; i++){
-            int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
-            int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
+        // if(real_smid == faulty_smid && thread_idx == 0){
+        //   // int mma_grid_m = params.problem_size.m() / 16;
+        //   // int mma_grid_n = params.problem_size.n() / 8;
+        //   int N = params.problem_size.n();
+        //   int c = 0;
+        //   for(int i = 0; i < 64; i++){
+        //     int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
+        //     int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
 
-            // index of 1st faulty element
-            int fault_m = faulty_elements[i] % 8;
-            int fault_n = faulty_elements[i] / 8;
-            if((mma_n + fault_n) < params.problem_size.n() ){
-              int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+        //     // index of 1st faulty element
+        //     int fault_m = faulty_elements[i] % 8;
+        //     int fault_n = faulty_elements[i] / 8;
+        //     if((mma_n + fault_n) < params.problem_size.n() ){
+        //       int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+        //       force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
 
-              // index of 2nd faulty element (gap is 64)
-              fault_m += 8;
-              idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
-            }
-          }
-        }
-        __syncthreads();
+        //       // index of 2nd faulty element (gap is 64)
+        //       fault_m += 8;
+        //       idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+        //       force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+        //     }
+        //   }
+        // }
+        // __syncthreads();
         // }
         // cooperative_groups::this_grid().sync();
 

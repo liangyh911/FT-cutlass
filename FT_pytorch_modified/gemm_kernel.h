@@ -401,7 +401,7 @@ struct Gemm {
     float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
     float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
     
-    if(fabs(recomputed_chksum - updated_chksum) > (float)1){
+    if(fabs(recomputed_chksum - updated_chksum) > (float)1e4){
     //  if(rel_err > 0.01){
       diff = 1;
       // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
@@ -489,7 +489,8 @@ struct Gemm {
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                   int if_split_phase, int *SM_check_res, int partion, 
-                  int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, int nsmid
+                  // int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, 
+                  int nsmid
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
@@ -809,29 +810,29 @@ struct Gemm {
       //   // __syncthreads();
       // }
       
-      // Fault Injection
-      if(smid == faulty_smid && thread_idx == 0){
-        // int mma_grid_m = params.problem_size.m() / 16;
-        // int mma_grid_n = params.problem_size.n() / 8;
-        int N = params.problem_size.n();
-        int c = 0;
-        for(int i = 0; i < 64; i++){
-          int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
-          int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
+      // // Fault Injection
+      // if(smid == faulty_smid && thread_idx == 0){
+      //   // int mma_grid_m = params.problem_size.m() / 16;
+      //   // int mma_grid_n = params.problem_size.n() / 8;
+      //   int N = params.problem_size.n();
+      //   int c = 0;
+      //   for(int i = 0; i < 64; i++){
+      //     int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
+      //     int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
 
-          // index of 1st faulty element
-          int fault_m = faulty_elements[i] % 8;
-          int fault_n = faulty_elements[i] / 8;
-          int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+      //     // index of 1st faulty element
+      //     int fault_m = faulty_elements[i] % 8;
+      //     int fault_n = faulty_elements[i] / 8;
+      //     int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+      //     force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
 
-          // index of 2nd faulty element (gap is 64)
-          fault_m += 8;
-          idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
-        }
-      }
-      __syncthreads();
+      //     // index of 2nd faulty element (gap is 64)
+      //     fault_m += 8;
+      //     idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+      //     force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+      //   }
+      // }
+      // __syncthreads();
 
       // if(smid == faulty_smid && thread_idx == faulty_tid_1){
       //   // printf("injection. sm: %d, tid1: %d, bit: %d\n", faulty_smid, faulty_tid_1, faulty_tid_2, faulty_bit);
@@ -940,7 +941,7 @@ struct Gemm {
     // }
 
     // fault injection
-    cooperative_groups::this_grid().sync();
+    // cooperative_groups::this_grid().sync();
     
     // __syncthreads();
 
