@@ -437,7 +437,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, bool adaptive_mod, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
 
     // Preparing time
     // cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -554,9 +554,14 @@ public:
     
     // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf};
     int monitored_batched_count = params_.batch_count;
+
+    if(adaptive_mod){
+      monitored_batched_count = (transb == 't') ? 8 : 32;
+    }
+
     void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &batch_per_TB, &monitored_batched_count};
     
-    // printf("SM: count: %d, m: %d, n: %d, k: %d, batch_per_TB: %d\n", num_sms, params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
+    // printf("SM: count: %d, GEMM SM: %d, b: %d, m: %d, n: %d, k: %d, batch_per_TB: %d\n", num_sms, matrix_SM, monitored_batched_count, params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
     cutlass::arch::synclog_setup();
 
@@ -980,8 +985,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, transb, DEBUG, stream);
+  Status run(int if_split_phase, bool adaptive_mod, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, adaptive_mod, transb, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -992,14 +997,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, char transb, bool DEBUG,
+    int if_split_phase, bool adaptive_mod, char transb, bool DEBUG,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, transb, DEBUG, stream);
+      status = run(if_split_phase, adaptive_mod, transb, DEBUG, stream);
     }
 
     return status;

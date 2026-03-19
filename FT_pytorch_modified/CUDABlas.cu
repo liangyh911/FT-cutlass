@@ -2229,7 +2229,8 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
                         Dtype *a, int64_t lda, int64_t stridea,                                         
                         Dtype *b, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
-                        bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+                        bool DEBUG, int if_split_phase, bool adaptive_mod,
+                        char *job_id, int gpu_dev){
   // printf("cutlass bgemm\n");
   // printf("transa: %c, transb: %c\n", transa, transb);
   cudaStream_t stream_main = at::cuda::getCurrentCUDAStream();
@@ -2565,7 +2566,7 @@ bool cutlass_bgemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dt
       {alpha, beta},
       num_batches
     },
-    if_split_phase, transa, DEBUG, stream_main
+    if_split_phase, adaptive_mod, transa, DEBUG, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -2637,7 +2638,8 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
                         Dtype *a, int64_t lda, int64_t stridea,                                         
                         Dtype *b, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
-                        bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+                        bool DEBUG, int if_split_phase, bool adaptive_mod,
+                        char *job_id, int gpu_dev){
   // printf("cutlass bgemm T\n");
   // printf("transa: %c, transb: %c\n", transa, transb);
 
@@ -2948,7 +2950,7 @@ bool cutlass_bgemm_T(char transa, char transb, int64_t m, int64_t n, int64_t k, 
       {alpha, beta},
       num_batches
     },
-    if_split_phase, transa, DEBUG, stream_main
+    if_split_phase, adaptive_mod, transa, DEBUG, stream_main
   );
 
   if (status != cutlass::Status::kSuccess) {
@@ -3070,6 +3072,21 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   }
   SplitFile.close();
 
+  bool adaptive_mod = false;
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
+  std::ifstream AdaFile(destinationFile);
+  if (AdaFile.is_open()){
+    AdaFile.get(flag);
+    if(flag == 't'){
+      adaptive_mod = true;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("Adaptive mod: Cannot open file, using default setting.\n");
+  }
+  AdaFile.close();
+
   // if(DEBUG){
   //   auto end_malloc = std::chrono::high_resolution_clock::now();
   //   t_cpu = std::chrono::duration<float, std::milli>(end_malloc - start_malloc).count();
@@ -3117,7 +3134,7 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
         state = cutlass_bgemm_T<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
           a_, lda, stridea,                                         
           b_, ldb, strideb,                                           
-          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, job_id, gpu_dev);
+          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, adaptive_mod, job_id, gpu_dev);
       }
       else{
         state = cutlass_bgemm_T_baseline<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
@@ -3131,7 +3148,7 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
         state = cutlass_bgemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
           a_, lda, stridea,                                         
           b_, ldb, strideb,                                           
-          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, job_id, gpu_dev);
+          beta_, c_, ldc, stridec, num_batches, DEBUG, if_split_phase, adaptive_mod, job_id, gpu_dev);
       }
       else{
         state = cutlass_bgemm_baseline<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,  
@@ -3339,7 +3356,8 @@ bool cutlass_gemm_baseline(char transa, char transb, int64_t m, int64_t n, int64
 template <typename Dtype>
 bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dtype alpha,
                   Dtype *a, int64_t lda, Dtype *b, int64_t ldb, Dtype beta,
-                  Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
+                  Dtype *c, int64_t ldc, bool DEBUG, int if_split_phase, bool adaptive_mod,
+                  char *job_id, int gpu_dev){
   // printf("cutlass_gemm\n");
                 
   cudaStream_t stream_main = at::cuda::getCurrentCUDAStream();
@@ -3630,7 +3648,7 @@ bool cutlass_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k, Dty
 
   // Launch initialized CUTLASS kernel
   // printf("launch\n");
-  status = gemm_op(if_split_phase, partition, DEBUG, stream_main);
+  status = gemm_op(if_split_phase, adaptive_mod, partition, DEBUG, stream_main);
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish
@@ -3730,6 +3748,22 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   }
   SplitFile.close();
 
+  bool adaptive_mod = false;
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
+  std::ifstream AdaFile(destinationFile);
+  if (AdaFile.is_open()){
+    AdaFile.get(flag);
+    if(flag == 't'){
+      adaptive_mod = true;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("Adaptive mod: Cannot open file, using default setting.\n");
+  }
+  AdaFile.close();
+
+
   // if(DEBUG){
   //   auto end_malloc = std::chrono::high_resolution_clock::now();
   //   t_cpu = std::chrono::duration<float, std::milli>(end_malloc - start_malloc).count();
@@ -3748,7 +3782,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
 
     state = cutlass_gemm<float>(transa, transb, m, n, k, alpha_,
                                 a_, lda, b_, ldb, beta_,
-                                c, ldc, DEBUG, if_split_phase, job_id, gpu_dev);
+                                c, ldc, DEBUG, if_split_phase, adaptive_mod, job_id, gpu_dev);
   }
   else if constexpr (std::is_same<Dtype, at::BFloat16>::value) {
     // printf("using c10::BFloat16\n");
@@ -3763,7 +3797,7 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
     if(flag != 'b'){
       state = cutlass_gemm<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,
                                                 a_, lda, b_, ldb, beta_,
-                                                c_, ldc, DEBUG, if_split_phase, job_id, gpu_dev);
+                                                c_, ldc, DEBUG, if_split_phase, adaptive_mod, job_id, gpu_dev);
     }
     else{
       state = cutlass_gemm_baseline<cutlass::bfloat16_t>(transa, transb, m, n, k, alpha_,
@@ -4068,7 +4102,7 @@ bool cutlass_gemm_and_bias(bool transpose_mat1,
   }
   // Launch initialized CUTLASS kernel
   // printf("launch\n");
-  status = gemm_op(if_split_phase, partition, DEBUG);
+  // status = gemm_op(if_split_phase, partition, DEBUG);
   CUTLASS_CHECK(status);
 
   // Wait for kernels to finish

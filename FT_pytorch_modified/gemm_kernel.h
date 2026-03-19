@@ -488,7 +488,7 @@ struct Gemm {
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                  int if_split_phase, int *SM_check_res, int partion, 
+                  int if_split_phase, bool adaptive_mod, int *SM_check_res, int partion, 
                   // int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, 
                   int nsmid
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
@@ -526,6 +526,8 @@ struct Gemm {
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
     int matrix_block_count = matrix_shape_m * params.grid_tiled_shape.n();
+
+    int check_iter = (adaptive_mod) ? 3 : SM_iter;
 
     // int matrix_next_blk_offset_m = matrix_SM / matrix_shape_n;
     // int matrix_next_blk_offset_n = matrix_SM % matrix_shape_n;
@@ -950,7 +952,7 @@ struct Gemm {
     // }
     #if 1
     if(if_split_phase == 0){
-      if(iter == 0 && SM_iter != 1){
+      if(iter == 0 && SM_iter != 1 || iter > check_iter){
         continue;
       }
       // overhead issue below

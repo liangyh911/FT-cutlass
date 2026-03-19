@@ -922,7 +922,7 @@ struct GemmBatched {
 
       int check_step = batch_step;
       int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
-      int checked_init_batch_idx = ((init_batch_idx + 1) % check_step);
+      int checked_init_batch_idx = ((init_batch_idx + batch_per_TB) % check_step);
       int checked_SM_group_idx = checked_init_batch_idx;
       // int block_offset_n = (params.problem_size.n() < blockDim.x) ? params.problem_size.n() : blockDim.x;
 

@@ -500,7 +500,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, bool adaptive_mod, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
 
     // Preparing time
     // cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -563,7 +563,7 @@ public:
     //             // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
     //           };
 
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res_1, &partion, 
+    void *kernelArgs[] = {&params_, &if_split_phase, &adaptive_mod, &SM_check_res_1, &partion, 
                 // &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf, 
                 &num_sms
                 // &d_all_start, &d_compute, &d_finding, &d_recompute, &d_compare, &d_checking
@@ -649,8 +649,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, partion, DEBUG, stream);
+  Status operator()(int if_split_phase, bool adaptive_mod, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, adaptive_mod, partion, DEBUG, stream);
   }
  
   /// Runs the kernel using initialized state.
@@ -887,14 +887,14 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, bool adaptive_mod, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
 
-    return underlying_operator_.run(if_split_phase, partion, DEBUG, stream);
+    return underlying_operator_.run(if_split_phase, adaptive_mod, partion, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
-  Status operator()(int if_split_phase, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
-    return run(if_split_phase, partion, DEBUG, stream);
+  Status operator()(int if_split_phase, bool adaptive_mod, int partion, bool DEBUG, cudaStream_t stream = nullptr) {
+    return run(if_split_phase, adaptive_mod, partion, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
