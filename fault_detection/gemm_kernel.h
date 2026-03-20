@@ -401,7 +401,7 @@ struct Gemm {
     float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
     float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
     
-    if(fabs(recomputed_chksum - updated_chksum) > (float)1){
+    if(fabs(recomputed_chksum - updated_chksum) > (float)1e5){
     //  if(rel_err > 0.01){
       diff = 1;
       // printf("Error detected at SM %d (%d) by checker SM %d (%d). Checksum SM %d (%d). recompute: %f, checksum: %f, diff: %f rel err: %f\n", 
@@ -437,7 +437,7 @@ struct Gemm {
   }
   
   template <typename T>
-  __device__ void force_bit_one_f32(T *dA, int bit, int *count, float *buf){ 
+  __device__ void force_bit_one_f32(T *dA, int bit){ 
     // 30 or 29
     float orgValue = (float)*(dA);
     float tmp = (float)*(dA);
@@ -448,18 +448,18 @@ struct Gemm {
     // *intValue &= ~ ((1u << bit));
     *(dA) = (T) *reinterpret_cast<float*>(intValue);
     
-    if(tmp != *(dA)){
-      // printf("%.4f %.4f ", tmp, *(dA));
-      int idx = (*count) * 1;
-      *(buf + idx) = tmp;
-      *(buf + (idx + 1)) = *(dA);
-      (*count) += 2;
-    }
+    // if(tmp != *(dA)){
+    //   // printf("%.4f %.4f ", tmp, *(dA));
+    //   int idx = (*count) * 1;
+    //   *(buf + idx) = tmp;
+    //   *(buf + (idx + 1)) = *(dA);
+    //   (*count) += 2;
+    // }
     // printf("%.4f ", *(dA));
   }
 
   template <typename T>
-  __device__ void force_bit_one_bf16(T *dA, int bit, int *count, float *buf){ 
+  __device__ void force_bit_one_bf16(T *dA, int bit){ 
     // 30 or 29
     float orgValue = static_cast<float>(*dA);
     float tmp = orgValue;
@@ -474,28 +474,30 @@ struct Gemm {
     float new_float = *reinterpret_cast<float*>(&new_int_value);
     *dA = static_cast<cutlass::bfloat16_t>(new_float);
 
-    if(tmp != new_float){
-      // printf("%.4f %.4f ", tmp, new_float);
-      // int idx = (*count) * 2;
-      int idx = *count;
-      *(buf + idx) = tmp;
-      *(buf + (idx + 1)) = new_float;
-      (*count) += 2;
-    }
+    // if(tmp != new_float){
+    //   // printf("%.4f %.4f ", tmp, new_float);
+    //   // int idx = (*count) * 2;
+    //   int idx = *count;
+    //   *(buf + idx) = tmp;
+    //   *(buf + (idx + 1)) = new_float;
+    //   (*count) += 2;
+    // }
     // printf("%.4f ", *(dA));
   }
 
   /// Executes one GEMM
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
-                  int if_split_phase, int *SM_check_res, int partion, 
-                  int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, int nsmid
+                  int if_split_phase, bool adaptive_mod, int *SM_check_res, int partion, 
+                  int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, 
+                  // int *counter, float *buf, 
+                  int nsmid, int banned_smid
                   // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
                 ) {
 
     // get SM id
-    unsigned int smid;
-    asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
+    unsigned int real_smid;
+    asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
     // asm volatile("mov.u32 %0, %nsmid;" : "=r"(nsmid));
 
     int threadblock_tile_offset_m, threadblock_tile_offset_k, threadblock_tile_offset_n;
@@ -525,6 +527,13 @@ struct Gemm {
     // iteration based on GeMM not (GeMM + chksum)
     int SM_iter = (int)ceil((double)((matrix_shape_m * params.grid_tiled_shape.n())/(double)matrix_SM));
     int matrix_block_count = matrix_shape_m * params.grid_tiled_shape.n();
+
+    int check_iter = (adaptive_mod) ? 3 : SM_iter;
+
+    int smid = real_smid;
+    if(real_smid > banned_smid){
+      smid = smid - 1;
+    }
 
     // int matrix_next_blk_offset_m = matrix_SM / matrix_shape_n;
     // int matrix_next_blk_offset_n = matrix_SM % matrix_shape_n;
@@ -611,7 +620,7 @@ struct Gemm {
     int block_idx = threadblock_tile_offset_m + threadblock_tile_offset_n * params.grid_tiled_shape.m();
     int thread_idx = threadIdx.x;
 
-    if(!beyond_bound){
+    if((!beyond_bound) && (real_smid != banned_smid)){
       Semaphore semaphore(params.semaphore + block_idx, thread_idx);
       
       // Compute initial location in logical coordinates
@@ -810,7 +819,7 @@ struct Gemm {
       // }
       
       // Fault Injection
-      if(smid == faulty_smid && thread_idx == 0){
+      if(real_smid == faulty_smid && thread_idx == 0){
         // int mma_grid_m = params.problem_size.m() / 16;
         // int mma_grid_n = params.problem_size.n() / 8;
         int N = params.problem_size.n();
@@ -823,12 +832,12 @@ struct Gemm {
           int fault_m = faulty_elements[i] % 8;
           int fault_n = faulty_elements[i] / 8;
           int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit);
 
           // index of 2nd faulty element (gap is 64)
           fault_m += 8;
           idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit, counter, buf);
+          force_bit_one_bf16((params.ref_D.data()+idx), faulty_bit);
         }
       }
       __syncthreads();
@@ -949,7 +958,7 @@ struct Gemm {
     // }
     #if 1
     if(if_split_phase == 0){
-      if(iter == 0 && SM_iter != 1){
+      if(iter == 0 && SM_iter != 1 || iter > check_iter){
         continue;
       }
       // overhead issue below
@@ -980,7 +989,7 @@ struct Gemm {
 
       // begin chkeck
       // if(flag == 1){
-        if (smid < matrix_SM){
+        if ((smid < matrix_SM) && (real_smid != banned_smid)){
           int target_sm_offset = iter + 1;
           int target_smid = (smid + target_sm_offset) % matrix_SM;
           

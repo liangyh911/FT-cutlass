@@ -104,7 +104,9 @@ template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_Batched(typename Operator::Params params, 
             int if_split_phase, int *SM_check_res, int matrix_SM, int batch_per_TB, int monitored_batched_count,
-            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf
+            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit,
+            int banned_smid
+            // int *counter, float *buf
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -116,7 +118,9 @@ void Kernel_Batched(typename Operator::Params params,
   Operator op;
 
   op(params, *shared_storage, if_split_phase, SM_check_res, matrix_SM, batch_per_TB, monitored_batched_count,
-     faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, counter, buf
+     faulty_smid, faulty_MMAs, faulty_elements, faulty_bit,
+     banned_smid
+    //  counter, buf
     // all_start, compute, finding, recompute, compare, checking
   );
   
@@ -128,8 +132,10 @@ void Kernel_Batched(typename Operator::Params params,
 template <typename Operator>
 CUTLASS_GLOBAL
 void Kernel_GEMM(typename Operator::Params params, 
-            int if_split_phase, int *SM_check_res, int partion, 
-            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf, int num_sms
+            int if_split_phase, bool adaptive_mod, int *SM_check_res, int partion, 
+            int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, 
+            // int *counter, float *buf, 
+            int num_sms, int banned_smid
             // int *all_start, int *compute, int *finding, int *recompute, int *compare, int *checking
           ) {  
   // Dynamic shared memory base pointer
@@ -140,7 +146,10 @@ void Kernel_GEMM(typename Operator::Params params,
 
   Operator op;
 
-  op(params, *shared_storage, if_split_phase, SM_check_res, partion, faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, counter, buf, num_sms
+  op(params, *shared_storage, if_split_phase, adaptive_mod, SM_check_res, partion, 
+    faulty_smid, faulty_MMAs, faulty_elements, faulty_bit, 
+    // counter, buf, 
+    num_sms, banned_smid
     // all_start, compute, finding, recompute, compare, checking
   );
   
@@ -468,7 +477,8 @@ void update_checksum_v2(typename Operator::Params params, int matrix_SM, int bat
 
 template <typename Operator, typename Dtype>
 CUTLASS_GLOBAL
-void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int monitored_batched_count){
+void update_checksum_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, 
+                        int num_sms, int monitored_batched_count){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -694,7 +704,8 @@ void update_checksum_v3_2(typename Operator::Params params, int matrix_SM, int T
 template <typename Operator, int tiled_K, int num_stages, typename Dtype>
 __launch_bounds__(1024) 
 CUTLASS_GLOBAL
-void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, int warps_per_batch, int monitored_batched_count){
+void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, int TB_per_batch, int num_sms, 
+                              int warps_per_batch, int monitored_batched_count, int banned_smid){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));
@@ -787,14 +798,18 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
     int batch_idx = ((init_batch + b_iter) % chk_step) + b_iter * chk_step; 
     // update checksum
     // if(batch_idx < monitored_batched_count && warp_group_idx < TB_per_batch){
-    if(batch_idx < monitored_batched_count){
+    bool if_vaild = (batch_idx < monitored_batched_count);
+    // if(batch_idx < monitored_batched_count){
+    if(if_vaild){
       wmma::fill_fragment(c_acc, 0.0f);
+    }
       
-      int stride_checksum = (batch_idx * params.stride_A) + mk;
-      int stride_b = (batch_idx * params.stride_B);
-      
-      // load first stage
-      pipeline.producer_acquire();
+    int stride_checksum = (batch_idx * params.stride_A) + mk;
+    int stride_b = (batch_idx * params.stride_B);
+    
+    // load first stage
+    pipeline.producer_acquire();
+    if(if_vaild){
       // load A
       int *As_i32 = reinterpret_cast<int*>(As);
       int *ref_A_i32 = reinterpret_cast<int*>(params.ref_A.data() + stride_checksum);
@@ -818,13 +833,15 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
           cuda::memcpy_async(&Bs_i32[smem_b_idx], (ref_B_i32 + (B_col + B_row * N_i32)), sizeof(int), pipeline);
         }
       }
-      pipeline.producer_commit();
+    }
+    pipeline.producer_commit();
 
-      for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
-        // load the second stage
-        int load_stage_idx = tile_i % num_stages;
-        pipeline.producer_acquire();
-        
+    for(int tile_i = 1; tile_i < tiled_iter; tile_i++){
+      // load the second stage
+      int load_stage_idx = tile_i % num_stages;
+      pipeline.producer_acquire();
+
+      if(if_vaild){
         // load A
         int k_start = tile_i * tiled_K;
         int k_start_i32 = k_start / 2;
@@ -853,44 +870,22 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
             cuda::memcpy_async(&buf_i32[smem_b_idx],  (ref_B_i32 + (B_col + (B_row + k_start) * N_i32)), sizeof(int), pipeline);
           }
         }
-        pipeline.producer_commit();
-        pipeline.consumer_wait();
-
-        // computation
-        if(warp_offset_0 < N){
-          int compute_stage_idx = (tile_i - 1) % num_stages;
-          buf = Bs + compute_stage_idx * stageB_stride;
-          int k_a_stride = compute_stage_idx * checksum_stride;
-          
-          __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
-          __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
-
-          wmma::fragment<wmma::matrix_a, 8, 32, 16, __nv_bfloat16, wmma::row_major> a_frag;
-          wmma::fragment<wmma::matrix_b, 8, 32, 16, __nv_bfloat16, wmma::row_major> b_frag;
-
-          #pragma unroll
-          for(int k = 0; k < tiled_K; k += 16){
-            wmma::load_matrix_sync(a_frag, (a + k), padding_K);
-            wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * padding_N)), padding_N);
-            wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
-          }
-        }
-        pipeline.consumer_release();
       }
-
+      pipeline.producer_commit();
       pipeline.consumer_wait();
-      // last computation stage
-      if(warp_offset_0 < N){
-        int compute_stage_idx = (tiled_iter - 1) % num_stages;
+
+      // computation
+      if(if_vaild && warp_offset_0 < N){
+        int compute_stage_idx = (tile_i - 1) % num_stages;
         Dtype *buf = Bs + compute_stage_idx * stageB_stride;
         int k_a_stride = compute_stage_idx * checksum_stride;
-
+        
         __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
         __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
-        
+
         wmma::fragment<wmma::matrix_a, 8, 32, 16, __nv_bfloat16, wmma::row_major> a_frag;
         wmma::fragment<wmma::matrix_b, 8, 32, 16, __nv_bfloat16, wmma::row_major> b_frag;
-        
+
         #pragma unroll
         for(int k = 0; k < tiled_K; k += 16){
           wmma::load_matrix_sync(a_frag, (a + k), padding_K);
@@ -899,20 +894,44 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         }
       }
       pipeline.consumer_release();
+    }
 
-      __syncthreads();
-      // tile_group.sync();
+    pipeline.consumer_wait();
+    
+    // last computation stage
+    if(if_vaild && warp_offset_0 < N){
+      int compute_stage_idx = (tiled_iter - 1) % num_stages;
+      Dtype *buf = Bs + compute_stage_idx * stageB_stride;
+      int k_a_stride = compute_stage_idx * checksum_stride;
 
-      // Store
-      float* smem_base = reinterpret_cast<float*>(As);
-      if(warp_offset_0 < N){
-        // int warp_offset_c = (local_warp_idx * 32);
-        wmma::store_matrix_sync((smem_base + warp_offset_0), c_acc, N, wmma::mem_row_major);
+      __nv_bfloat16 *a = reinterpret_cast<__nv_bfloat16*>(As + k_a_stride);
+      __nv_bfloat16 *b = reinterpret_cast<__nv_bfloat16*>(buf);
+      
+      wmma::fragment<wmma::matrix_a, 8, 32, 16, __nv_bfloat16, wmma::row_major> a_frag;
+      wmma::fragment<wmma::matrix_b, 8, 32, 16, __nv_bfloat16, wmma::row_major> b_frag;
+      
+      #pragma unroll
+      for(int k = 0; k < tiled_K; k += 16){
+        wmma::load_matrix_sync(a_frag, (a + k), padding_K);
+        wmma::load_matrix_sync(b_frag, (b + warp_offset_0 + (k * padding_N)), padding_N);
+        wmma::mma_sync(c_acc, a_frag, b_frag, c_acc);
       }
-      __syncthreads();
-      // tile_group.sync();
+    }
+    pipeline.consumer_release();
 
+    __syncthreads();
+    // tile_group.sync();
 
+    // Store
+    float* smem_base = reinterpret_cast<float*>(As);
+    if(if_vaild && warp_offset_0 < N){
+      // int warp_offset_c = (local_warp_idx * 32);
+      wmma::store_matrix_sync((smem_base + warp_offset_0), c_acc, N, wmma::mem_row_major);
+    }
+    __syncthreads();
+    // tile_group.sync();
+
+    if(if_vaild){
       int offset_D = batch_idx * params.stride_D + mn;
       int load_back_iter = (8 * N) / num_threads_per_warp_group;
       // if(tid == 128) printf("%d %d\n",load_back_iter, num_threads_per_warp_group);
@@ -925,6 +944,7 @@ void update_checksum_wmma_v3(typename Operator::Params params, int matrix_SM, in
         *(params.ref_D.data() + idx_chk) = static_cast<Dtype>(val_f32);
       }
     }
+    // }
     __syncthreads();
     // tile_group.sync();
   } 
@@ -1528,7 +1548,8 @@ void update_checksum_T_wmma_v9_2(typename Operator::Params params, int matrix_SM
 
 template <typename Operator, int tiled_K, int tiled_N, int num_stages, typename Dtype>
 CUTLASS_GLOBAL
-void update_checksum_T_wmma_v9_3(typename Operator::Params params, int matrix_SM, int monitored_batched_count, int num_sms){
+void update_checksum_T_wmma_v9_3(typename Operator::Params params, int matrix_SM, 
+                                int monitored_batched_count, int num_sms, int banned_smid){
   // get SM id
   unsigned int real_smid;
   asm volatile("mov.u32 %0, %smid;" : "=r"(real_smid));

@@ -401,7 +401,7 @@ struct GemmBatched {
       float max = (recomputed_chksum > updated_chksum) ? recomputed_chksum : updated_chksum;
       float rel_err = fabs(recomputed_chksum - updated_chksum) / max;
 
-      if(fabs(recomputed_chksum - updated_chksum) > (float)1e3){
+      if(fabs(recomputed_chksum - updated_chksum) > (float)1e5){
       // if(rel_err > 0.01){
       // float rtol = 0.05f; // 5% 相对容忍
       // float atol = 1.0f;  // 绝对容忍（给正负抵消留出的底线）
@@ -588,7 +588,7 @@ struct GemmBatched {
 
 
   template <typename T>
-  __device__ void force_bit_one_f32(T *dA, int bit, int *count, float *buf){ 
+  __device__ void force_bit_one_f32(T *dA, int bit){ 
     // 30 or 29
     float orgValue = (float)*(dA);
     float tmp = (float)*(dA);
@@ -599,19 +599,19 @@ struct GemmBatched {
     // *intValue &= ~ ((1u << bit));
     *(dA) = (T) *reinterpret_cast<float*>(intValue);
     
-    if(tmp != *(dA)){
-      // printf("%.4f %.4f ", tmp, *(dA));
-      // int idx = (*count) * 2;
-      int idx = *count;
-      *(buf + idx) = tmp;
-      *(buf + (idx + 1)) = *(dA);
-      (*count) += 2;
-    }
+    // if(tmp != *(dA)){
+    //   // printf("%.4f %.4f ", tmp, *(dA));
+    //   // int idx = (*count) * 2;
+    //   int idx = *count;
+    //   *(buf + idx) = tmp;
+    //   *(buf + (idx + 1)) = *(dA);
+    //   (*count) += 2;
+    // }
     // printf("%.4f ", *(dA));
   }
 
   template <typename T>
-  __device__ void force_bit_one_bf16(T *dA, int bit, int *count, float *buf){ 
+  __device__ void force_bit_one_bf16(T *dA, int bit){ 
     // 30 or 29
     float orgValue = static_cast<float>(*dA);
     float tmp = orgValue;
@@ -644,7 +644,10 @@ struct GemmBatched {
   CUTLASS_DEVICE
   void operator()(Params const &params, SharedStorage &shared_storage, 
                     int if_split_phase, int *SM_check_res, int nSM, int batch_per_TB, int monitored_batched_count,
-                    int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit, int *counter, float *buf) {
+                    int faulty_smid, int *faulty_MMAs, int *faulty_elements, int faulty_bit,
+                    int banned_smid
+                    // int *counter, float *buf
+                  ) {
 
     // get SM id
     unsigned int real_smid;
@@ -668,11 +671,16 @@ struct GemmBatched {
       SM_per_batch = nSM;
     }
     int batch_step = (int)(floor((double)nSM / (double)SM_per_batch));
-    int local_smid = real_smid % SM_per_batch;
-    int init_batch_idx = real_smid / SM_per_batch;
+    // int local_smid = real_smid % SM_per_batch;
+    // int init_batch_idx = real_smid / SM_per_batch;
+
+    int smid = (real_smid > banned_smid) ? (real_smid - 1) : real_smid;
+    int local_smid = smid % SM_per_batch;
+    int init_batch_idx = smid / SM_per_batch;
+
     int batch_iter = (int)(ceil((double)params.batch_count / (double)batch_step));
 
-    int smid = local_smid;
+    // int smid = local_smid;
 
     // if(threadIdx.x == 0) printf("SM_per_batch: %d, batch_step: %d, batch_iter: %d\n", SM_per_batch, batch_step, batch_iter);
     // if(threadIdx.x == 0) printf("matrix_SM: %d, M: %d, N: %d\n", matrix_SM, params.problem_size.m(), params.problem_size.n());
@@ -709,149 +717,150 @@ struct GemmBatched {
     // if(real_smid < (nSM - 1)){
       // for matrix
       for(int b_iter = 0; b_iter < batch_iter; b_iter += 1) {
-        if(real_smid < nSM) {
-        batch_idx = init_batch_idx + b_iter * batch_step;
-        int local_matrix_idx = smid;
-        block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
-        block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
-        
-        if(batch_idx < params.batch_count){
-          cutlass::MatrixCoord tb_offset_A{
-            threadblock_tile_offset_m * Mma::Shape::kM,
-            0
-          };
-
-          cutlass::MatrixCoord tb_offset_B{
-            0,
-            threadblock_tile_offset_n * Mma::Shape::kN
-          };
-
-          // Construct iterators to A and B operands
-          typename Mma::IteratorA iterator_A(
-            params.params_A,
-            params.ref_A.data(),
-            params.problem_size.mk(),
-            thread_idx,
-            tb_offset_A);
-
-          iterator_A.add_pointer_offset(params.stride_A * batch_idx);
-
-          typename Mma::IteratorB iterator_B(
-            params.params_B,
-            params.ref_B.data(),
-            params.problem_size.kn(),
-            thread_idx,
-            tb_offset_B);
-
-          iterator_B.add_pointer_offset(params.stride_B * batch_idx);
-
-          //
-          // Main loop
-          //
-
-          // Broadcast the warp_id computed by lane 0 to ensure dependent code
-          // is compiled as warp-uniform.
-          int warp_idx = canonical_warp_idx_sync();
-
-          int lane_idx = threadIdx.x % 32;
+        // if(real_smid < nSM) {
+        if(smid < nSM && real_smid != banned_smid) {
+          batch_idx = init_batch_idx + b_iter * batch_step;
+          int local_matrix_idx = local_smid;
+          block_idx = local_matrix_idx + (local_matrix_idx / matrix_shape_m) * checksumblk_per_col;
+          block_to_coordinate(block_idx, params.grid_tiled_shape.m(), threadblock_tile_offset_m, threadblock_tile_offset_n);
           
-          Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
+          if(batch_idx < params.batch_count){
+            cutlass::MatrixCoord tb_offset_A{
+              threadblock_tile_offset_m * Mma::Shape::kM,
+              0
+            };
 
-          typename Mma::FragmentC accumulators;
+            cutlass::MatrixCoord tb_offset_B{
+              0,
+              threadblock_tile_offset_n * Mma::Shape::kN
+            };
 
-          accumulators.clear();
+            // Construct iterators to A and B operands
+            typename Mma::IteratorA iterator_A(
+              params.params_A,
+              params.ref_A.data(),
+              params.problem_size.mk(),
+              thread_idx,
+              tb_offset_A);
+
+            iterator_A.add_pointer_offset(params.stride_A * batch_idx);
+
+            typename Mma::IteratorB iterator_B(
+              params.params_B,
+              params.ref_B.data(),
+              params.problem_size.kn(),
+              thread_idx,
+              tb_offset_B);
+
+            iterator_B.add_pointer_offset(params.stride_B * batch_idx);
+
+            //
+            // Main loop
+            //
+
+            // Broadcast the warp_id computed by lane 0 to ensure dependent code
+            // is compiled as warp-uniform.
+            int warp_idx = canonical_warp_idx_sync();
+
+            int lane_idx = threadIdx.x % 32;
+            
+            Mma mma(shared_storage.main_loop, thread_idx, warp_idx, lane_idx);
+
+            typename Mma::FragmentC accumulators;
+
+            accumulators.clear();
 
 
-          // Compute threadblock-scoped matrix multiply-add
-          mma(params.gemm_k_iterations, accumulators, iterator_A, iterator_B, accumulators);
+            // Compute threadblock-scoped matrix multiply-add
+            mma(params.gemm_k_iterations, accumulators, iterator_A, iterator_B, accumulators);
 
-          //
-          // Epilogue
-          //
+            //
+            // Epilogue
+            //
 
-          OutputOp output_op(params.epilogue);
+            OutputOp output_op(params.epilogue);
 
-          //
-          // Masked tile iterators constructed from members
-          //
+            //
+            // Masked tile iterators constructed from members
+            //
 
-          threadblock_tile_offset =
-              threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
+            threadblock_tile_offset =
+                threadblock_swizzle.get_tile_offset(params.swizzle_log_tile);
 
-          //assume identity swizzle
-          MatrixCoord threadblock_offset(
-            threadblock_tile_offset_m * Mma::Shape::kM,
-            threadblock_tile_offset_n * Mma::Shape::kN
-          );
+            //assume identity swizzle
+            MatrixCoord threadblock_offset(
+              threadblock_tile_offset_m * Mma::Shape::kM,
+              threadblock_tile_offset_n * Mma::Shape::kN
+            );
 
-          // Tile iterator writing to output tile
-          typename Epilogue::OutputTileIterator iterator_C(
-            params.params_C,
-            params.ref_C.data(),
-            params.problem_size.mn(),
-            thread_idx,
-            threadblock_offset
-          );
+            // Tile iterator writing to output tile
+            typename Epilogue::OutputTileIterator iterator_C(
+              params.params_C,
+              params.ref_C.data(),
+              params.problem_size.mn(),
+              thread_idx,
+              threadblock_offset
+            );
 
-          iterator_C.add_pointer_offset(params.stride_C * batch_idx);
+            iterator_C.add_pointer_offset(params.stride_C * batch_idx);
 
-          // Tile iterator writing to output tile
-          typename Epilogue::OutputTileIterator iterator_D(
-            params.params_D,
-            params.ref_D.data(),
-            params.problem_size.mn(),
-            thread_idx,
-            threadblock_offset
-          );
+            // Tile iterator writing to output tile
+            typename Epilogue::OutputTileIterator iterator_D(
+              params.params_D,
+              params.ref_D.data(),
+              params.problem_size.mn(),
+              thread_idx,
+              threadblock_offset
+            );
 
-          iterator_D.add_pointer_offset(params.stride_D * batch_idx);
+            iterator_D.add_pointer_offset(params.stride_D * batch_idx);
 
-          Epilogue epilogue(
-            shared_storage.epilogue, 
-            thread_idx, 
-            warp_idx, 
-            lane_idx);
+            Epilogue epilogue(
+              shared_storage.epilogue, 
+              thread_idx, 
+              warp_idx, 
+              lane_idx);
 
-          // run efficient epilogue
-          epilogue(output_op, iterator_D, accumulators, iterator_C);
+            // run efficient epilogue
+            epilogue(output_op, iterator_D, accumulators, iterator_C);
 
-        }
+          }
 
-        // Simulate compute matrix error
-        // if(batch_idx == 1){
-        //   if(thread_idx == 0){
-        //     int inject_idx = batch_idx * params.stride_D;
+          // Simulate compute matrix error
+          // if(batch_idx == 1){
+          //   if(thread_idx == 0){
+          //     int inject_idx = batch_idx * params.stride_D;
 
-        //     *(params.ref_D.data() + inject_idx) = 0;
-        //   }
-        //   // __syncthreads();
-        // }
-        
-        // Fault Injection
-        if(real_smid == faulty_smid && thread_idx == 0){
-          // int mma_grid_m = params.problem_size.m() / 16;
-          // int mma_grid_n = params.problem_size.n() / 8;
-          int N = params.problem_size.n();
-          int c = 0;
-          for(int i = 0; i < 64; i++){
-            int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
-            int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
+          //     *(params.ref_D.data() + inject_idx) = 0;
+          //   }
+          //   // __syncthreads();
+          // }
+          
+          // Fault Injection
+          if(real_smid == faulty_smid && thread_idx == 0){
+            // int mma_grid_m = params.problem_size.m() / 16;
+            // int mma_grid_n = params.problem_size.n() / 8;
+            int N = params.problem_size.n();
+            int c = 0;
+            for(int i = 0; i < 64; i++){
+              int mma_m = (threadblock_tile_offset_m * 128) + (faulty_MMAs[i] % 8) * 16;
+              int mma_n = (threadblock_tile_offset_n * 256) + (faulty_MMAs[i] / 8) * 8;
 
-            // index of 1st faulty element
-            int fault_m = faulty_elements[i] % 8;
-            int fault_n = faulty_elements[i] / 8;
-            if((mma_n + fault_n) < params.problem_size.n() ){
-              int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+              // index of 1st faulty element
+              int fault_m = faulty_elements[i] % 8;
+              int fault_n = faulty_elements[i] / 8;
+              if((mma_n + fault_n) < params.problem_size.n() ){
+                int idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+                force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit);
 
-              // index of 2nd faulty element (gap is 64)
-              fault_m += 8;
-              idx = (mma_m + fault_m) * N + (mma_n + fault_n);
-              force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit, counter, buf);
+                // index of 2nd faulty element (gap is 64)
+                fault_m += 8;
+                idx = (mma_m + fault_m) * N + (mma_n + fault_n);
+                force_bit_one_bf16((params.ref_D.data() + idx + batch_idx * params.stride_D), faulty_bit);
+              }
             }
           }
-        }
-         __syncthreads();
+          __syncthreads();
         }
         // if(real_smid != faulty_smid){
         //   int wait_clock = 0;
@@ -919,7 +928,7 @@ struct GemmBatched {
 
       int check_step = batch_step;
       int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
-      int checked_init_batch_idx = ((init_batch_idx + 1) % check_step);
+      int checked_init_batch_idx = ((init_batch_idx + batch_per_TB) % check_step);
       int checked_SM_group_idx = checked_init_batch_idx;
       // int block_offset_n = (params.problem_size.n() < blockDim.x) ? params.problem_size.n() : blockDim.x;
 
@@ -958,7 +967,7 @@ struct GemmBatched {
         int check_req_SM = params.grid_tiled_shape.n();
         int check_step = ((int)(floor((double)SM_per_batch / (double)check_req_SM))) * batch_step;
         int check_iter = (int)(ceil((double)monitored_batched_count / (double)check_step));
-        int checked_init_batch_idx = ((init_batch_idx + 1) % batch_step) + (smid / check_req_SM) * batch_step;
+        int checked_init_batch_idx = ((init_batch_idx + batch_per_TB) % batch_step) + (local_smid / check_req_SM) * batch_step;
         
         int last_iter_batch = monitored_batched_count % batch_step;
         
@@ -968,7 +977,7 @@ struct GemmBatched {
               return;
             }
             else if(checked_init_batch_idx == last_iter_batch){
-              checked_init_batch_idx = (smid / check_req_SM) * batch_step;
+              checked_init_batch_idx = (local_smid / check_req_SM) * batch_step;
               // checked_init_batch_idx = ((init_batch_idx + 1) % last_iter_batch) + (smid / check_req_SM) * last_iter_batch;
             }
           }
@@ -986,7 +995,7 @@ struct GemmBatched {
             // int col_idx = thread_idx + (target_smid / params.grid_tiled_shape.m()) * blockDim.x;
             // int row_idx = (target_smid % params.grid_tiled_shape.m()) * 128;
 
-            int col_idx = thread_idx + (smid % check_req_SM) * blockDim.x;
+            int col_idx = thread_idx + (local_smid % check_req_SM) * blockDim.x;
             // int col_idx = thread_idx + (smid) * blockDim.x;
             
             if(col_idx < params.problem_size.n()){
@@ -1000,7 +1009,7 @@ struct GemmBatched {
                 int error_n_offset = col_idx / 256;
                 int error_m_offset = loc / 128;
                 int error_local_smid = error_m_offset + error_n_offset * params.grid_tiled_shape.m();
-                int error_smid = error_local_smid + ((init_batch_idx + 1) % batch_step) * SM_per_batch;
+                int error_smid = error_local_smid + ((init_batch_idx + batch_per_TB) % batch_step) * SM_per_batch;
       
                 // printf("%d Error detected at SM %d by checker SM %d (%d)\n", i, error_smid, real_smid, checked_batch_idx);
                 int checksum_SM = n_smid - nSM;
