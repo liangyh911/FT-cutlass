@@ -232,6 +232,11 @@ struct Gemm {
     int n = chk_blk / grid_tiled_shape_m;
     int new_chk_blk_idx = chk_blk - (n + 1) * matrix_shape_m;
     int chk_smid = matrix_SM + (new_chk_blk_idx % chksum_SM);
+
+    // int n = chk_blk / grid_tiled_shape_m;
+    // int local_n = n % chksum_SM;
+    // int chk_smid = matrix_SM + local_n;
+    
     return chk_smid;
   }
 
@@ -384,6 +389,9 @@ struct Gemm {
     
     // if use group, not unroll
     int N = params.problem_size.n();
+    int col_idx = matrix_start_idx % N;
+    
+    if(col_idx < N){
     // void *p = params.ref_D.data();
     #pragma unroll
     for(int r = 0; r < 128; r++){
@@ -420,6 +428,7 @@ struct Gemm {
       atomicAdd((SM_check_res + smid), diff);
       atomicAdd((SM_check_res + target_smid), diff);
       atomicAdd((SM_check_res + chksum_smid), diff);
+    }
     }
     __syncthreads();
     // if(*(SM_check_res+smid)!=0){
@@ -1052,6 +1061,11 @@ struct Gemm {
             // if(beyond_bound){
             //   return;
             // }
+            target_sm_offset = target_sm_offset + 1;
+            SM_based_schedule_v2(params, threadblock_tile_offset_m, threadblock_tile_offset_n, next_matrix_block_idx, next_chk_block_idx, smid, block_idx, matrix_SM, checksumblk_per_col, target_sm_offset);
+            target_smid = (smid + target_sm_offset) % matrix_SM;
+            chksum_smid = get_checksum_smid(next_chk_block_idx, params.grid_tiled_shape.m(), (params.grid_tiled_shape.m() - checksumblk_per_col), matrix_SM, (nsmid - matrix_SM));
+
             if(next_matrix_block_idx >= matrix_block_count){
               return;
             }
