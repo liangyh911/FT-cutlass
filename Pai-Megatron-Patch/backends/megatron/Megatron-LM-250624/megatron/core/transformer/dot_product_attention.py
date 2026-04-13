@@ -37,6 +37,57 @@ def record_value_range(input_tensor, code, gpu):
         f.write(struct.pack('<f', mean_val))
         f.write(struct.pack('<f', max_val))
 
+def clean_SM_check_logs(gpu):
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/{gpu}/SM_checking_results.txt"
+    with open(Detection_Result_Log, 'w') as file:
+            file.truncate(0)
+
+def find_faulty_smid(gpu):
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/{gpu}/SM_checking_results.txt"
+    Banned_SMID_Log = f"./control_{job_id}/{gpu}/banned_smid.txt"
+
+    logFP = f"./control_{job_id}/eval_results.txt"
+    
+    fault_detection_res = []
+
+    with open(Detection_Result_Log, 'r') as file:
+        # faulty_step = int(file.readline())
+        for line in file:
+            # print(line)
+            str_list = line.strip().split()
+            fault_detection_res = [int(e) for e in str_list]  
+
+    # print(fault_detection_res)
+    
+    all_zero = all(x == 0 for x in fault_detection_res)
+
+    if not all_zero:
+        max_val = max(fault_detection_res)
+        if fault_detection_res.count(max_val) == 1:
+            faulty_smid = fault_detection_res.index(max_val)
+            print(f"python: faulty_smid: {faulty_smid}")
+            
+            with open(Banned_SMID_Log, 'w') as file:
+                file.write(str(faulty_smid))
+            
+            with open(logFP, 'a') as file:
+                file.write(f"{faulty_smid}\n")
+    
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+
+            return True
+        else:
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+                return False 
+    else:
+        with open(Detection_Result_Log, 'w') as file:
+            file.truncate(0)
+        return False
+
 class DotProductAttention(MegatronModule):
     """
     Region where selective activation recomputation is applied.
@@ -234,7 +285,18 @@ class DotProductAttention(MegatronModule):
             beta=0.0,
             alpha=self.softmax_scale,
         )
-        
+
+        if FI:
+            if find_faulty_smid(gpu):
+                matmul_result = torch.baddbmm(
+                    matmul_input_buffer,
+                    query.transpose(0, 1).contiguous(),  # [b * np, sq, hn]
+                    key.transpose(0, 1).contiguous().transpose(1, 2),  # [b * np, hn, sk]
+                    beta=0.0,
+                    alpha=self.softmax_scale,
+                )
+        clean_SM_check_logs(gpu)
+
         if RecFaults:
             code = "QK"
             threshold = 1e3
@@ -310,6 +372,11 @@ class DotProductAttention(MegatronModule):
         
         # context = torch.bmm(attention_probs, value.transpose(0, 1))
         context = torch.bmm(attention_probs, value.transpose(0, 1).contiguous())
+
+        if FI:
+            if find_faulty_smid(gpu):
+                context = torch.bmm(attention_probs, value.transpose(0, 1).contiguous())
+        clean_SM_check_logs(gpu)
         
         if RecFaults:
             code = "AV"

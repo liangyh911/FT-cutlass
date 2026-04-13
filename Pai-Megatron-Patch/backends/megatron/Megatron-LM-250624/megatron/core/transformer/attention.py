@@ -88,6 +88,56 @@ def record_value_range(input_tensor, code, gpu):
         f.write(struct.pack('<f', mean_val))
         f.write(struct.pack('<f', max_val))
 
+def clean_SM_check_logs(gpu):
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/{gpu}/SM_checking_results.txt"
+    with open(Detection_Result_Log, 'w') as file:
+        file.truncate(0)
+
+def find_faulty_smid(gpu):
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/{gpu}/SM_checking_results.txt"
+    Banned_SMID_Log = f"./control_{job_id}/{gpu}/banned_smid.txt"
+
+    logFP = f"./control_{job_id}/eval_results.txt"
+    
+    fault_detection_res = []
+
+    with open(Detection_Result_Log, 'r') as file:
+        # faulty_step = int(file.readline())
+        for line in file:
+            # print(line)
+            str_list = line.strip().split()
+            fault_detection_res = [int(e) for e in str_list]  
+
+    # print(fault_detection_res)
+    
+    all_zero = all(x == 0 for x in fault_detection_res)
+
+    if not all_zero:
+        max_val = max(fault_detection_res)
+        if fault_detection_res.count(max_val) == 1:
+            faulty_smid = fault_detection_res.index(max_val)
+            print(f"python: faulty_smid: {faulty_smid}")
+            
+            with open(Banned_SMID_Log, 'w') as file:
+                file.write(str(faulty_smid))
+            
+            with open(logFP, 'a') as file:
+                file.write(f"{faulty_smid}\n")
+    
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+
+            return True
+        else:
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+                return False 
+    else:
+        with open(Detection_Result_Log, 'w') as file:
+            file.truncate(0)
+        return False
 
 @dataclass
 class SelfAttentionSubmodules:
@@ -595,8 +645,8 @@ class Attention(MegatronModule, ABC):
 
         """
 
-        torch.cuda.synchronize()
-        start_time = time.time()
+        # torch.cuda.synchronize()
+        # start_time = time.time()
 
         # Check if we need to skip RoPE
         # no_rope is 0-indexed array and self.layer_number is 1-indexed
@@ -889,6 +939,10 @@ class Attention(MegatronModule, ABC):
 
         nvtx_range_push(suffix="linear_proj")
         output, bias = self.linear_proj(core_attn_out)
+        if FI:
+            if find_faulty_smid(gpu):
+                output, bias = self.linear_proj(core_attn_out)
+        clean_SM_check_logs(gpu)
         nvtx_range_pop(suffix="linear_proj")
         
         if RecFaults:
@@ -914,11 +968,11 @@ class Attention(MegatronModule, ABC):
         if Val_Range:
             record_value_range(output, "WO", gpu)
         
-        torch.cuda.synchronize()
-        elapsed_time = time.time() - start_time
+        # torch.cuda.synchronize()
+        # elapsed_time = time.time() - start_time
 
-        with open(f"./control_{job_id}/{gpu}/time/attn.txt", "a") as file:
-            file.write(f"{elapsed_time}\n")
+        # with open(f"./control_{job_id}/{gpu}/time/attn.txt", "a") as file:
+        #     file.write(f"{elapsed_time}\n")
 
 
         # if get_tensor_model_parallel_rank() == 0:
@@ -1074,6 +1128,15 @@ class SelfAttention(Attention):
         RecFaultsPrecentageFP = f"./control_{job_id}/{gpu}/record_faults_precentage.txt"
         FaultsPrecentageFP = f"./control_{job_id}/{gpu}/faults_precentage.bin"
         CurStepFP = f"./control_{job_id}/{gpu}/current_step.txt"
+        FIFP = f"./control_{job_id}/{gpu}/FI.txt"
+
+        FI = False
+        with open(FIFP, 'r') as file:
+            FIflag = file.read()
+            if FIflag == 't':
+                FI = True
+            else:
+                FI = False
 
         RecFaults = False
         with open(RecFaultsPrecentageFP, 'r') as file:
@@ -1085,6 +1148,12 @@ class SelfAttention(Attention):
 
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
         mixed_qkv, _ = self.linear_qkv(hidden_states)
+        if FI:
+            if find_faulty_smid(gpu):
+                mixed_qkv, _ = self.linear_qkv(hidden_states)
+        clean_SM_check_logs(gpu)
+
+
         # if get_tensor_model_parallel_rank() == 0:
         #     data =  mixed_qkv
         #     mean_val = torch.mean(data)

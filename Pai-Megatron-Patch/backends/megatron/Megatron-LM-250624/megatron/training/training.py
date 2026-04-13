@@ -2400,6 +2400,23 @@ def train(
     with open(RankFP, "w") as file: file.write(f"{pp_rank} {tp_rank}")
 
     # print(f"GPU: {gpu}, TP: {tp_rank}, PP: {pp_rank}")
+
+    Enable_Core_Checker = f"./control_{job_id}/{gpu}/enable_core_checker.txt"
+    Adaptive_Freq = f"./control_{job_id}/{gpu}/check_freq.txt"
+    SMChkFP = f"./control_{job_id}/{gpu}/split.txt"
+
+    enable_core_checker = False
+
+    core_checker_freq = 1
+    with open(Adaptive_Freq, 'r') as file:
+        core_checker_freq = int(file.readline())
+
+    with open(Enable_Core_Checker, 'r') as file:
+        flag = file.read()
+        if flag == 't':
+            enable_core_checker = True
+        else:
+            enable_core_checker = False
     
     with open(FIFP, "w") as file:
         file.truncate(0)
@@ -2491,7 +2508,19 @@ def train(
         # Run training step.
         args.curr_iteration = iteration
         ft_integration.on_training_step_start()
-                
+
+        if (enable_core_checker) and (iteration % core_checker_freq == 0):
+            with open(SMChkFP, 'w') as file:
+                file.truncate(0)
+                file.write('t')
+        else:
+            with open(SMChkFP, 'w') as file:
+                file.truncate(0)
+                if perform_FI:
+                    file.write('f')
+                else:
+                    file.write('b')
+            
         # Core-Checker: Performing Fault Injection
         # current faulty step
         if len(faulty_steps_list) != 0:
