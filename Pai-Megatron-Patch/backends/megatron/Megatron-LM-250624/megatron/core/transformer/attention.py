@@ -9,6 +9,7 @@ from torch import Tensor
 
 import os
 import struct
+import time
 
 from megatron.core import tensor_parallel
 from megatron.core.inference.contexts import BaseInferenceContext
@@ -593,6 +594,10 @@ class Attention(MegatronModule, ABC):
             (Tuple[Tensor, Tensor]) Attention output and bias.
 
         """
+
+        torch.cuda.synchronize()
+        start_time = time.time()
+
         # Check if we need to skip RoPE
         # no_rope is 0-indexed array and self.layer_number is 1-indexed
         no_rope = (
@@ -670,6 +675,9 @@ class Attention(MegatronModule, ABC):
             with open(component, 'w') as file:
                 file.truncate(0)
                 file.write("WA")
+        
+        # if gpu == 1: 
+        #     print("WA")
         
         nvtx_range_push(suffix="qkv")
         query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
@@ -872,7 +880,7 @@ class Attention(MegatronModule, ABC):
         # Output. [sq, b, h]
         # =================
 
-        # if get_tensor_model_parallel_rank() == 0: 
+        # if gpu == 1: 
         #     print("WO")
         if FI: 
             with open(component, 'w') as file:
@@ -905,6 +913,13 @@ class Attention(MegatronModule, ABC):
         
         if Val_Range:
             record_value_range(output, "WO", gpu)
+        
+        torch.cuda.synchronize()
+        elapsed_time = time.time() - start_time
+
+        with open(f"./control_{job_id}/{gpu}/time/attn.txt", "a") as file:
+            file.write(f"{elapsed_time}\n")
+
 
         # if get_tensor_model_parallel_rank() == 0:
         #     data = output

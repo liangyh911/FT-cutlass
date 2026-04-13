@@ -212,17 +212,25 @@ class DotProductAttention(MegatronModule):
         )
 
         # Raw attention scores. [b * np, sq, sk]
-        # if parallel_state.get_tensor_model_parallel_rank() == 0: 
+        # if gpu == 1: 
         #     print("QK")
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
                 file.write("QK")
         
+        # matmul_result = torch.baddbmm(
+        #     matmul_input_buffer,
+        #     query.transpose(0, 1),  # [b * np, sq, hn]
+        #     key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+        #     beta=0.0,
+        #     alpha=self.softmax_scale,
+        # )
+
         matmul_result = torch.baddbmm(
             matmul_input_buffer,
-            query.transpose(0, 1),  # [b * np, sq, hn]
-            key.transpose(0, 1).transpose(1, 2),  # [b * np, hn, sk]
+            query.transpose(0, 1).contiguous(),  # [b * np, sq, hn]
+            key.transpose(0, 1).contiguous().transpose(1, 2),  # [b * np, hn, sk]
             beta=0.0,
             alpha=self.softmax_scale,
         )
@@ -293,14 +301,15 @@ class DotProductAttention(MegatronModule):
         attention_probs = attention_probs.view(output_size[0] * output_size[1], output_size[2], -1)
 
         # matmul: [b * np, sq, hn]
-        # if parallel_state.get_tensor_model_parallel_rank() == 0: 
+        # if gpu == 1: 
         #     print("AV")
         if FI: 
             with open(component, 'w') as file:
                 file.truncate(0)
                 file.write("AV")
         
-        context = torch.bmm(attention_probs, value.transpose(0, 1))
+        # context = torch.bmm(attention_probs, value.transpose(0, 1))
+        context = torch.bmm(attention_probs, value.transpose(0, 1).contiguous())
         
         if RecFaults:
             code = "AV"

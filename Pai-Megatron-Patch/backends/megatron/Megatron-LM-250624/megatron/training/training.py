@@ -132,9 +132,10 @@ stimer = StragglerDetector()
 
 from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 
+from megatron.core import parallel_state
+
 _GLOBAL_EMA_LOSS = None
 _EMA_ALPHA = 0.02
-
 
 def destroy_global_state():
     destroy_global_vars()
@@ -2391,6 +2392,14 @@ def train(
 
     RecFaultsPrecentageFP = f"./control_{job_id}/{gpu}/record_faults_precentage.txt"
     VRFP = f"./control_{job_id}/{gpu}/rec_val_range.txt"
+    RankFP = f"./control_{job_id}/{gpu}/rank.txt"
+
+    tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+
+    with open(RankFP, "w") as file: file.write(f"{pp_rank} {tp_rank}")
+
+    # print(f"GPU: {gpu}, TP: {tp_rank}, PP: {pp_rank}")
     
     with open(FIFP, "w") as file:
         file.truncate(0)
@@ -2544,7 +2553,8 @@ def train(
                     
                 with open(RecFaultsPrecentageFP, "w") as file:
                     file.truncate(0)
-                    file.write('t')
+                    # file.write('t')
+                    file.write('f')
             elif iteration == total_fi_steps:
                 with open(RecFaultsPrecentageFP, "w") as file:
                     file.truncate(0)
@@ -2710,13 +2720,14 @@ def train(
             # (faulty_GPU == -1),
         )
         if should_exit:
+            if (faulty_GPU != -1):
             # delete remaining faulty plan items
-            remaining_iter = total_FI_iter - faulty_steps_count
-            with open(PlanFP, "r") as file:
-                lines = file.readlines()
-            lines = lines[remaining_iter:]
-            with open(PlanFP, "w") as file:
-                file.writelines(lines)
+                remaining_iter = total_FI_iter - faulty_steps_count
+                with open(PlanFP, "r") as file:
+                    lines = file.readlines()
+                lines = lines[remaining_iter:]
+                with open(PlanFP, "w") as file:
+                    file.writelines(lines)
             break
 
     one_logger_utils.track_e2e_metrics()
@@ -2770,7 +2781,13 @@ def evaluate(
     job_id = os.getenv('SLURM_JOB_ID')
     gpu = torch.cuda.current_device()
     controlFP = f"./control_{job_id}/{gpu}/perform.txt"
+    DEBUGFP = f"./control_{job_id}/{gpu}/DEBUG.txt"
+
     with open(controlFP, 'w') as file:
+        file.truncate(0)
+        file.write('f')
+
+    with open(DEBUGFP, 'w') as file:
         file.truncate(0)
         file.write('f')
 
