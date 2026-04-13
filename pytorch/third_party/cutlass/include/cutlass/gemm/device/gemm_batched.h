@@ -59,6 +59,12 @@ void check(T result, char const *const func, const char *const file, int const l
     }
 }
 
+#include <cmath>
+#include <string>
+#include <fstream>
+#include <filesystem>
+namespace fs = std::filesystem;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass {
@@ -430,7 +436,7 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+  Status run(int if_split_phase, bool adaptive_mod, int banned_smid, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
 
     // Preparing time
     cudaEvent_t abft_prepare_start, abft_prepare_end;
@@ -475,7 +481,7 @@ public:
     cudaEventCreate(&stop);
     float t_gemm = 0, t_chksum = 0, t_check = 0;
 
-    // int *SM_check_res;
+    // int *SM_check_res; 
     cudaMalloc((void**)&SM_check_res, num_sms * sizeof(int));
     cudaMemset(SM_check_res, 0, num_sms * sizeof(int));
 
@@ -529,25 +535,25 @@ public:
     cudaMalloc((void**)&d_faulty_elements, faulty_size);
     cudaMemset(d_faulty_elements, -1, faulty_size);
     
-    // Fault Injection Results
-    int SM_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
-    if(SM_per_batch > matrix_SM){
-      SM_per_batch = matrix_SM;
-    }
-    int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
-    int batch_iter = (int)(ceil((double)params_.batch_count / (double)batch_step));
+    // // Fault Injection Results
+    // int SM_per_batch = params_.grid_tiled_shape.m() * params_.grid_tiled_shape.n();
+    // if(SM_per_batch > matrix_SM){
+    //   SM_per_batch = matrix_SM;
+    // }
+    // int batch_step = (int)(floor((double)matrix_SM / (double)SM_per_batch));
+    // int batch_iter = (int)(ceil((double)params_.batch_count / (double)batch_step));
 
-    int *d_counter, *h_counter;
-    cudaMalloc((void**)&d_counter, 1 * sizeof(int));
-    cudaMemset(d_counter, 0, 1 * sizeof(int));
-    h_counter = (int*)malloc((1) * sizeof(int));
+    // int *d_counter, *h_counter;
+    // cudaMalloc((void**)&d_counter, 1 * sizeof(int));
+    // cudaMemset(d_counter, 0, 1 * sizeof(int));
+    // h_counter = (int*)malloc((1) * sizeof(int));
 
-    float *h_buf, *d_buf;
-    // size_t buf_size = (16*8*2*batch_iter * 2) * sizeof(float);
-    size_t buf_size = (64 * 2 * batch_iter * 2) * sizeof(float);
-    cudaMalloc((void**)&d_buf, buf_size);
-    cudaMemset(d_buf, 0, buf_size);
-    h_buf = (float*)malloc(buf_size);
+    // float *h_buf, *d_buf;
+    // // size_t buf_size = (16*8*2*batch_iter * 2) * sizeof(float);
+    // size_t buf_size = (64 * 2 * batch_iter * 2) * sizeof(float);
+    // cudaMalloc((void**)&d_buf, buf_size);
+    // cudaMemset(d_buf, 0, buf_size);
+    // h_buf = (float*)malloc(buf_size);
 
     // destinationFile = "/home/yuhangl/control/FI.txt";
     // fs::path FIInfoPath = fs::path("/home/yuhangl") / ("control_" + std::string(job_id)) / "fi_info.txt";
@@ -563,7 +569,7 @@ public:
     if(FIFile.is_open()){
       FIFile.get(flag);
       if(flag == 't'){
-        injection = false;
+        injection = true;
         // printf("Perform Fault Injection.\n");
         
         // // read injected SM and thread
@@ -604,10 +610,10 @@ public:
               nums.push_back(std::stoi(token));
           }
 
-          if (nums.size() != 129) {
-              printf("Error: expected 129 numbers but got %ld\n", nums.size());
-              return Status::kErrorInternal;
-          }
+          // if (nums.size() != 129) {
+          //     printf("Error: expected 129 numbers but got %ld\n", nums.size());
+          //     return Status::kErrorInternal;
+          // }
 
           int idx = 0;
           faulty_smid = nums[idx++];
@@ -709,16 +715,42 @@ public:
     FIFile.close();
 
 
-    int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
-    // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
-    // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
-    // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
-    int update_smem_size;
+    // int batch_per_TB = (int)(ceil((double)block_updatechk.x / (double)params_.problem_size.n()));
+    // // int B = (batch_per_TB > 6) ? 6 : batch_per_TB;
+    // // int update_smem_size = B * 2 * params_.problem_size.k() * sizeof(float);
+    // // int update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(float);
+    // int update_smem_size;
+
+    // int update_smem_size = 0;
+    // int warps_per_TB = params_.problem_size.n() / 16;
+    // int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
+
+    // int banned_smid = -1;
+    if (banned_smid != -1){
+      // num_sms = num_sms - 1;
+      matrix_SM = matrix_SM + 1;
+    }
+
+    int update_smem_size = 0;
+    int wmma_warps_per_TB = params_.problem_size.n() / 32;
+    // int warps_per_TB = 2 * wmma_warps_per_TB;
+    int warps_per_TB = (wmma_warps_per_TB < 16)? 2 * wmma_warps_per_TB : wmma_warps_per_TB;
+    int batch_per_TB = (int)(floor((double)(block_updatechk.x / 32) / (double)warps_per_TB));
 
     // printf("m: %d, n: %d, k: %d, TB: %d\n", params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
     
     // void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &faulty_tid_1, &faulty_tid_2, &faulty_bit, &d_counter, &d_buf};
-    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit, &d_counter, &d_buf};
+    int monitored_batched_count = params_.batch_count;
+    if(adaptive_mod){
+      monitored_batched_count = (transb == 't') ? 8 : 32;
+    }
+    void *kernelArgs[] = {&params_, &if_split_phase, &SM_check_res, &matrix_SM, &batch_per_TB, &monitored_batched_count, 
+                          &faulty_smid, &d_faulty_MMAs, &d_faulty_elements, &faulty_bit,
+                          &banned_smid 
+                          // &d_counter, &d_buf
+                        };
+    
+    // printf("SM: count: %d, m: %d, n: %d, k: %d, batch_per_TB: %d\n", num_sms, params_.problem_size.m(), params_.problem_size.n(), params_.problem_size.k(), batch_per_TB);
 
     cutlass::arch::synclog_setup();
 
@@ -747,17 +779,35 @@ public:
     // for(int i = 0; i < iterations; i++){
 
     if(if_split_phase == 0 || if_split_phase == 1) {
+      // printf("update kernel\n");
       // cutlass::update_checksum<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       // cutlass::update_checksum_v2<GemmKernel><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
       if(transb == 't'){
-        update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // cuda core pipeline
+        // update_smem_size = (2 * params_.problem_size.k() + 34 * params_.problem_size.n()) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // tensor core pipeline batch wise check
+        // update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // tensor core pipeline block wise check
+        update_smem_size = (8 * params_.problem_size.k() + 144 * (params_.problem_size.n() / 2)) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
         
         if(deBug){
           cudaEventRecord(start, stream_colchk);
         }
-        int monitored_batched_count = params_.batch_count;
-        cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+        // int monitored_batched_count = params_.batch_count;
+        
+        // cuda core pipeline
+        // cutlass::update_checksum_v8_T<GemmKernel, 16, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, monitored_batched_count);
+        
+        // tensor core pipeline
+        // cutlass::update_checksum_T_wmma_v9_2<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, monitored_batched_count,num_sms);
+
+        cutlass::update_checksum_T_wmma_v9_3<GemmKernel, 64, 512, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, monitored_batched_count, num_sms, banned_smid);
+
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -767,13 +817,24 @@ public:
         }
       }
       else{
-        update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
-        cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+        // batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
+        // update_smem_size = batch_per_TB * 2 * params_.problem_size.k() * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        // batch_per_TB = (int)(floor((double)block_updatechk.x / (double)params_.problem_size.n()));
+        // update_smem_size = batch_per_TB * 8 * params_.problem_size.k() * sizeof(ElementA);
+        // cudaFuncSetAttribute(cutlass::update_checksum_v3_2<GemmKernel, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
+
+        update_smem_size = batch_per_TB * (8 * 144 + 144 * params_.problem_size.n()) * sizeof(ElementA);
+        cudaFuncSetAttribute(cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA>, cudaFuncAttributeMaxDynamicSharedMemorySize, update_smem_size);
 
         if(deBug){
           cudaEventRecord(start, stream_colchk);
         }
-        cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB);
+        // cutlass::update_checksum_v3<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream_colchk>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        // cutlass::update_checksum_v3_2<GemmKernel, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, batch_per_TB, num_sms, monitored_batched_count);
+        cutlass::update_checksum_wmma_v3<GemmKernel, 64, 2, ElementA><<<grid_updatechk, block_updatechk, update_smem_size, stream>>>(params_, matrix_SM, batch_per_TB, num_sms, warps_per_TB, monitored_batched_count, banned_smid);
         if(deBug){
           cudaEventRecord(stop, stream_colchk);
           cudaEventSynchronize(stop);
@@ -783,6 +844,8 @@ public:
         }
       }
     }
+
+    cudaDeviceSynchronize();
 
     // redirecte stdout
     // int saved_stdout_fd = dup(fileno(stdout));
@@ -819,52 +882,73 @@ public:
     // close(saved_stdout_fd);
     // }
 
+    // copy back SM check results
+    if(injection){
+      int *h_SM_check_res;
+      h_SM_check_res = (int*)malloc(num_sms * sizeof(int));
+      cudaMemcpy(h_SM_check_res, SM_check_res, num_sms*sizeof(int), cudaMemcpyDeviceToHost);
+      // record checking results
+      // int gpu_dev = -1;
+      // cudaGetDevice(&gpu_dev);
+      // char *job_id = getenv("SLURM_JOB_ID");
+      fs::path SMCheckResPath = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "SM_checking_results.txt";
+      std::ofstream ofs(SMCheckResPath, std::ios::out | std::ios::app);
+      // ofs.write(reinterpret_cast<const char*>(h_SM_check_res), sizeof(int) * num_sms);
+      for (int i = 0; i < num_sms; i++) {
+          ofs << h_SM_check_res[i];
+          if (i != num_sms - 1)
+              ofs << " ";   // 空格分隔
+      }
+      ofs << "\n";          // 换行
+      free(h_SM_check_res);
+    }
+
     if(deBug) printf("gemm kernel time: %f, update kernel time: %f, check phase: %f \n", t_gemm, t_chksum, t_check);
 
-    if(injection){
-      cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
-      cudaMemcpy(h_counter, d_counter, 1 * sizeof(int), cudaMemcpyDeviceToHost);
+    // if(injection){
+    //   cudaMemcpy(h_buf, d_buf, buf_size, cudaMemcpyDeviceToHost);
+    //   cudaMemcpy(h_counter, d_counter, 1 * sizeof(int), cudaMemcpyDeviceToHost);
 
-      std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
-      // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
+    //   std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app | std::ios::binary);
+    //   // std::ofstream ofs(FIInfoPath, std::ios::out | std::ios::app);
 
-      ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
-      ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
+    //   ofs.write(reinterpret_cast<const char*>(&h_counter[0]), sizeof(h_counter[0]));
+    //   ofs.write(reinterpret_cast<const char*>(h_buf), sizeof(float) * h_counter[0]);
 
-      // int N = (*h_counter) + (*(h_counter+1));
-      // ofs << h_counter[0] << ": ";
-      // for (int i = 0; i < 1*(h_counter[0]); i++) {
-          // ofs << h_buf[i] << " "; 
-          // if (i != N - 1){
-          // ofs << " ";  
-          // }
-          // printf("%f ", h_buf[i]);
-      // }
-      // ofs << "|||| ";
+    //   // int N = (*h_counter) + (*(h_counter+1));
+    //   // ofs << h_counter[0] << ": ";
+    //   // for (int i = 0; i < 1*(h_counter[0]); i++) {
+    //       // ofs << h_buf[i] << " "; 
+    //       // if (i != N - 1){
+    //       // ofs << " ";  
+    //       // }
+    //       // printf("%f ", h_buf[i]);
+    //   // }
+    //   // ofs << "|||| ";
 
-      // int o = 16*8*2*batch_iter;
-      // ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
-      // ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
-      // ofs << h_counter[1] << ": ";
-      // for (int i = 0; i < 1*(h_counter[1]); i++) {
-      //     ofs << h_buf[i + o]; 
-      //     // if (i != 2*(h_counter[0]) - 1){
-      //     ofs << " ";  
-      //     // }
-      //     // printf("%f ", h_buf[i + o]);
-      // }
+    //   // int o = 16*8*2*batch_iter;
+    //   // ofs.write(reinterpret_cast<const char*>(&h_counter[1]), sizeof(h_counter[1]));
+    //   // ofs.write(reinterpret_cast<const char*>(h_buf+o), sizeof(float) * h_counter[1]);
+    //   // ofs << h_counter[1] << ": ";
+    //   // for (int i = 0; i < 1*(h_counter[1]); i++) {
+    //   //     ofs << h_buf[i + o]; 
+    //   //     // if (i != 2*(h_counter[0]) - 1){
+    //   //     ofs << " ";  
+    //   //     // }
+    //   //     // printf("%f ", h_buf[i + o]);
+    //   // }
 
-      ofs.close();
-    }
+    //   ofs.close();
+    // }
     
     // Clean up
     cudaFree(SM_check_res);
     cudaStreamDestroy(stream_colchk);
     
-    cudaFree(d_counter);
-    cudaFree(d_buf);
-    free(h_counter);
-    free(h_buf);
+    // cudaFree(d_counter);
+    // cudaFree(d_buf);
+    // free(h_counter);
+    // free(h_buf);
 
     cudaFree(d_faulty_MMAs);
     cudaFree(d_faulty_elements);
@@ -1112,8 +1196,8 @@ public:
   }
 
   /// Runs the kernel using initialized state.
-  Status run(int if_split_phase, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
-    return underlying_operator_.run(if_split_phase, transb, DEBUG, stream);
+  Status run(int if_split_phase, bool adaptive_mod, int banned_smid, char transb, bool DEBUG, cudaStream_t stream = nullptr) {
+    return underlying_operator_.run(if_split_phase, adaptive_mod, banned_smid, transb, DEBUG, stream);
   }
 
   /// Runs the kernel using initialized state.
@@ -1124,14 +1208,14 @@ public:
   /// Runs the kernel using initialized state.
   Status operator()(
     Arguments const &args,
-    int if_split_phase, char transb, bool DEBUG,
+    int if_split_phase, bool adaptive_mod, int banned_smid, char transb, bool DEBUG,
     void *workspace = nullptr, 
     cudaStream_t stream = nullptr) {
     
     Status status = initialize(args, workspace, stream);
     
     if (status == Status::kSuccess) {
-      status = run(if_split_phase, transb, DEBUG, stream);
+      status = run(if_split_phase, adaptive_mod, banned_smid, transb, DEBUG, stream);
     }
 
     return status;
