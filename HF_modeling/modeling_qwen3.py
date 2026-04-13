@@ -20,6 +20,7 @@
 # limitations under the License.
 
 import os
+import struct
 
 from typing import Callable, Optional, Union
 
@@ -47,6 +48,77 @@ from ...utils.deprecation import deprecate_kwarg
 from ...utils.generic import check_model_inputs
 from .configuration_qwen3 import Qwen3Config
 
+import time
+
+
+def record_value_range(input_tensor, code):
+    job_id = os.getenv('SLURM_JOB_ID')
+    value_range_FP = f"./control_{job_id}/0/value_range.bin"
+    CurStepFP = f"./control_{job_id}/0/current_step.txt"
+    
+    mean_val = torch.mean(input_tensor).item()
+    min_val = torch.min(input_tensor).item()
+    max_val = torch.max(input_tensor).item()
+
+    with open(CurStepFP, 'r') as file:
+        current_step = int(file.readline())
+    with open(value_range_FP, 'ab') as f:
+        f.write(struct.pack('<i', current_step))
+        f.write(code.encode('utf-8'))
+        f.write(struct.pack('<f', min_val))
+        f.write(struct.pack('<f', mean_val))
+        f.write(struct.pack('<f', max_val))
+
+def clean_SM_check_logs():
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/0/SM_checking_results.txt"
+    with open(Detection_Result_Log, 'w') as file:
+        file.truncate(0)
+
+def find_faulty_smid():
+    job_id = os.getenv('SLURM_JOB_ID')
+    Detection_Result_Log = f"./control_{job_id}/0/SM_checking_results.txt"
+    Banned_SMID_Log = f"./control_{job_id}/0/banned_smid.txt"
+
+    logFP = f"./control_{job_id}/0/output.log"
+    
+    fault_detection_res = []
+
+    with open(Detection_Result_Log, 'r') as file:
+        # faulty_step = int(file.readline())
+        for line in file:
+            # print(line)
+            str_list = line.strip().split()
+            fault_detection_res = [int(e) for e in str_list]  
+
+    # print(fault_detection_res)
+    
+    all_zero = all(x == 0 for x in fault_detection_res)
+
+    if not all_zero:
+        max_val = max(fault_detection_res)
+        if fault_detection_res.count(max_val) == 1:
+            faulty_smid = fault_detection_res.index(max_val)
+            print(f"python: faulty_smid: {faulty_smid}")
+            
+            with open(Banned_SMID_Log, 'w') as file:
+                file.write(str(faulty_smid))
+            
+            with open(logFP, 'a') as file:
+                file.write(f"{faulty_smid}\n")
+    
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+
+            return True
+        else:
+            with open(Detection_Result_Log, 'w') as file:
+                file.truncate(0)
+                return False 
+    else:
+        with open(Detection_Result_Log, 'w') as file:
+            file.truncate(0)
+        return False
 
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3RMSNorm(nn.Module):
@@ -82,13 +154,72 @@ class Qwen3MLP(nn.Module):
 
     def forward(self, x):
         job_id = os.getenv('SLURM_JOB_ID')
-        controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
-        cutlassFP = f"/home/yuhangl/control_{job_id}/cutlass.txt"
-        # FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
-        # component = f"/home/yuhangl/control_{job_id}/component.txt"
+        controlFP = f"./control_{job_id}/0/perform.txt"
+        cutlassFP = f"./control_{job_id}/0/cutlass.txt"
+        FIFP = f"./control_{job_id}/0/FI.txt"
+        component = f"./control_{job_id}/0/component.txt"
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
 
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        FI = False
+        Val_Range = False
+
+        with open(FIFP, 'r') as file:
+            FIflag = file.read()
+            if FIflag == 't':
+                FI = True
+            else:
+                FI = False
         
+        with open(VRFP, 'r') as file:
+            flag = file.read()
+            if flag == 't':
+                Val_Range = True
+            else:
+                Val_Range = False
+
+        # down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("UP")
+        up_proj = self.up_proj(x)
+        if FI:
+            if find_faulty_smid():
+                up_proj = self.up_proj(x)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(up_proj, "UP")
+
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("GA")
+        gate_proj = self.gate_proj(x)
+        if FI:
+            if find_faulty_smid():
+                gate_proj = self.gate_proj(x)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(gate_proj, "GA")
+        
+        gate_proj = self.act_fn(gate_proj)
+        
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("DO")
+        down_proj = self.down_proj(gate_proj * up_proj)
+        if FI:
+            if find_faulty_smid():
+                down_proj = self.down_proj(gate_proj * up_proj)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(down_proj, "DO")
+
         with open(cutlassFP, 'w') as file:
             file.truncate(0)
             file.write('f')
@@ -150,19 +281,54 @@ def eager_attention_forward(
     attention_mask: Optional[torch.Tensor],
     scaling: float,
     dropout: float = 0.0,
+    FI: bool = False,
+    Val_Range: bool = False,
     **kwargs: Unpack[TransformersKwargs],
 ):
+    job_id = os.getenv('SLURM_JOB_ID')
+    component = f"./control_{job_id}/0/component.txt"
+
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if FI: 
+        with open(component, 'w') as file:
+            file.truncate(0)
+            file.write("QK")
+    # attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    # print(f"query size: {query.size()}; key size: {key_states.size()}; value size: {value_states.size()}")
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3))
+    if FI:
+        if find_faulty_smid():
+            attn_weights = torch.matmul(query, key_states.transpose(2, 3))
+    clean_SM_check_logs()
+
+    if Val_Range:
+            record_value_range(attn_weights, "QK")
+    attn_weights = attn_weights * scaling
+
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    
+    if FI: 
+        with open(component, 'w') as file:
+            file.truncate(0)
+            file.write("AV")
     attn_output = torch.matmul(attn_weights, value_states)
+    if FI:
+        if find_faulty_smid():
+            attn_output = torch.matmul(attn_weights, value_states)
+    clean_SM_check_logs()
+
+    if Val_Range:
+            record_value_range(attn_output, "AV")
+
+    # print(f"attn_weights: {attn_weights.size()}; attn_output: {attn_output.size()}")
+
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
@@ -211,10 +377,14 @@ class Qwen3Attention(nn.Module):
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         job_id = os.getenv('SLURM_JOB_ID')
-        controlFP = f"/home/yuhangl/control_{job_id}/perform.txt"
-        cutlassFP = f"/home/yuhangl/control_{job_id}/cutlass.txt"
-        # FIFP = f"/home/yuhangl/control_{job_id}/FI.txt"
-        # component = f"/home/yuhangl/control_{job_id}/component.txt"
+        controlFP = f"./control_{job_id}/0/perform.txt"
+        cutlassFP = f"./control_{job_id}/0/cutlass.txt"
+        FIFP = f"./control_{job_id}/0/FI.txt"
+        VRFP = f"./control_{job_id}/0/rec_val_range.txt"
+        component = f"./control_{job_id}/0/component.txt"
+        
+        FI = False
+        Val_Range = False
 
         with open(controlFP, 'r') as file:
             flag = file.read()
@@ -223,9 +393,60 @@ class Qwen3Attention(nn.Module):
                 file.truncate(0)
                 file.write('t')
 
+        with open(FIFP, 'r') as file:
+            FIflag = file.read()
+            if FIflag == 't':
+                FI = True
+            else:
+                FI = False
+        
+        with open(VRFP, 'r') as file:
+            flag = file.read()
+            if flag == 't':
+                Val_Range = True
+            else:
+                Val_Range = False
+
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("WQ")
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        if FI:
+            if find_faulty_smid():
+                query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(query_states, "WQ")
+        
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("WK")
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        if FI:
+            if find_faulty_smid():
+                key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(key_states, "WK")
+        
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("WV")
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        if FI:
+            if find_faulty_smid():
+                value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(value_states, "WV")
+
+        # print(f"input size: {hidden_states.size()}; query size: {query_states.size()}; key size: {key_states.size()}; value size: {value_states.size()}")
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -248,12 +469,27 @@ class Qwen3Attention(nn.Module):
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
             sliding_window=self.sliding_window,  # diff with Llama
+            FI=FI,
+            Val_Range=Val_Range,
             **kwargs,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
+
+        if FI: 
+            with open(component, 'w') as file:
+                file.truncate(0)
+                file.write("WO")
+        attn_output_2 = self.o_proj(attn_output)
+        if FI:
+            if find_faulty_smid():
+                attn_output_2 = self.o_proj(attn_output)
+        clean_SM_check_logs()
+
+        if Val_Range:
+            record_value_range(attn_output, "WO")
+
+        return attn_output_2, attn_weights
 
 
 class Qwen3DecoderLayer(GradientCheckpointingLayer):
@@ -267,6 +503,8 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attention_type = config.layer_types[layer_idx]
+
+        self.job_id = os.getenv('SLURM_JOB_ID')
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -283,6 +521,9 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
+        torch.cuda.synchronize()
+        start_time = time.time()
+        
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -293,12 +534,30 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        
+        torch.cuda.synchronize()
+        elapsed_time = time.time() - start_time
+
+        with open(f"./control_{self.job_id}/0/time/attn.txt", "a") as file:
+            file.write(f"{elapsed_time}\n")
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+
+        torch.cuda.synchronize()
+        start_time = time.time()
+
         hidden_states = self.mlp(hidden_states)
+        
+        torch.cuda.synchronize()
+        elapsed_time = time.time() - start_time
+        
+        with open(f"./control_{self.job_id}/0/time/mlp.txt", "a") as file:
+            file.write(f"{elapsed_time}\n")
+
         hidden_states = residual + hidden_states
         return hidden_states
 
