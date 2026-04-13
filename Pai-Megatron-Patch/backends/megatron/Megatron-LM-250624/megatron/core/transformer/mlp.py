@@ -195,8 +195,8 @@ class MLP(MegatronModule):
 
     def forward(self, hidden_states, per_token_scale=None):
         """Perform the forward pass through the MLP block."""
-        # torch.cuda.synchronize()
-        # start_time = time.time()
+        torch.cuda.synchronize()
+        start_time = time.time()
 
         job_id = os.getenv('SLURM_JOB_ID')
         gpu = torch.cuda.current_device()
@@ -411,11 +411,11 @@ class MLP(MegatronModule):
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
         
-        # torch.cuda.synchronize()
-        # elapsed_time = time.time() - start_time
+        torch.cuda.synchronize()
+        elapsed_time = time.time() - start_time
 
-        # with open(f"./control_{job_id}/{gpu}/time/mlp.txt", "a") as file:
-        #     file.write(f"{elapsed_time}\n")
+        with open(f"./control_{job_id}/{gpu}/time/mlp.txt", "a") as file:
+            file.write(f"{elapsed_time}\n")
 
         return output, output_bias
 
