@@ -3,6 +3,12 @@
 # clean logs, "cannot import name 'triton_key"
 export TORCH_LOGS="-dynamo"
 
+# Eval_mode
+eval_mode=$1
+
+# CoreChecker mode
+core_checker_mode=$2
+
 # Get Job id
 JOB_ID=$SLURM_JOB_ID
 
@@ -14,7 +20,7 @@ FAULTY_STEP=150
 FAULTY_DURATION=20
 
 # directory
-MODEL_DIR="/mnt"
+MODEL_DIR="/projects"
 DS_DIR="/mnt"
 
 # set TP and PP
@@ -26,6 +32,9 @@ MODEL_Size="7B"
 
 # set the faulty GPU
 FAULTY_GPU="-1"
+if [[ "$eval_mode" == "1" ]]; then
+  FAULTY_GPU="0"
+fi
 printf "%d" "$FAULTY_GPU" > "./control_$JOB_ID/faulty_GPU.txt"
 
 # set the faulty bit
@@ -36,8 +45,14 @@ if [[ "$FAULTY_GPU" != "-1" ]]; then
   printf "%d" "$FAULTY_UNIT" > "./control_$JOB_ID/$FAULTY_GPU/total_faulty_steps.txt"
 fi
 
-for i in {1..33}; do 
+for i in {1..1}; do 
   echo "--- Iteration $i ---" >> "./control_$JOB_ID/eval_results.txt"
+
+  # read ground turth faulty gpu
+  if [[ "$FAULTY_GPU" != "-1" ]]; then
+    head -n 1 "./control_$JOB_ID/$FAULTY_GPU/plan.txt" | awk '{print $1}' >> "./control_$JOB_ID/eval_results.txt"
+  fi
+
 
   # Get time stamp
   # TIME_STAMP=$EPOCHSECONDS
@@ -49,22 +64,60 @@ for i in {1..33}; do
     [ -d "$d" ] || continue
 
     [ -f "$d/perform.txt" ] && printf "t" > "$d/perform.txt"
-    [ -f "$d/perform.txt" ] && printf "f" > "$d/cutlass.txt"
-    [ -f "$d/split.txt" ] && printf "f" > "$d/split.txt"
+    [ -f "$d/cutlass.txt" ] && printf "f" > "$d/cutlass.txt"
 
+    if [[ "$core_checker_mode" != "baseline" ]]; then
+      [ -f "$d/enable_core_checker.txt" ] && printf "f" > "$d/enable_core_checker.txt"
+      [ -f "$d/adaptive_mod.txt" ] && printf "f" > "$d/adaptive_mod.txt"
+    elif [[ "$core_checker_mode" != "basic" ]]; then
+      [ -f "$d/enable_core_checker.txt" ] && printf "t" > "$d/enable_core_checker.txt"
+      [ -f "$d/adaptive_mod.txt" ] && printf "f" > "$d/adaptive_mod.txt"
+      Check_Freq=1
+      [ -f "$d/check_freq.txt" ] && printf "%d" "$Check_Freq" > "$d/check_freq.txt"
+    elif [[ "$core_checker_mode" != "1" ]]; then
+      [ -f "$d/enable_core_checker.txt" ] && printf "t" > "$d/enable_core_checker.txt"
+      [ -f "$d/adaptive_mod.txt" ] && printf "f" > "$d/adaptive_mod.txt"
+      Check_Freq=1
+      [ -f "$d/check_freq.txt" ] && printf "%d" "$Check_Freq" > "$d/check_freq.txt"
+    elif [[ "$core_checker_mode" != "2" ]]; then
+      [ -f "$d/enable_core_checker.txt" ] && printf "t" > "$d/enable_core_checker.txt"
+      [ -f "$d/adaptive_mod.txt" ] && printf "t" > "$d/adaptive_mod.txt"
+      Check_Freq=10
+      [ -f "$d/check_freq.txt" ] && printf "%d" "$Check_Freq" > "$d/check_freq.txt"
+    fi
+
+    # set DEBUG 
+    if [[ "$eval_mode" == "0" ]]; then
+      [ -f "$d/DEBUG.txt" ] && printf "t" > "$d/DEBUG.txt"
+    else
+      [ -f "$d/DEBUG.txt" ] && printf "f" > "$d/DEBUG.txt"
+    fi
+
+    # # set DEBUG 
+    # [ -f "$d/DEBUG.txt" ] && printf "f" > "$d/DEBUG.txt"
+    # # enable core_checker
+    # # [ -f "$d/split.txt" ] && printf "t" > "$d/split.txt"
+    # [ -f "$d/enable_core_checker.txt" ] && printf "t" > "$d/enable_core_checker.txt"
+    # # enable core_checker adaptive mode
+    # [ -f "$d/adaptive_mod.txt" ] && printf "t" > "$d/adaptive_mod.txt"
+    # Check_Freq=50
+    # [ -f "$d/check_freq.txt" ] && printf "%d" "$Check_Freq" > "$d/check_freq.txt"
+    
     # clear context of files
     [ -f "$d/faults_precentage.bin" ] && printf "" > "$d/faults_precentage.bin"
     [ -f "$d/fi_info.bin" ] && printf "" > "$d/fi_info.bin"
     [ -f "$d/fi_info.bin" ] && printf "" > "$d/value_range.bin"
 
-    # # get directory basename (assuming directories are numbered by GPU)
-    # gpu_id=$(basename "$d")
+    [ -f "$d/banned_smid.txt" ] && printf "" > "$d/banned_smid.txt"
+    [ -f "$d/SM_checking_results.txt" ] && printf "" > "$d/SM_checking_results.txt"
 
-    # # sync fault injection plan, skip the faulty GPU
-    # if [[ "$FAULTY_GPU" =~ ^[0-3]$ && "$gpu_id" != "$FAULTY_GPU" ]]; then
-    #   cp "./control_$JOB_ID/$FAULTY_GPU/faulty_step.txt" "$d/faulty_step.txt"
-    #   cp "./control_$JOB_ID/$FAULTY_GPU/plan.txt" "$d/plan.txt"
-    # fi
+    [ -f "$d/time/attn.txt" ] && printf "" > "$d/time/attn.txt"
+    [ -f "$d/time/mlp.txt" ] && printf "" > "$d/time/mlp.txt"
+    [ -f "$d/time/gemm.txt" ] && printf "" > "$d/time/gemm.txt"
+    [ -f "$d/time/bgemm.txt" ] && printf "" > "$d/time/bgemm.txt"
+    [ -f "$d/time/update.txt" ] && printf "" > "$d/time/update.txt"
+    [ -f "$d/time/preparation.txt" ] && printf "" > "$d/time/preparation.txt"
+
   done
 
   # Fine-tuning
@@ -101,7 +154,7 @@ for i in {1..33}; do
   # Disable cutlass for evaluation
   for d in ./control_$JOB_ID/*; do
     [ -f "$d/perform.txt" ] && printf "f" > "$d/perform.txt"
-    [ -f "$d/perform.txt" ] && printf "f" > "$d/cutlass.txt"
+    [ -f "$d/cutlass.txt" ] && printf "f" > "$d/cutlass.txt"
     [ -f "$d/split.txt" ] && printf "f" > "$d/split.txt"
   done
 
@@ -127,8 +180,13 @@ for i in {1..33}; do
   if [[ $num_iters -eq 0 ]]; then
     echo "ERROR: No iter_xxxxxxx found in $ckpt_abs_path"
     exit 1
+    # continue
   fi
 
+  if [[ "$eval_mode" != "1" ]]; then
+    num_iters=0
+  fi  
+  
   for ((i=0; i<num_iters; i++)); do
     current_iter=${all_iters[$i]}
     echo "--- Processing iter $current_iter ---"
