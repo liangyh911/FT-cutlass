@@ -47,12 +47,20 @@ if not os.path.exists(os.path.dirname(logFP)):
     os.makedirs(os.path.dirname(logFP), exist_ok=True)
 
 with open(logFP, "a") as file:
-    file.write(f"Start Job: {faulty_step}\n")
+    # file.write(f"Start Job: {faulty_step}\n")
+    file.write(f"{faulty_step}\n")
     
 # cutlass control file
 controlFP = f"./control_{job_id}/0/perform.txt"
 cutlassFP = f"./control_{job_id}/0/cutlass.txt"
-SMChkFP = f"./control_{job_id}/0/split.txt"
+Enable_Core_Checker = f"./control_{job_id}/0/enable_core_checker.txt"
+
+DEBUG = f"./control_{job_id}/0/DEBUG.txt"
+Adaptive_Mod = f"./control_{job_id}/0/adaptive_mod.txt"
+Adaptive_Freq = f"./control_{job_id}/0/check_freq.txt"
+
+Faulty_injection = f"./control_{job_id}/0/FI.txt"
+Injection_Plan = f"./control_{job_id}/0/plan.txt"
 
 # Model Config
 MODEL_ID = "Qwen/Qwen3-1.7B"
@@ -467,6 +475,10 @@ def evaluate_xlsum_batch(model, tokenizer, num_samples=500):
 # ==========================================
 
 def main():
+    
+    eval_mode = int(sys.argv[1])
+    core_checker_mode = sys.argv[2]
+
     print(f"Loading Tokenizer for {MODEL_ID}...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     
@@ -535,11 +547,61 @@ def main():
         tokenizer=tokenizer
     )
 
+    # clean log files
+    with open(f"./control_{job_id}/0/time/attn.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/mlp.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/preparation.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/bgemm.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/gemm.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/update.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/gemm_python.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/bgemm_python.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/time/training.txt", "w") as file: file.truncate(0)
+
+    with open(f"./control_{job_id}/0/banned_smid.txt", "w") as file: file.truncate(0)
+    with open(f"./control_{job_id}/0/SM_checking_results.txt", "w") as file: file.truncate(0)
+
+
+    # get ground truth faulty smid
+    faulty_smid = -1
+    with open(Injection_Plan, 'r') as file:
+        first_line = file.readline().strip()
+        faulty_smid = int(first_line.split()[0])
+
+
     # --- E. Training ---
     print("Starting Training...")
     with open(cutlassFP, 'w') as file: file.write("f")
-    with open(SMChkFP, 'w') as file: file.write("f")
     with open(controlFP, 'w') as file: file.write("t") 
+
+    if eval_mode == 0:
+        with open(DEBUG, 'w') as file: file.write("t")
+        if core_checker_mode == "Baseline":
+            with open(Enable_Core_Checker, 'w') as file: file.write("f")
+            with open(Adaptive_Mod, 'w') as file: file.write("f")
+            with open(Adaptive_Freq, 'w') as file: file.write(f"{1}")
+            with open(Faulty_injection, 'w') as file: file.write("f")
+        elif core_checker_mode == "Basic":
+            with open(Enable_Core_Checker, 'w') as file: file.write("t")
+            with open(Adaptive_Mod, 'w') as file: file.write("f")
+            with open(Adaptive_Freq, 'w') as file: file.write(f"{1}")
+            with open(Faulty_injection, 'w') as file: file.write("f")
+        elif core_checker_mode == "1":
+            with open(Enable_Core_Checker, 'w') as file: file.write("t")
+            with open(Adaptive_Mod, 'w') as file: file.write("t")
+            with open(Adaptive_Freq, 'w') as file: file.write(f"{1}")
+            with open(Faulty_injection, 'w') as file: file.write("f")
+        elif core_checker_mode == "2":
+            with open(Enable_Core_Checker, 'w') as file: file.write("t")
+            with open(Adaptive_Mod, 'w') as file: file.write("t")
+            with open(Adaptive_Freq, 'w') as file: file.write(f"{10}")
+            with open(Faulty_injection, 'w') as file: file.write("f")
+    else:
+        with open(DEBUG, 'w') as file: file.write("f")
+        with open(Enable_Core_Checker, 'w') as file: file.write("t")
+        with open(Adaptive_Mod, 'w') as file: file.write("t")
+        with open(Adaptive_Freq, 'w') as file: file.write(f"{10}")
+        with open(Faulty_injection, 'w') as file: file.write("t")
 
     trainer.train()
 
@@ -547,7 +609,13 @@ def main():
 
     log = trainer.state.log_history
     loss_history = [str(e.get("loss", "")) for e in log if "loss" in e]
+    grad_norm = [str(e.get("grad_norm", "")) for e in log if "grad_norm" in e]
+    training_time = [str(e.get("train_runtime", "")) for e in log if "train_runtime" in e]
+
+    with open(f"./control_{job_id}/0/time/training.txt", 'a') as file: file.write(" ".join(training_time))
     
+    if eval_mode == 0: return
+
     # --- F. Inference Phase ---
     torch.cuda.empty_cache()
     gc.collect()
@@ -565,14 +633,23 @@ def main():
 
     # Write Logs
     with open(logFP, "a") as file:
-        file.write("\n--- Training Losses ---\n")
+        file.write(f"{faulty_smid}\n")
+        # file.write("\n--- Training Losses ---\n")
         file.write(" ".join(loss_history))
-        file.write("\n--- Inference Results ---\n")
-        file.write(f"MMLU Acc: {mmlu_acc:.4f}\n")
-        file.write(f"SQuAD F1: {squad_f1:.4f}\n")
-        file.write(f"WMT16 BLEU: {wmt_score:.4f}\n")
-        file.write(f"GSM8K Acc: {gsm_score:.4f}\n")
-        file.write(f"XLSum ROUGE: {xlsum_score:.4f}\n")
+        file.write("\n")
+        file.write(" ".join(grad_norm))
+        # file.write("\n--- Inference Results ---\n")
+        file.write(f"\n{mmlu_acc:.4f} ")
+        file.write(f"{squad_f1:.4f} ")
+        file.write(f"{wmt_score:.4f} ")
+        file.write(f"{gsm_score:.4f} ")
+        file.write(f"{xlsum_score:.4f}\n")
+    
+    with open(falutyStepFP, "r") as file:
+        lines = file.readlines()
+    lines.pop(0)
+    with open(falutyStepFP, "w") as file:
+        file.writelines(lines)
 
     print("Job Finished Successfully.")
 
