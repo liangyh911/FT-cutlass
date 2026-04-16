@@ -525,10 +525,10 @@ public:
     cudaGetDevice(&gpu_dev);
 
     // get sm count 
-    // cudaDeviceProp prop;
-    // cudaGetDeviceProperties(&prop, gpu_dev);
-    // int num_sms = prop.multiProcessorCount;
-    int num_sms = 132;
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, gpu_dev);
+    int num_sms = prop.multiProcessorCount;
+    // int num_sms = 132;
     // printf("SM count: %d\n", num_sms);
 
     ThreadblockSwizzle threadblock_swizzle;

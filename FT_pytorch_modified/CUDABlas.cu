@@ -1938,7 +1938,7 @@ bool cutlass_bgemm_T_baseline(char transa, char transb, int64_t m, int64_t n, in
                         Dtype *b, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches, 
                         bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
-  // printf("cutlass bgemm T\n");
+  // printf("cutlass baseline bgemm T\n");
   // printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
@@ -2002,8 +2002,8 @@ bool cutlass_bgemm_T_baseline(char transa, char transb, int64_t m, int64_t n, in
   // batch wise
   // if(if_split_phase == 0) n1 += 2;
   // block wise 
-  int64_t strideb_check = ldb * n1;
-  int64_t stridec_check = ldc * n1;
+  int64_t strideb_check = strideb;
+  int64_t stridec_check = stridec;
 
   int const count_A = num_batches * lda * m;
   int const count_B = num_batches * ldb * n1;
@@ -2080,7 +2080,7 @@ bool cutlass_bgemm_baseline(char transa, char transb, int64_t m, int64_t n, int6
                         Dtype *b, int64_t ldb, int64_t strideb,                                           
                         Dtype beta, Dtype *c, int64_t ldc, int64_t stridec, int64_t num_batches,
                         bool DEBUG, int if_split_phase, char *job_id, int gpu_dev){
-  // printf("cutlass bgemm\n");
+  // printf("cutlass baseline bgemm\n");
   // printf("transa: %c, transb: %c\n", transa, transb);
 
   // Preparing time
@@ -2146,8 +2146,8 @@ bool cutlass_bgemm_baseline(char transa, char transb, int64_t m, int64_t n, int6
   // ABFT size
   // int64_t n1 = n + 2;
   int64_t n1 = n;
-  int64_t strideb_check = ldb * n1;
-  int64_t stridec_check = ldc * n1;
+  int64_t strideb_check = strideb;
+  int64_t stridec_check = stridec;
 
   // printf("cudablas, num_batch: %d, m: %d, n: %d, k: %d, lda: %d, ldb: %d, ldc: %d, alpha: %f, beta: %f \n", num_batches, m, n, k, lda, ldb, ldc, alpha, beta);
   // printf("  stride A: %d, stride B: (%d, %d), stride C: (%d, %d)\n", stridea, strideb, strideb_check, stridec, stridec_check);
@@ -3049,9 +3049,25 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
   // record preparation time
   std::chrono::high_resolution_clock::time_point start_malloc;
   if(DEBUG){
+    cudaDeviceSynchronize();
     start_malloc = std::chrono::high_resolution_clock::now();
   }
   float t_cpu = 0.f;
+
+  bool adaptive_mod = false;
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
+  std::ifstream AdaFile(destinationFile);
+  if (AdaFile.is_open()){
+    AdaFile.get(flag);
+    if(flag == 't'){
+      adaptive_mod = true;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("Adaptive mod: Cannot open file, using default setting.\n");
+  }
+  AdaFile.close();
 
   flag = 'f';
   int if_split_phase = 2;
@@ -3071,21 +3087,6 @@ bool cutlass_bgemm_launcher(char transa, char transb, int64_t m, int64_t n, int6
     printf("Split: Cannot open file, using default setting.\n");
   }
   SplitFile.close();
-
-  bool adaptive_mod = false;
-  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
-  std::ifstream AdaFile(destinationFile);
-  if (AdaFile.is_open()){
-    AdaFile.get(flag);
-    if(flag == 't'){
-      adaptive_mod = true;
-    }
-    // printf("%c", flag);
-  }
-  else{
-    printf("Adaptive mod: Cannot open file, using default setting.\n");
-  }
-  AdaFile.close();
 
   // if(DEBUG){
   //   auto end_malloc = std::chrono::high_resolution_clock::now();
@@ -3724,10 +3725,26 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
   // record preparation time
   std::chrono::high_resolution_clock::time_point start_malloc;
   if (DEBUG){
+    cudaDeviceSynchronize();
     start_malloc = std::chrono::high_resolution_clock::now();
   }
 
   float t_cpu = 0.f;
+
+  bool adaptive_mod = false;
+  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
+  std::ifstream AdaFile(destinationFile);
+  if (AdaFile.is_open()){
+    AdaFile.get(flag);
+    if(flag == 't'){
+      adaptive_mod = true;
+    }
+    // printf("%c", flag);
+  }
+  else{
+    printf("Adaptive mod: Cannot open file, using default setting.\n");
+  }
+  AdaFile.close();
 
   flag = 'f';
   int if_split_phase = 2;
@@ -3747,22 +3764,6 @@ bool cutlass_gemm_launcher(char transa, char transb, int64_t m, int64_t n, int64
     printf("Split: Cannot open file, using default setting.\n");
   }
   SplitFile.close();
-
-  bool adaptive_mod = false;
-  destinationFile = fs::path("./control_" + std::string(job_id) + "/" + std::to_string(gpu_dev)) / "adaptive_mod.txt";
-  std::ifstream AdaFile(destinationFile);
-  if (AdaFile.is_open()){
-    AdaFile.get(flag);
-    if(flag == 't'){
-      adaptive_mod = true;
-    }
-    // printf("%c", flag);
-  }
-  else{
-    printf("Adaptive mod: Cannot open file, using default setting.\n");
-  }
-  AdaFile.close();
-
 
   // if(DEBUG){
   //   auto end_malloc = std::chrono::high_resolution_clock::now();
